@@ -1,0 +1,46 @@
+# Starter routing rules — applied idempotently by `make seed`. Existing rules
+# are not overwritten. Edit live via `PUT /routing/{task_type}` (admin auth);
+# changes hot-reload because the route reads the rule from the DB on every job.
+#
+# `sensitivity` here is a floor — clients can request stricter, never looser.
+
+rules:
+  - task_type: bio_generation
+    preferred_model: llama3.3:70b
+    fallback_model: claude-sonnet-4-5
+    sensitivity: internal
+
+  - task_type: email_classification
+    preferred_model: llama3.3:70b
+    fallback_model: claude-haiku-4-5
+    sensitivity: internal
+
+  - task_type: email_extraction
+    preferred_model: qwen2.5:72b
+    fallback_model: claude-sonnet-4-5
+    sensitivity: internal
+
+  - task_type: agenda_generation
+    preferred_model: llama3.3:70b
+    fallback_model: claude-sonnet-4-5
+    sensitivity: internal
+
+  - task_type: commission_audit
+    preferred_model: llama3.3:70b
+    fallback_model: llama3.3:70b
+    sensitivity: confidential
+
+  - task_type: ledger_calculation
+    preferred_model: llama3.3:70b
+    fallback_model: llama3.3:70b
+    sensitivity: confidential
+
+  - task_type: code_generation
+    preferred_model: claude-sonnet-4-5
+    fallback_model: claude-opus-4-5
+    sensitivity: public
+
+  - task_type: sre_triage
+    preferred_model: llama3.3:70b
+    fallback_model: claude-sonnet-4-5
+    sensitivity: internal

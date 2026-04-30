@@ -1,0 +1,15 @@
+# Copy to `config/seed.clients.yaml` (gitignored) and fill in the clients you
+# want bootstrapped. `make seed` creates each idempotently and prints the raw
+# API key ONCE on creation. Re-running with the same names is a no-op.
+#
+# Empty file (or missing file) means no clients are seeded.
+
+clients:
+  - name: my-app
+    notes: "Example deployment client; replace or delete this entry"
+    rate_limit_per_minute: 60         # optional; null/omit = unlimited
+    allow_cloud_for_internal: false   # optional; default false
+
+  # Add more entries as needed:
+  # - name: another-client
+  #   notes: ""

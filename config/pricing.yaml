@@ -1,0 +1,16 @@
+# Per-million-token pricing in USD. Edit and send SIGUSR1 to the running app to reload:
+#   kill -USR1 $(pgrep -f "uvicorn main:app")
+#
+# Local provider pricing is implicitly zero — omit them.
+# Add entries when new cloud models are routed to.
+
+anthropic:
+  claude-haiku-4-5:
+    input_per_1m_usd: 99.00
+    output_per_1m_usd: 5.00
+  claude-sonnet-4-5:
+    input_per_1m_usd: 3.00
+    output_per_1m_usd: 15.00
+  claude-opus-4-5:
+    input_per_1m_usd: 15.00
+    output_per_1m_usd: 75.00

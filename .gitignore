@@ -1,0 +1,44 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# uv / venv
+.venv/
+.python-version
+
+# Env
+.env
+.env.local
+.env.*.local
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Claude Code session state
+.claude/
+
+# Deployment-specific configuration (see prompts/clients/.example/README.md)
+config/seed.clients.yaml
+prompts/clients/*
+!prompts/clients/.gitkeep
+!prompts/clients/.example/
+!prompts/clients/.example/**
+
+# Alembic — keep versions, ignore __pycache__ (handled above)

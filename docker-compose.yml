@@ -1,0 +1,36 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: conduct-postgres
+    environment:
+      POSTGRES_USER: conduct
+      POSTGRES_PASSWORD: conduct
+      POSTGRES_DB: conduct
+    ports:
+      - "5432:5432"
+    volumes:
+      - conduct-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U conduct"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    container_name: conduct-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - conduct-redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+volumes:
+  conduct-postgres-data:
+  conduct-redis-data:

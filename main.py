@@ -1,0 +1,23 @@
+from fastapi import FastAPI
+
+from lifespan import lifespan
+from routes import clients, health, jobs, metrics_json, metrics_prom
+from routes import eval as eval_route
+from routes import models as models_route
+from routes import routing as routing_route
+
+app = FastAPI(
+    title="Conduct",
+    description="LLM dispatch service",
+    version="0.1.0",
+    lifespan=lifespan,
+)
+
+app.include_router(health.router)
+app.include_router(clients.router)
+app.include_router(jobs.router)
+app.include_router(models_route.router)
+app.include_router(routing_route.router)
+app.include_router(metrics_prom.router)
+app.include_router(metrics_json.router)
+app.include_router(eval_route.router)
