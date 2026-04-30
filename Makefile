@@ -1,14 +1,16 @@
-.PHONY: help install run worker migrate revision seed test lint format up down logs psql redis-cli tunnel
+.PHONY: help install run worker migrate revision seed test lint format up up-infra down build logs psql redis-cli tunnel
 
 help:
 	@echo "Common targets:"
 	@echo "  make install   — sync deps via uv"
-	@echo "  make up        — start postgres + redis containers"
-	@echo "  make down      — stop containers"
-	@echo "  make migrate   — run alembic upgrade head"
+	@echo "  make up        — start the full stack (postgres, redis, api, worker)"
+	@echo "  make up-infra  — start only postgres + redis (use with host-side make run / make worker)"
+	@echo "  make down      — stop all containers"
+	@echo "  make build     — rebuild the conduct image"
+	@echo "  make migrate   — run alembic upgrade head (host-side, against the compose postgres)"
 	@echo "  make revision m=\"message\" — create alembic autogenerate revision"
-	@echo "  make run       — run the FastAPI app on :8000 with reload"
-	@echo "  make worker    — run the RQ worker"
+	@echo "  make run       — run the FastAPI app on :8000 with reload (host-side dev)"
+	@echo "  make worker    — run the RQ worker (host-side dev)"
 	@echo "  make seed      — bootstrap clients + routing rules (idempotent)"
 	@echo "  make test      — run pytest"
 	@echo "  make lint      — ruff check"
@@ -26,8 +28,17 @@ up:
 	@until docker compose exec -T postgres pg_isready -U conduct >/dev/null 2>&1; do sleep 1; done
 	@echo "Postgres ready."
 
+up-infra:
+	docker compose up -d postgres redis
+	@echo "Waiting for postgres..."
+	@until docker compose exec -T postgres pg_isready -U conduct >/dev/null 2>&1; do sleep 1; done
+	@echo "Postgres ready."
+
 down:
 	docker compose down
+
+build:
+	GIT_SHA=$$(git rev-parse HEAD 2>/dev/null || echo "") docker compose build api worker
 
 migrate:
 	uv run alembic upgrade head

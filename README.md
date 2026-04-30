@@ -6,16 +6,16 @@ Multi-tenant LLM dispatch service. Routes AI workloads to local (Ollama) or clou
 
 ```bash
 make install                                                 # uv sync
-make up                                                      # postgres + redis containers
-make migrate                                                 # alembic upgrade head
 cp .env.example .env                                         # fill in CONDUCT_ADMIN_KEY, ANTHROPIC_API_KEY
 cp config/seed.clients.example.yaml config/seed.clients.yaml # then edit to add your clients
+make up                                                      # full stack: postgres, redis, api, worker
+make migrate                                                 # alembic upgrade head
 make seed                                                    # creates clients + 8 routing rules. Prints raw API keys ONCE.
-make worker &                                                # RQ worker (handles all local-model jobs + model swaps)
-make run                                                     # FastAPI on :8000
 ```
 
 After `make seed`, save the printed client keys — they're hashed in the DB and unrecoverable.
+
+For fast-iteration dev (uvicorn `--reload`), use `make up-infra` (postgres + redis only) followed by `make run` and `make worker` in separate terminals. See [docs/deployment.md](docs/deployment.md) for the trade-offs.
 
 ## What runs where
 
@@ -34,7 +34,7 @@ After `make seed`, save the printed client keys — they're hashed in the DB and
                       (Watchtower's Alloy)
 ```
 
-Postgres + Redis are local to this repo's `docker-compose.yml`. Watchtower's LGTM stack (Tempo/Loki/Mimir/Grafana) lives in `~/watchtower` and receives traces + scrapes metrics.
+All four services run as containers via `docker-compose.yml`. Ollama stays on the host (Docker Desktop on macOS can't pass through Metal GPU access, which 70b-class models need). Watchtower's LGTM stack (Tempo/Loki/Mimir/Grafana) lives in `~/watchtower` as a separate Compose project.
 
 ## API surface
 
@@ -58,68 +58,12 @@ Postgres + Redis are local to this repo's `docker-compose.yml`. Watchtower's LGT
 | POST    | `/eval/jobs/{id}/score`       | admin  | manual quality rating 1–5 |
 | GET     | `/health`                     | open   | DB ping |
 
-## Sensitivity tiers
+## Read more
 
-| tier            | routing                                      |
-|-----------------|----------------------------------------------|
-| `public`        | any model                                    |
-| `internal`      | local preferred; cloud only when `ClientApp.allow_cloud_for_internal=true` |
-| `confidential`  | local only — hard gate, no cloud fallback ever |
-
-The routing rule's sensitivity acts as a floor — clients can be stricter, never looser.
-
-## Sync vs async decision
-
-- `"async": true` in body → enqueue, return 202
-- Cloud target → sync, return 200 with full result
-- Local target → enqueue (worker is the sole owner of Ollama + model swaps)
-
-## Live config
-
-- **Routing rules**: `PUT /routing/{task_type}` — DB-backed, read per request
-- **Prompts**: edit files under `prompts/` — read fresh on every request, git hash captured per job
-- **Pricing**: edit `config/pricing.yaml`, then `kill -USR1 $(pgrep -f '/.venv/bin/uvicorn main:app')`
-
-## Private configuration (deployment-specific overrides)
-
-Two things are deployment-specific and **must not be committed to a public fork**:
-
-| Path | Status | Purpose |
-|---|---|---|
-| `config/seed.clients.yaml` | gitignored | client app names + per-client knobs (rate limits, cloud opt-in) |
-| `prompts/clients/{client_name}/` | gitignored | task-prompt overrides specific to a deployment |
-
-`config/seed.clients.example.yaml` and `prompts/clients/.example/` ship as templates. Two patterns for managing the real values:
-
-- **Local files** (simplest): copy the examples into the gitignored paths and fill in.
-- **Versioned via private repo** (recommended for orgs): keep your overrides in a separate private repo and mount as a submodule.
-  ```bash
-  git submodule add git@github.com:your-org/conduct-prompts.git prompts/clients
-  git submodule update --init --recursive
-  ```
-  The gitignore rules already accommodate submodule contents — they won't be re-tracked by this repo.
-
-`config/seed.routing.yaml` is committed because the starter rules are generic (task_types and model identifiers, no client identity). Override per-deployment by editing live (`PUT /routing/{task_type}`).
-
-## Observability
-
-- **Traces**: OTLP gRPC → `localhost:4317` (Watchtower's Alloy). Service name `conduct`, role `api` or `worker`
-- **Prometheus**: API at `:8000/metrics/prometheus`, worker at `:8001/metrics`. Both exposed for Alloy scrape
-- **Manual spans**: `conduct.job` (root, with task_type/sensitivity/client/model attrs), `conduct.inference` (child, with tokens/cost/latency), `conduct.worker.dispatch` and `conduct.worker.swap` for the worker leg
-
-## Failure handling
-
-`retry/static.py` is the v1 `FailureHandler` — on a `ProviderError`, returns `FALLBACK` if a distinct fallback model+provider is loaded, else `FAIL`. `retry/triage.py` is the v2 stub: implementing its `on_provider_error()` and binding it as the default in `worker/executor.py` is the only change needed to swap from heuristics to an LLM-driven decision. Tenacity retries Anthropic rate limits with exponential backoff (3 attempts, 1–10s).
-
-## ngrok
-
-```bash
-echo "NGROK_AUTHTOKEN=..." >> .env
-ngrok config add-authtoken "$NGROK_AUTHTOKEN"
-make tunnel              # starts `ngrok http 8000`
-```
-
-Copy the printed HTTPS URL into the client config of whatever GCP service is calling Conduct. The tunnel is the only HTTPS surface; the underlying app speaks HTTP locally.
+- **[docs/architecture.md](docs/architecture.md)** — sensitivity tiers, sync vs. async decision, routing engine, failure handling
+- **[docs/deployment.md](docs/deployment.md)** — container build, host-side vs. containerized dev, git SHA provenance, private overlays, ECS / Cloud Run targets, ngrok
+- **[docs/operations.md](docs/operations.md)** — live config, observability, common queries, tests, DoD
+- **[SPEC.md](SPEC.md)** — original design doc
 
 ## Project layout
 
@@ -133,7 +77,7 @@ prompt_loader.py           clients/{name}/{task}.md → shared/{task}.md resolve
 
 config/                    settings + pricing
 db/                        SQLAlchemy 2.0 async session + declarative base
-models/                    ORM models (ClientApp, ClientAppUsage, Job, RoutingRule) + Sensitivity/JobStatus enums
+models/                    ORM models + Sensitivity / JobStatus enums
 providers/                 BaseProvider, Ollama, Anthropic, registry
 routing/                   pure decide() with sensitivity floor
 worker/                    queue, runner (RQ entry), executor (sync+async share this)
@@ -144,48 +88,7 @@ prompts/                   shared/ + clients/{name}/ overrides; .md files only
 scripts/seed.py            idempotent bootstrap (reads config/seed.{clients,routing}.yaml)
 tests/                     unit tests (pytest)
 alembic/                   migrations
-```
-
-## Tests
-
-```bash
-make test                  # 39 unit tests, ~0.4s
-```
-
-Coverage: auth crypto, pricing registry + reload, prompt resolver hierarchy, both providers (mocked HTTP), routing engine (sensitivity floor, fallback stripping, defaults), queue decision + RQ round-trip via fakeredis, rate limit (under/over/separate clients), failure handler (fallback/fail conditions, triage stub).
-
-End-to-end inference smoke (real Ollama + Anthropic) is documented but not in the test suite — it requires `ollama serve` running and an `ANTHROPIC_API_KEY`. See **DoD** below for the manual checks.
-
-## Definition of Done — current state
-
-Per [SPEC.md](SPEC.md):
-
-- `POST /jobs` routes sync (cloud) and async (local + explicit). Sensitivity gates enforced.
-- Worker processes queued jobs, performs model swaps, writes results.
-- Model management routes (`GET /models`, `POST /models/{name}/load|unload`) operational.
-- Routing config hot-reloadable via `PUT /routing/{task_type}` — DB-backed, no restart.
-- `/metrics` and `/eval/compare` return aggregations with per-model attribution.
-- A registered client app can submit a `bio_generation` job and get a response (with `ollama serve` running and a model pulled).
-- ngrok wiring: `make tunnel` after setting `NGROK_AUTHTOKEN`.
-- At least one client app created idempotently by `make seed` from `config/seed.clients.yaml`.
-- 39 tests pass, lint + format clean.
-
-## Common operations
-
-```bash
-# inspect the queue
-make redis-cli
-> LRANGE rq:queue:conduct 0 -1
-
-# inspect jobs
-make psql
-> SELECT id, task_type, status, model_used FROM jobs ORDER BY created_at DESC LIMIT 10;
-
-# rotate a client API key
-make psql
-> DELETE FROM client_apps WHERE name = 'foo';
-> -- then POST /clients again to get a new key
-
-# tail traces
-open http://localhost:3000   # Grafana — Watchtower's instance
+docs/                      verbose docs (architecture, deployment, operations)
+Dockerfile                 multi-stage uv build; one image for api + worker
+docker-compose.yml         postgres, redis, api, worker
 ```

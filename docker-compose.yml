@@ -31,6 +31,56 @@ services:
       retries: 10
     restart: unless-stopped
 
+  api:
+    build:
+      context: .
+      args:
+        GIT_SHA: ${GIT_SHA:-}
+    image: conduct:local
+    container_name: conduct-api
+    command: ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://conduct:conduct@postgres:5432/conduct
+      REDIS_URL: redis://redis:6379/0
+      OLLAMA_BASE_URL: http://host.docker.internal:11434
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://host.docker.internal:4317
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  worker:
+    build:
+      context: .
+      args:
+        GIT_SHA: ${GIT_SHA:-}
+    image: conduct:local
+    container_name: conduct-worker
+    command: ["python", "-m", "worker.queue"]
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://conduct:conduct@postgres:5432/conduct
+      REDIS_URL: redis://redis:6379/0
+      OLLAMA_BASE_URL: http://host.docker.internal:11434
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://host.docker.internal:4317
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "8001:8001"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
 volumes:
   conduct-postgres-data:
   conduct-redis-data:

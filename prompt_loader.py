@@ -6,6 +6,7 @@ The git-hash subprocess is cached briefly to avoid forking per request.
 
 from __future__ import annotations
 
+import os
 import subprocess
 import time
 from dataclasses import dataclass
@@ -13,6 +14,7 @@ from pathlib import Path
 
 DEFAULT_PROMPTS_DIR = Path(__file__).parent / "prompts"
 DEFAULT_HASH_TTL_S = 5.0
+BUILD_SHA_ENV = "CONDUCT_GIT_SHA"
 
 
 class PromptNotFoundError(Exception):
@@ -72,6 +74,12 @@ class PromptResolver:
             value = sha or None
         except (subprocess.SubprocessError, OSError):
             value = None
+        # Container fallback: .git is excluded from the image, so the git CLI
+        # returns nothing. Use the SHA baked in at image-build time so jobs
+        # still record which prompt revision they ran against.
+        if value is None:
+            env_sha = os.environ.get(BUILD_SHA_ENV, "").strip()
+            value = env_sha or None
         self._hash_cache[rel_path] = (now, value)
         return value
 

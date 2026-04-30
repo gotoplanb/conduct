@@ -1,0 +1,49 @@
+.git
+.gitignore
+.github
+
+# Python
+__pycache__
+*.py[cod]
+*.so
+.Python
+*.egg-info
+.pytest_cache
+.ruff_cache
+.mypy_cache
+
+# uv / venv
+.venv
+
+# Env (never bake secrets into images)
+.env
+.env.*
+
+# IDE / OS
+.idea
+.vscode
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Claude Code
+.claude
+
+# Deployment-specific configuration
+config/seed.clients.yaml
+prompts/clients/*
+!prompts/clients/.gitkeep
+!prompts/clients/.example
+!prompts/clients/.example/**
+
+# Docs that don't belong in the image
+README.md
+SPEC.md
+Dockerfile
+.dockerignore
+docker-compose.yml
+Makefile
