@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="hermit-conduct.png" alt="Conduct mascot — a hermit crab in a tuxedo holding a conductor's baton" width="200">
+</p>
+
 # Conduct
 
 Multi-tenant LLM dispatch service. Routes AI workloads to local (Ollama) or cloud (Anthropic) models based on `task_type`, sensitivity, and availability. FastAPI + Postgres + Redis + RQ. See [SPEC.md](SPEC.md) for the design.
@@ -92,3 +96,7 @@ docs/                      verbose docs (architecture, deployment, operations)
 Dockerfile                 multi-stage uv build; one image for api + worker
 docker-compose.yml         postgres, redis, api, worker
 ```
+
+---
+
+© 2026 Zero Mission LLC
