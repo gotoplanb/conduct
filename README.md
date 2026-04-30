@@ -1,6 +1,4 @@
-<p align="center">
-  <img src="hermit-conduct.png" alt="Conduct mascot — a hermit crab in a tuxedo holding a conductor's baton" width="200">
-</p>
+<img src="hermit-conduct.png" alt="Conduct mascot — a hermit crab in a tuxedo holding a conductor's baton" width="200">
 
 # Conduct
 
