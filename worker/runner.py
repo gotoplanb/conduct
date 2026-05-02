@@ -159,3 +159,18 @@ async def _run_async(job_id: UUID) -> None:
                 session=session,
             )
             dispatch_span.set_attribute("dispatch.outcome", "executed")
+
+            # Plan + enqueue shadow jobs after a successful original. Failed
+            # originals don't shadow — there's nothing meaningful to compare
+            # against if the primary couldn't produce a response.
+            if job.status == JobStatus.COMPLETE.value:
+                from eval.shadow_runner import enqueue_shadows_for_parent
+
+                shadow_ids = await enqueue_shadows_for_parent(
+                    parent_job=job,
+                    rule=rule,
+                    client=client,
+                    session=session,
+                )
+                if shadow_ids:
+                    dispatch_span.set_attribute("shadows.enqueued", len(shadow_ids))

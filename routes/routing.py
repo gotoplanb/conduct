@@ -15,6 +15,12 @@ from models.types import Sensitivity
 router = APIRouter(prefix="/routing", tags=["routing"], dependencies=[Depends(admin_only)])
 
 
+class ShadowModelSpec(BaseModel):
+    model: str = Field(min_length=1, max_length=100)
+    rate: float = Field(ge=0.0, le=1.0)
+    daily_cost_cap_usd: float | None = Field(default=None, ge=0.0)
+
+
 class RoutingRuleOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -24,6 +30,7 @@ class RoutingRuleOut(BaseModel):
     sensitivity: Sensitivity
     max_tokens: int
     notes: str
+    eval_shadow_models: list[ShadowModelSpec] = Field(default_factory=list)
     updated_at: datetime
 
 
@@ -33,6 +40,7 @@ class RoutingRuleIn(BaseModel):
     sensitivity: Sensitivity = Sensitivity.INTERNAL
     max_tokens: int = Field(default=1000, ge=1, le=200_000)
     notes: str = ""
+    eval_shadow_models: list[ShadowModelSpec] = Field(default_factory=list)
 
 
 class RoutingListOut(BaseModel):
@@ -53,6 +61,7 @@ async def upsert_routing(
 ) -> RoutingRule:
     if not task_type or len(task_type) > 100:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "task_type must be 1-100 chars")
+    shadow_specs = [s.model_dump() for s in body.eval_shadow_models]
     rule = await session.get(RoutingRule, task_type)
     if rule is None:
         rule = RoutingRule(
@@ -62,6 +71,7 @@ async def upsert_routing(
             sensitivity=body.sensitivity.value,
             max_tokens=body.max_tokens,
             notes=body.notes,
+            eval_shadow_models=shadow_specs,
         )
         session.add(rule)
     else:
@@ -70,6 +80,7 @@ async def upsert_routing(
         rule.sensitivity = body.sensitivity.value
         rule.max_tokens = body.max_tokens
         rule.notes = body.notes
+        rule.eval_shadow_models = shadow_specs
     await session.commit()
     await session.refresh(rule)
     return rule

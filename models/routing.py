@@ -1,6 +1,7 @@
 from datetime import UTC, datetime
 
 from sqlalchemy import DateTime, Integer, String, Text
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from db.base import Base
@@ -20,6 +21,12 @@ class RoutingRule(Base):
         Integer, nullable=False, default=1000, server_default="1000"
     )
     notes: Mapped[str] = mapped_column(Text, nullable=False, default="", server_default="")
+    # eval_shadow_models — list of {model, rate, daily_cost_cap_usd?} dicts.
+    # Empty / null means no shadows for this rule. Daily cost cap is per-model
+    # and applies only to cloud models (local models have no marginal cost).
+    eval_shadow_models: Mapped[list] = mapped_column(
+        JSONB, nullable=False, default=list, server_default="[]"
+    )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,

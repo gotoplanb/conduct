@@ -20,11 +20,13 @@ from config.settings import get_settings
 from observability.tracing import init_tracing
 
 QUEUE_NAME = "conduct"
+SHADOW_QUEUE_NAME = "conduct-shadow"
 DEFAULT_JOB_TIMEOUT_S = 600  # 10 minutes; long enough for cold-start swaps + inference
 WORKER_METRICS_PORT = 8001
 
 _redis: Redis | None = None
 _queue: Queue | None = None
+_shadow_queue: Queue | None = None
 
 
 def get_redis() -> Redis:
@@ -41,9 +43,26 @@ def get_queue() -> Queue:
     return _queue
 
 
+def get_shadow_queue() -> Queue:
+    """Lower-priority queue for eval shadow jobs.
+
+    SimpleWorker drains queues in list order, so by passing
+    [main_queue, shadow_queue] the worker only pulls a shadow when the main
+    queue is empty.
+    """
+    global _shadow_queue
+    if _shadow_queue is None:
+        _shadow_queue = Queue(SHADOW_QUEUE_NAME, connection=get_redis())
+    return _shadow_queue
+
+
 def queue_depth() -> int:
-    """Pending jobs in the queue (does not include the in-flight job)."""
+    """Pending jobs in the main queue (does not include the in-flight job)."""
     return get_queue().count
+
+
+def shadow_queue_depth() -> int:
+    return get_shadow_queue().count
 
 
 def main() -> None:
@@ -59,8 +78,11 @@ def main() -> None:
     start_metrics_server(WORKER_METRICS_PORT)
     logging.getLogger(__name__).info("worker metrics on :%d/metrics", WORKER_METRICS_PORT)
     redis = get_redis()
-    queue = Queue(QUEUE_NAME, connection=redis)
-    worker = SimpleWorker([queue], connection=redis)
+    main_queue = Queue(QUEUE_NAME, connection=redis)
+    shadow_queue = Queue(SHADOW_QUEUE_NAME, connection=redis)
+    # Order matters: SimpleWorker drains queues left-to-right, so shadows only
+    # run when the main queue is empty.
+    worker = SimpleWorker([main_queue, shadow_queue], connection=redis)
     worker.work(with_scheduler=False)
 
 
