@@ -18,8 +18,17 @@ class Settings(BaseSettings):
     default_model: str = Field(default="llama3.3:70b", alias="DEFAULT_MODEL")
     default_sensitive_model: str = Field(default="llama3.3:70b", alias="DEFAULT_SENSITIVE_MODEL")
 
+    # Comma-separated Ollama models that the worker pins on startup and
+    # promises never to evict. The API can call these directly without going
+    # through the worker queue, enabling parallel fan-out for real-time eval.
+    resident_models_raw: str = Field(default="", alias="RESIDENT_MODELS")
+
     otel_endpoint: str = Field(default="http://localhost:4317", alias="OTEL_EXPORTER_OTLP_ENDPOINT")
     otel_service_name: str = Field(default="conduct", alias="OTEL_SERVICE_NAME")
+
+    @property
+    def resident_models(self) -> list[str]:
+        return [m.strip() for m in self.resident_models_raw.split(",") if m.strip()]
 
 
 @lru_cache

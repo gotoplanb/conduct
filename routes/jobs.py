@@ -17,13 +17,15 @@ from auth import current_client
 from config.settings import get_settings
 from db.session import get_session
 from deps import get_provider_registry
+from eval.fanout import FanoutValidationError, run_fanout_secondaries, validate_fanout_targets
 from models.client import ClientApp
 from models.job import Job
 from models.routing import RoutingRule
 from models.types import JobStatus, Sensitivity
 from prompt_loader import PromptNotFoundError
 from providers.base import ProviderError
-from providers.registry import ProviderRegistry
+from providers.registry import ProviderRegistry, is_cloud
+from providers.resident import is_resident
 from rate_limit import rate_limited_client
 from routing.engine import RoutingDecision, SensitivityViolation, decide
 from worker.executor import execute_job
@@ -45,6 +47,11 @@ class JobCreateIn(BaseModel):
     priority: int = Field(default=5, ge=1, le=10)
     model: str | None = None
     is_async: bool = Field(default=False, alias="async")
+    # Fan-out targets — extra models to run in parallel for real-time eval.
+    # Each target must be cloud or in RESIDENT_MODELS (the API can't trigger
+    # worker swaps mid-request). Results land in JobShadow rows attached to
+    # the primary's Job; the response body is still just the primary's.
+    fanout: list[str] = Field(default_factory=list, max_length=10)
     metadata: dict = Field(default_factory=dict)
 
 
@@ -90,11 +97,17 @@ class JobOut(BaseModel):
 
 def _should_enqueue(body: JobCreateIn, decision: RoutingDecision) -> bool:
     """Async path is taken when the client asked for it OR when the target is
-    local. The worker is the sole owner of Ollama inference (and model swaps),
-    so all local jobs flow through the queue. Cloud calls run sync."""
+    local non-resident. The worker is the sole owner of Ollama inference for
+    non-resident models (it does the swaps); resident models can be called
+    directly by the API. Cloud calls always run sync. Fan-out forces sync
+    so the parallel calls land in one request."""
+    if body.fanout:
+        return False
     if body.is_async:
         return True
-    return decision.provider == "ollama"
+    if decision.provider != "ollama":
+        return False
+    return not is_resident(decision.model)
 
 
 @router.post(
@@ -128,6 +141,39 @@ async def submit_job(
         )
     except SensitivityViolation as e:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e)) from e
+
+    # Fan-out validation: every target must be directly callable from the
+    # API (cloud or resident-local). The primary is held to the same bar —
+    # otherwise we'd need to interleave queue + sync execution, which breaks
+    # the parallelism guarantee.
+    if body.fanout:
+        try:
+            validate_fanout_targets(body.fanout)
+        except FanoutValidationError as e:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e)) from e
+        if not (is_cloud(decision.model) or is_resident(decision.model)):
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                f"primary model {decision.model!r} is non-resident local — "
+                "fanout requires the primary to be cloud or in RESIDENT_MODELS",
+            )
+        # Apply same sensitivity gates the planner uses, just inline here.
+        for target in body.fanout:
+            if is_cloud(target):
+                if decision.effective_sensitivity == Sensitivity.CONFIDENTIAL:
+                    raise HTTPException(
+                        status.HTTP_400_BAD_REQUEST,
+                        f"fanout target {target!r} is cloud — disallowed for confidential",
+                    )
+                if (
+                    decision.effective_sensitivity == Sensitivity.INTERNAL
+                    and not client.allow_cloud_for_internal
+                ):
+                    raise HTTPException(
+                        status.HTTP_400_BAD_REQUEST,
+                        f"fanout target {target!r} is cloud — client lacks "
+                        "allow_cloud_for_internal",
+                    )
 
     if not providers.has(decision.provider) and not _should_enqueue(body, decision):
         # Sync path needs the provider in-process; async path defers the check
@@ -179,15 +225,37 @@ async def submit_job(
             },
         )
 
-    # Sync path (cloud only).
+    # Sync path: cloud, resident-local, or fan-out.
     try:
-        await execute_job(
-            job=job,
-            decision=decision,
-            client_name=client.name,
-            providers=providers,
-            session=session,
-        )
+        if body.fanout:
+            import asyncio as _asyncio
+
+            primary_task = execute_job(
+                job=job,
+                decision=decision,
+                client_name=client.name,
+                providers=providers,
+                session=session,
+            )
+            secondary_task = run_fanout_secondaries(
+                parent=job,
+                secondary_models=body.fanout,
+                client_name=client.name,
+                max_tokens=decision.max_tokens,
+                providers=providers,
+                session=session,
+            )
+            # asyncio.gather runs both concurrently; the slowest determines
+            # total wall time, not the sum of latencies.
+            await _asyncio.gather(primary_task, secondary_task)
+        else:
+            await execute_job(
+                job=job,
+                decision=decision,
+                client_name=client.name,
+                providers=providers,
+                session=session,
+            )
     except PromptNotFoundError as e:
         job.status = JobStatus.FAILED.value
         job.error = f"prompt resolution failed: {e}"

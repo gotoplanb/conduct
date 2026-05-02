@@ -66,7 +66,12 @@ def shadow_queue_depth() -> int:
 
 
 def main() -> None:
+    import asyncio
+
+    from providers.resident import pin_resident_models, resident_model_names
+
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
+    log = logging.getLogger(__name__)
     settings = get_settings()
     init_tracing(
         service_name=settings.otel_service_name,
@@ -76,7 +81,19 @@ def main() -> None:
     HTTPXClientInstrumentor().instrument()
     # Prometheus pulls worker counters from a separate port. Alloy scrapes both.
     start_metrics_server(WORKER_METRICS_PORT)
-    logging.getLogger(__name__).info("worker metrics on :%d/metrics", WORKER_METRICS_PORT)
+    log.info("worker metrics on :%d/metrics", WORKER_METRICS_PORT)
+
+    # Pin resident models before accepting traffic so the API can fan out to
+    # them immediately. Lazy import avoids a circular dep with worker.runner.
+    if resident_model_names():
+        from worker.runner import _get_providers
+
+        providers = _get_providers()
+        if providers.has("ollama"):
+            ollama = providers.get("ollama")
+            pinned = asyncio.run(pin_resident_models(ollama))
+            log.info("pinned %d resident model(s): %s", len(pinned), pinned)
+
     redis = get_redis()
     main_queue = Queue(QUEUE_NAME, connection=redis)
     shadow_queue = Queue(SHADOW_QUEUE_NAME, connection=redis)

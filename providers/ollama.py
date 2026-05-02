@@ -80,13 +80,17 @@ class OllamaProvider(BaseProvider):
             resp.raise_for_status()
             return resp.json().get("models", [])
 
-    async def load(self, model: str) -> None:
-        """Force-load a model by issuing an empty generate."""
+    async def load(self, model: str, keep_alive: str | int | None = None) -> None:
+        """Force-load a model by issuing an empty generate.
+
+        Pass `keep_alive=-1` to pin the model in memory indefinitely (used for
+        resident-model registration at worker boot).
+        """
+        payload: dict = {"model": model, "prompt": "", "stream": False}
+        if keep_alive is not None:
+            payload["keep_alive"] = keep_alive
         async with httpx.AsyncClient(timeout=self.timeout_s) as client:
-            resp = await client.post(
-                f"{self.base_url}/api/generate",
-                json={"model": model, "prompt": "", "stream": False},
-            )
+            resp = await client.post(f"{self.base_url}/api/generate", json=payload)
             resp.raise_for_status()
 
     async def unload(self, model: str) -> None:
