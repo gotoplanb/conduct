@@ -24,6 +24,7 @@ dependencies = [
     "opentelemetry-instrumentation-fastapi>=0.49b0",
     "opentelemetry-instrumentation-httpx>=0.49b0",
     "tenacity>=9.0",
+    "piper-tts>=1.4",
 ]
 
 [dependency-groups]

@@ -23,6 +23,14 @@ class Settings(BaseSettings):
     # through the worker queue, enabling parallel fan-out for real-time eval.
     resident_models_raw: str = Field(default="", alias="RESIDENT_MODELS")
 
+    # TTS — directory holding Piper voice files (.onnx + .onnx.json) and the
+    # output directory where generated MP3s land. Both default to repo-relative
+    # paths suitable for local dev; in containers, mount these as volumes.
+    tts_voices_dir: str = Field(default="./voices", alias="TTS_VOICES_DIR")
+    tts_default_voice: str = Field(default="en_US-amy-medium", alias="TTS_DEFAULT_VOICE")
+    tts_output_dir: str = Field(default="./output", alias="TTS_OUTPUT_DIR")
+    tts_max_chars: int = Field(default=10_000, alias="TTS_MAX_CHARS")
+
     otel_endpoint: str = Field(default="http://localhost:4317", alias="OTEL_EXPORTER_OTLP_ENDPOINT")
     otel_service_name: str = Field(default="conduct", alias="OTEL_SERVICE_NAME")
 

@@ -57,7 +57,10 @@ All four services run as containers via `docker-compose.yml`. Ollama stays on th
 | GET     | `/metrics`                    | admin  | JSON aggregator with filters |
 | GET     | `/metrics/prometheus`         | open   | scrape target for Alloy |
 | GET     | `/eval/compare?task_type=X`   | admin  | per-model side-by-side |
-| POST    | `/eval/jobs/{id}/score`       | admin  | manual quality rating 1–5 |
+| POST    | `/eval/jobs/{id}/score`       | admin  | manual quality rating 1–5 (job or shadow) |
+| GET     | `/eval/review`                | admin  | unscored shadows for human rating |
+| POST    | `/tts`                        | client | enqueue text→MP3 job; returns poll URL |
+| GET     | `/output/{file}.mp3`          | admin  | serve generated audiobook chunks |
 | GET     | `/health`                     | open   | DB ping |
 
 ## Read more
@@ -65,6 +68,7 @@ All four services run as containers via `docker-compose.yml`. Ollama stays on th
 - **[docs/architecture.md](docs/architecture.md)** — sensitivity tiers, sync vs. async decision, routing engine, failure handling
 - **[docs/deployment.md](docs/deployment.md)** — container build, host-side vs. containerized dev, git SHA provenance, private overlays, ECS / Cloud Run targets, ngrok
 - **[docs/operations.md](docs/operations.md)** — live config, observability, common queries, tests, DoD
+- **[docs/tts.md](docs/tts.md)** — text-to-speech (Piper) for audiobook-style workloads
 - **[SPEC.md](SPEC.md)** — original design doc
 
 ## Project layout

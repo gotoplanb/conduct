@@ -45,10 +45,18 @@ services:
       REDIS_URL: redis://redis:6379/0
       OLLAMA_BASE_URL: http://host.docker.internal:11434
       OTEL_EXPORTER_OTLP_ENDPOINT: http://host.docker.internal:4317
+      TTS_VOICES_DIR: /app/voices
+      TTS_OUTPUT_DIR: /app/output
     extra_hosts:
       - "host.docker.internal:host-gateway"
     ports:
       - "8000:8000"
+    volumes:
+      # Voice files (read-only) and generated MP3s (read-write). Both kept on
+      # the host so they survive container recreates and can be rsync'd by
+      # other LAN machines without going through the API.
+      - ./voices:/app/voices:ro
+      - ./output:/app/output
     depends_on:
       postgres:
         condition: service_healthy
@@ -70,10 +78,15 @@ services:
       REDIS_URL: redis://redis:6379/0
       OLLAMA_BASE_URL: http://host.docker.internal:11434
       OTEL_EXPORTER_OTLP_ENDPOINT: http://host.docker.internal:4317
+      TTS_VOICES_DIR: /app/voices
+      TTS_OUTPUT_DIR: /app/output
     extra_hosts:
       - "host.docker.internal:host-gateway"
     ports:
       - "8001:8001"
+    volumes:
+      - ./voices:/app/voices:ro
+      - ./output:/app/output
     depends_on:
       postgres:
         condition: service_healthy

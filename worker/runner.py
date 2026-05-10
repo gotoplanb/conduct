@@ -77,6 +77,17 @@ async def _run_async(job_id: UUID) -> None:
             dispatch_span.set_attribute("job.sensitivity", job.sensitivity)
 
             client = await session.get(ClientApp, job.client_app_id)
+
+            # TTS jobs go through a completely separate executor — no routing,
+            # no provider fallback, no model swap. They write audio to disk
+            # and return a URL.
+            if job.task_type == "tts":
+                from tts.executor import execute_tts  # noqa: PLC0415
+
+                await execute_tts(job=job, client_name=client.name, session=session)
+                dispatch_span.set_attribute("dispatch.outcome", "tts_executed")
+                return
+
             rule = await session.scalar(
                 select(RoutingRule).where(RoutingRule.task_type == job.task_type)
             )

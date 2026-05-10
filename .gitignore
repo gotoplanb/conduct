@@ -41,4 +41,8 @@ prompts/clients/*
 !prompts/clients/.example/
 !prompts/clients/.example/**
 
+# TTS — voice files (downloaded once) and generated MP3 outputs
+voices/
+output/
+
 # Alembic — keep versions, ignore __pycache__ (handled above)

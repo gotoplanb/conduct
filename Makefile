@@ -18,6 +18,7 @@ help:
 	@echo "  make psql      — open psql against the dev database"
 	@echo "  make redis-cli — open redis-cli against the dev redis"
 	@echo "  make tunnel    — start the ngrok HTTPS tunnel"
+	@echo "  make download-voice [v=<voice-name>] — download a Piper TTS voice (default en_US-amy-medium)"
 
 install:
 	uv sync
@@ -73,3 +74,19 @@ redis-cli:
 
 tunnel:
 	ngrok http 8000
+
+# Download a Piper voice into ./voices. Override v=<voice-name> to grab a
+# different one. Browse https://huggingface.co/rhasspy/piper-voices for the
+# full catalog. The default en_US-amy-medium is ~25MB.
+v ?= en_US-amy-medium
+download-voice:
+	@mkdir -p voices
+	@LANG=$$(echo "$(v)" | cut -d_ -f1); \
+	REGION=$$(echo "$(v)" | cut -d_ -f2 | cut -d- -f1); \
+	NAME=$$(echo "$(v)" | cut -d- -f2); \
+	QUALITY=$$(echo "$(v)" | cut -d- -f3); \
+	BASE="https://huggingface.co/rhasspy/piper-voices/resolve/main/$$LANG/$${LANG}_$${REGION}/$$NAME/$${QUALITY}/$(v)"; \
+	echo "Downloading $(v) from $$BASE..."; \
+	curl -sSL "$$BASE.onnx" -o "voices/$(v).onnx" && \
+	curl -sSL "$$BASE.onnx.json" -o "voices/$(v).onnx.json" && \
+	echo "Done. Voice ready at voices/$(v).onnx"

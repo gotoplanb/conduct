@@ -30,6 +30,11 @@ ENV CONDUCT_GIT_SHA=$GIT_SHA \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
+# ffmpeg — needed by the TTS path to convert Piper's WAV output to MP3
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ffmpeg \
+ && rm -rf /var/lib/apt/lists/*
+
 RUN groupadd --system --gid 1001 conduct \
  && useradd --system --uid 1001 --gid conduct --no-create-home conduct
 

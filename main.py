@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 
 from lifespan import lifespan
-from routes import clients, health, jobs, metrics_json, metrics_prom
+from routes import clients, health, jobs, metrics_json, metrics_prom, tts
 from routes import eval as eval_route
 from routes import models as models_route
 from routes import routing as routing_route
@@ -21,3 +21,5 @@ app.include_router(routing_route.router)
 app.include_router(metrics_prom.router)
 app.include_router(metrics_json.router)
 app.include_router(eval_route.router)
+app.include_router(tts.tts_router)
+app.include_router(tts.output_router)

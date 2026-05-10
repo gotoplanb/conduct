@@ -40,6 +40,10 @@ prompts/clients/*
 !prompts/clients/.example
 !prompts/clients/.example/**
 
+# TTS — voice files and outputs are mounted as volumes, not baked
+voices/
+output/
+
 # Docs that don't belong in the image
 README.md
 SPEC.md
