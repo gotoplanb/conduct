@@ -47,9 +47,16 @@ def _redirect_to_login() -> RedirectResponse:
 async def admin_session(
     conduct_admin: str | None = Cookie(default=None),
 ) -> None:
-    """Cookie-based admin guard. Used as a dep on every authed UI route."""
+    """Cookie-based admin guard. Used as a dep on every authed UI route.
+
+    Raises a 303 instead of a 401 so browsers transparently bounce to the
+    login page rather than rendering a JSON error blob.
+    """
     if not _require_admin_cookie(conduct_admin):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="login required")
+        raise HTTPException(
+            status_code=status.HTTP_303_SEE_OTHER,
+            headers={"Location": "/ui/login"},
+        )
 
 
 def _humanize_age(dt: datetime) -> str:
@@ -69,8 +76,9 @@ def _humanize_age(dt: datetime) -> str:
 
 
 @router.get("", response_class=HTMLResponse)
-async def root_redirect() -> RedirectResponse:
-    return RedirectResponse(url="/ui/jobs", status_code=status.HTTP_303_SEE_OTHER)
+async def root_redirect(conduct_admin: str | None = Cookie(default=None)) -> RedirectResponse:
+    target = "/ui/jobs" if _require_admin_cookie(conduct_admin) else "/ui/login"
+    return RedirectResponse(url=target, status_code=status.HTTP_303_SEE_OTHER)
 
 
 @router.get("/login", response_class=HTMLResponse)
