@@ -76,6 +76,11 @@ omit = [
     "lifespan.py",
 ]
 branch = true
+# Write paths relative to the project root so the coverage.xml file is
+# portable between the host (where it's generated) and the scanner container
+# (where SonarQube reads it). Without this, the XML carries the absolute
+# host path and the in-container scanner can't match files.
+relative_files = true
 
 [tool.coverage.report]
 exclude_lines = [
