@@ -9,16 +9,17 @@ local network rsyncs from there and stitches chunks into a full audiobook.
 
 from __future__ import annotations
 
+import hmac
 import logging
 import re
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Cookie, Depends, HTTPException, status
 from fastapi.responses import FileResponse, JSONResponse
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from auth import admin_only
 from config.settings import get_settings
 from db.session import get_session
 from models.client import ClientApp
@@ -27,6 +28,24 @@ from models.types import JobStatus, Sensitivity
 from rate_limit import rate_limited_client
 from worker.queue import DEFAULT_JOB_TIMEOUT_S, get_queue
 from worker.runner import run_job
+
+_bearer = HTTPBearer(auto_error=False)
+
+
+async def _admin_via_bearer_or_cookie(
+    credentials: HTTPAuthorizationCredentials | None = Depends(_bearer),
+    conduct_admin: str | None = Cookie(default=None),
+) -> None:
+    """Admin gate that accepts either the standard Bearer header (for
+    CLI / sync agents) or the UI session cookie (for the audio player)."""
+    admin_key = get_settings().admin_key
+    if credentials and credentials.credentials and hmac.compare_digest(
+        credentials.credentials, admin_key
+    ):
+        return
+    if conduct_admin and hmac.compare_digest(conduct_admin, admin_key):
+        return
+    raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="admin auth required")
 
 log = logging.getLogger(__name__)
 
@@ -103,7 +122,7 @@ async def submit_tts(
     )
 
 
-@output_router.get("/{filename}", dependencies=[Depends(admin_only)])
+@output_router.get("/{filename}", dependencies=[Depends(_admin_via_bearer_or_cookie)])
 async def get_output(filename: str) -> FileResponse:
     """Serve a generated MP3. Admin-auth — these are private outputs."""
     if not _OUTPUT_FILENAME.match(filename):

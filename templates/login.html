@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% block title %}Sign in — Conduct{% endblock %}
+{% block content %}
+<div class="max-w-md mx-auto mt-24">
+  <h1 class="text-2xl font-semibold mb-2">Conduct</h1>
+  <p class="text-zinc-400 mb-6 text-sm">Admin sign-in. Use the value of <code class="text-zinc-300">CONDUCT_ADMIN_KEY</code>.</p>
+  {% if error %}
+  <div class="mb-4 rounded border border-red-700 bg-red-900/30 px-3 py-2 text-sm text-red-200">{{ error }}</div>
+  {% endif %}
+  <form action="/ui/login" method="post" class="space-y-4">
+    <div>
+      <label for="admin_key" class="block text-sm font-medium text-zinc-300 mb-1">Admin key</label>
+      <input type="password" name="admin_key" id="admin_key" required autofocus autocomplete="current-password"
+             class="w-full rounded-md bg-zinc-900 border border-zinc-700 px-3 py-2 text-sm text-zinc-100 focus:outline-none focus:border-zinc-500">
+    </div>
+    <button type="submit" class="w-full bg-zinc-100 text-zinc-900 font-medium rounded-md px-3 py-2 text-sm hover:bg-white transition">
+      Sign in
+    </button>
+  </form>
+</div>
+{% endblock %}

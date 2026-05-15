@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+{% block title %}Jobs — Conduct{% endblock %}
+{% block content %}
+<div x-data="{ task_type: '{{ task_type or '' }}', status: '{{ status or '' }}' }">
+  <div class="flex items-center justify-between mb-6">
+    <h1 class="text-2xl font-semibold">Jobs</h1>
+    <div class="text-sm text-zinc-400">Last 200 across all clients</div>
+  </div>
+
+  <form
+    hx-get="/ui/jobs/partial"
+    hx-target="#jobs-table"
+    hx-trigger="change from:select, keyup changed delay:300ms from:input[name=q]"
+    hx-include="this"
+    hx-swap="innerHTML"
+    class="flex flex-wrap gap-3 mb-4 items-end"
+  >
+    <div>
+      <label class="block text-xs uppercase text-zinc-500 mb-1">Task type</label>
+      <select name="task_type" x-model="task_type"
+              class="bg-zinc-900 border border-zinc-700 rounded-md px-3 py-1.5 text-sm">
+        <option value="">All</option>
+        {% for tt in task_types %}
+        <option value="{{ tt }}">{{ tt }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div>
+      <label class="block text-xs uppercase text-zinc-500 mb-1">Status</label>
+      <select name="status" x-model="status"
+              class="bg-zinc-900 border border-zinc-700 rounded-md px-3 py-1.5 text-sm">
+        <option value="">All</option>
+        <option value="pending">pending</option>
+        <option value="running">running</option>
+        <option value="complete">complete</option>
+        <option value="failed">failed</option>
+        <option value="cancelled">cancelled</option>
+      </select>
+    </div>
+    <div class="flex-1 min-w-[200px]">
+      <label class="block text-xs uppercase text-zinc-500 mb-1">Search prompt</label>
+      <input type="text" name="q" placeholder="substring match"
+             class="w-full bg-zinc-900 border border-zinc-700 rounded-md px-3 py-1.5 text-sm">
+    </div>
+    <div class="htmx-indicator text-sm text-zinc-500 self-end pb-1">filtering…</div>
+  </form>
+
+  <div id="jobs-table" class="rounded-lg border border-zinc-800 overflow-hidden">
+    {% include '_jobs_table.html' %}
+  </div>
+</div>
+{% endblock %}

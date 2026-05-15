@@ -1,0 +1,28 @@
+<table class="w-full text-sm">
+  <thead class="bg-zinc-900 text-xs uppercase text-zinc-400">
+    <tr>
+      <th class="text-left px-3 py-2">Model</th>
+      <th class="text-right px-3 py-2">Jobs</th>
+      <th class="text-right px-3 py-2">Failure %</th>
+      <th class="text-right px-3 py-2">Avg latency</th>
+      <th class="text-right px-3 py-2">Avg tokens out</th>
+      <th class="text-right px-3 py-2">Cost / job</th>
+      <th class="text-right px-3 py-2">Avg score</th>
+    </tr>
+  </thead>
+  <tbody class="divide-y divide-zinc-800">
+    {% for m in models %}
+    <tr>
+      <td class="px-3 py-2 font-mono text-xs text-zinc-200">{{ m.model }}</td>
+      <td class="px-3 py-2 text-right tabular-nums">{{ m.job_count }}</td>
+      <td class="px-3 py-2 text-right tabular-nums {% if m.failure_rate > 0.05 %}text-red-400{% endif %}">{{ '%.1f'|format(m.failure_rate * 100) }}%</td>
+      <td class="px-3 py-2 text-right tabular-nums">{% if m.avg_latency_ms %}{{ '%.0f'|format(m.avg_latency_ms) }} ms{% else %}—{% endif %}</td>
+      <td class="px-3 py-2 text-right tabular-nums">{% if m.avg_tokens_out %}{{ '%.0f'|format(m.avg_tokens_out) }}{% else %}—{% endif %}</td>
+      <td class="px-3 py-2 text-right tabular-nums">{% if m.cost_per_job_usd > 0 %}${{ '%.4f'|format(m.cost_per_job_usd) }}{% else %}—{% endif %}</td>
+      <td class="px-3 py-2 text-right tabular-nums">{% if m.avg_score is not none %}{{ '%.2f'|format(m.avg_score) }}<span class="text-zinc-500 text-xs"> (n={{ m.score_count }})</span>{% else %}—{% endif %}</td>
+    </tr>
+    {% else %}
+    <tr><td colspan="7" class="px-3 py-8 text-center text-zinc-500">No data for this task type in the window.</td></tr>
+    {% endfor %}
+  </tbody>
+</table>

@@ -1,0 +1,37 @@
+<table class="w-full text-sm">
+  <thead class="bg-zinc-900 text-xs uppercase text-zinc-400">
+    <tr>
+      <th class="text-left px-3 py-2">Created</th>
+      <th class="text-left px-3 py-2">Task</th>
+      <th class="text-left px-3 py-2">Status</th>
+      <th class="text-left px-3 py-2">Model</th>
+      <th class="text-left px-3 py-2">Client</th>
+      <th class="text-right px-3 py-2">Latency</th>
+      <th class="text-right px-3 py-2">Cost</th>
+    </tr>
+  </thead>
+  <tbody class="divide-y divide-zinc-800">
+    {% for j in jobs %}
+    <tr class="hover:bg-zinc-900/50 cursor-pointer" onclick="window.location='/ui/jobs/{{ j.id }}'">
+      <td class="px-3 py-2 text-zinc-400 whitespace-nowrap" title="{{ j.created_at }}">{{ j.created_rel }}</td>
+      <td class="px-3 py-2"><span class="font-mono text-zinc-200">{{ j.task_type }}</span></td>
+      <td class="px-3 py-2">
+        <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs
+          {% if j.status == 'complete' %}bg-emerald-900/40 text-emerald-300
+          {% elif j.status == 'failed' %}bg-red-900/40 text-red-300
+          {% elif j.status == 'running' %}bg-amber-900/40 text-amber-300
+          {% elif j.status == 'cancelled' %}bg-zinc-800 text-zinc-400
+          {% else %}bg-zinc-800 text-zinc-300{% endif %}">
+          {{ j.status }}
+        </span>
+      </td>
+      <td class="px-3 py-2 font-mono text-xs text-zinc-300">{{ j.model_used or '—' }}</td>
+      <td class="px-3 py-2 text-zinc-400">{{ j.client_name }}</td>
+      <td class="px-3 py-2 text-right tabular-nums text-zinc-300">{% if j.latency_ms %}{{ j.latency_ms }} ms{% else %}—{% endif %}</td>
+      <td class="px-3 py-2 text-right tabular-nums text-zinc-300">{% if j.cost_usd and j.cost_usd > 0 %}${{ '%.4f'|format(j.cost_usd) }}{% else %}—{% endif %}</td>
+    </tr>
+    {% else %}
+    <tr><td colspan="7" class="px-3 py-8 text-center text-zinc-500">No jobs match those filters.</td></tr>
+    {% endfor %}
+  </tbody>
+</table>

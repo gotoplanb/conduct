@@ -1,0 +1,102 @@
+{% extends "base.html" %}
+{% block title %}Job {{ job.id }} — Conduct{% endblock %}
+{% block content %}
+<div class="mb-6">
+  <a href="/ui/jobs" class="text-sm text-zinc-400 hover:text-zinc-100">← Back to jobs</a>
+</div>
+
+<div class="flex items-start justify-between mb-6">
+  <div>
+    <h1 class="text-xl font-mono text-zinc-200">{{ job.task_type }}</h1>
+    <p class="text-xs text-zinc-500 mt-1 font-mono">{{ job.id }}</p>
+  </div>
+  <span class="inline-flex items-center px-3 py-1 rounded-full text-sm
+    {% if job.status == 'complete' %}bg-emerald-900/40 text-emerald-300
+    {% elif job.status == 'failed' %}bg-red-900/40 text-red-300
+    {% elif job.status == 'running' %}bg-amber-900/40 text-amber-300
+    {% else %}bg-zinc-800 text-zinc-300{% endif %}">
+    {{ job.status }}
+  </span>
+</div>
+
+<dl class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+  <div><dt class="text-xs uppercase text-zinc-500">Model</dt><dd class="font-mono text-sm">{{ job.model_used or '—' }}</dd></div>
+  <div><dt class="text-xs uppercase text-zinc-500">Client</dt><dd class="text-sm">{{ client_name }}</dd></div>
+  <div><dt class="text-xs uppercase text-zinc-500">Sensitivity</dt><dd class="text-sm">{{ job.sensitivity }}</dd></div>
+  <div><dt class="text-xs uppercase text-zinc-500">Latency</dt><dd class="text-sm tabular-nums">{% if job.latency_ms %}{{ job.latency_ms }} ms{% else %}—{% endif %}</dd></div>
+  <div><dt class="text-xs uppercase text-zinc-500">Tokens in</dt><dd class="text-sm tabular-nums">{{ job.tokens_in or '—' }}</dd></div>
+  <div><dt class="text-xs uppercase text-zinc-500">Tokens out</dt><dd class="text-sm tabular-nums">{{ job.tokens_out or '—' }}</dd></div>
+  <div><dt class="text-xs uppercase text-zinc-500">Cost</dt><dd class="text-sm tabular-nums">{% if job.cost_usd and job.cost_usd > 0 %}${{ '%.4f'|format(job.cost_usd) }}{% else %}—{% endif %}</dd></div>
+  <div><dt class="text-xs uppercase text-zinc-500">Created</dt><dd class="text-sm">{{ job.created_at.strftime('%Y-%m-%d %H:%M:%S UTC') }}</dd></div>
+</dl>
+
+{% if job.error %}
+<div class="mb-6 rounded border border-red-700 bg-red-900/20 p-3">
+  <div class="text-xs uppercase text-red-400 mb-1">Error</div>
+  <pre class="text-sm text-red-100 whitespace-pre-wrap font-mono">{{ job.error }}</pre>
+</div>
+{% endif %}
+
+<section class="mb-6" x-data="{ open: false }">
+  <button @click="open = !open" class="w-full text-left flex items-center justify-between px-3 py-2 rounded-t-lg bg-zinc-900 border border-zinc-800">
+    <span class="text-sm font-medium">Prompt</span>
+    <span class="text-xs text-zinc-500" x-text="open ? '▾ hide' : '▸ show'"></span>
+  </button>
+  <div x-show="open" x-cloak class="border border-t-0 border-zinc-800 rounded-b-lg bg-zinc-900/50 p-3">
+    <pre class="text-sm whitespace-pre-wrap text-zinc-200">{{ job.prompt }}</pre>
+  </div>
+</section>
+
+{% if job.response %}
+<section class="mb-6">
+  <h2 class="text-sm font-medium mb-2 text-zinc-300">Response</h2>
+  <div class="rounded-lg bg-zinc-900/50 border border-zinc-800 p-3">
+    {% if job.task_type == 'tts' and job.response.startswith('/output/') %}
+      <audio controls class="w-full mb-2" src="{{ job.response }}?cookie_auth=1"></audio>
+      <a href="{{ job.response }}?cookie_auth=1" class="text-sm text-blue-400 hover:text-blue-300">{{ job.response }}</a>
+    {% else %}
+      <pre class="text-sm whitespace-pre-wrap text-zinc-200">{{ job.response }}</pre>
+    {% endif %}
+  </div>
+</section>
+{% endif %}
+
+{% if shadows %}
+<section class="mb-6">
+  <h2 class="text-sm font-medium mb-2 text-zinc-300">Shadows ({{ shadows|length }})</h2>
+  <div class="rounded-lg border border-zinc-800 overflow-hidden">
+    <table class="w-full text-sm">
+      <thead class="bg-zinc-900 text-xs uppercase text-zinc-400">
+        <tr><th class="text-left px-3 py-2">Model</th><th class="text-left px-3 py-2">Status</th><th class="text-right px-3 py-2">Latency</th><th class="text-right px-3 py-2">Cost</th></tr>
+      </thead>
+      <tbody class="divide-y divide-zinc-800">
+        {% for s in shadows %}
+        <tr>
+          <td class="px-3 py-2 font-mono text-xs">{{ s.model }}</td>
+          <td class="px-3 py-2"><span class="text-xs px-2 py-0.5 rounded-full
+            {% if s.status == 'complete' %}bg-emerald-900/40 text-emerald-300
+            {% elif s.status == 'failed' %}bg-red-900/40 text-red-300
+            {% else %}bg-zinc-800 text-zinc-300{% endif %}">{{ s.status }}</span></td>
+          <td class="px-3 py-2 text-right tabular-nums">{% if s.latency_ms %}{{ s.latency_ms }} ms{% else %}—{% endif %}</td>
+          <td class="px-3 py-2 text-right tabular-nums">{% if s.cost_usd and s.cost_usd > 0 %}${{ '%.4f'|format(s.cost_usd) }}{% else %}—{% endif %}</td>
+        </tr>
+        {% if s.response %}
+        <tr class="bg-zinc-900/30"><td colspan="4" class="px-3 py-2 text-xs"><pre class="whitespace-pre-wrap text-zinc-300">{{ s.response }}</pre></td></tr>
+        {% endif %}
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endif %}
+
+<section x-data="{ open: false }">
+  <button @click="open = !open" class="w-full text-left flex items-center justify-between px-3 py-2 rounded-t-lg bg-zinc-900 border border-zinc-800">
+    <span class="text-sm font-medium">Metadata</span>
+    <span class="text-xs text-zinc-500" x-text="open ? '▾ hide' : '▸ show'"></span>
+  </button>
+  <div x-show="open" x-cloak class="border border-t-0 border-zinc-800 rounded-b-lg bg-zinc-900/50 p-3">
+    <pre class="text-xs text-zinc-300 font-mono">{{ metadata_json }}</pre>
+  </div>
+</section>
+{% endblock %}

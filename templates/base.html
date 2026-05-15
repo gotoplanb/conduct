@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{% block title %}Conduct{% endblock %}</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/htmx.org@2.0.4" defer></script>
+  <script src="https://unpkg.com/alpinejs@3.14.8/dist/cdn.min.js" defer></script>
+  <style>
+    [x-cloak] { display: none !important; }
+    /* Make HTMX boost feel snappier */
+    .htmx-indicator { opacity: 0; transition: opacity 200ms ease-in; }
+    .htmx-request .htmx-indicator { opacity: 1; }
+  </style>
+</head>
+<body class="bg-zinc-950 text-zinc-100 min-h-screen font-sans antialiased">
+  {% if request.cookies.get('conduct_admin') %}
+  <nav class="border-b border-zinc-800 bg-zinc-900/50">
+    <div class="max-w-7xl mx-auto px-4 py-3 flex items-center justify-between">
+      <div class="flex items-center gap-6">
+        <a href="/ui/jobs" class="text-lg font-semibold tracking-tight">Conduct</a>
+        <a href="/ui/jobs" class="text-sm text-zinc-400 hover:text-zinc-100">Jobs</a>
+        <a href="/ui/eval" class="text-sm text-zinc-400 hover:text-zinc-100">Eval</a>
+      </div>
+      <form action="/ui/logout" method="post">
+        <button class="text-sm text-zinc-400 hover:text-zinc-100">Sign out</button>
+      </form>
+    </div>
+  </nav>
+  {% endif %}
+  <main class="max-w-7xl mx-auto px-4 py-6">
+    {% block content %}{% endblock %}
+  </main>
+</body>
+</html>

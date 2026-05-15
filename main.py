@@ -1,7 +1,8 @@
 from fastapi import FastAPI
+from fastapi.responses import RedirectResponse
 
 from lifespan import lifespan
-from routes import clients, health, jobs, metrics_json, metrics_prom, tts
+from routes import clients, health, jobs, metrics_json, metrics_prom, tts, ui
 from routes import eval as eval_route
 from routes import models as models_route
 from routes import routing as routing_route
@@ -23,3 +24,9 @@ app.include_router(metrics_json.router)
 app.include_router(eval_route.router)
 app.include_router(tts.tts_router)
 app.include_router(tts.output_router)
+app.include_router(ui.router)
+
+
+@app.get("/", include_in_schema=False)
+async def root() -> RedirectResponse:
+    return RedirectResponse(url="/ui/jobs")
