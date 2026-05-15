@@ -268,7 +268,7 @@ async def submit_job(
     return JobOut.from_job(job)
 
 
-@router.get("/{job_id}", response_model=JobOut)
+@router.get("/{job_id}")
 async def get_job(
     job_id: UUID,
     client: ClientApp = Depends(current_client),
@@ -280,7 +280,7 @@ async def get_job(
     return JobOut.from_job(job)
 
 
-@router.delete("/{job_id}", response_model=JobOut)
+@router.delete("/{job_id}")
 async def cancel_job(
     job_id: UUID,
     client: ClientApp = Depends(current_client),

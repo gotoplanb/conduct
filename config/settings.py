@@ -38,6 +38,10 @@ class Settings(BaseSettings):
     # specific job's trace. Set to empty to suppress the link.
     grafana_base_url: str = Field(default="http://localhost:3000", alias="GRAFANA_BASE_URL")
 
+    # Set to true when the UI is served over HTTPS so the admin session cookie
+    # carries the Secure flag. Local HTTP development leaves this false.
+    ui_cookie_secure: bool = Field(default=False, alias="UI_COOKIE_SECURE")
+
     @property
     def resident_models(self) -> list[str]:
         return [m.strip() for m in self.resident_models_raw.split(",") if m.strip()]

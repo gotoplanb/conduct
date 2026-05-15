@@ -35,6 +35,10 @@ from worker.db import get_worker_session_maker
 log = logging.getLogger(__name__)
 _tracer = get_tracer(__name__)
 
+# Span attribute key used at each early-return / completion point of the
+# shadow dispatch flow.
+_DISPATCH_OUTCOME = "dispatch.outcome"
+
 _providers: ProviderRegistry | None = None
 
 
@@ -124,13 +128,13 @@ async def _run_async(shadow_id: UUID) -> None:
             shadow = await session.get(JobShadow, shadow_id)
             if shadow is None:
                 log.warning("shadow runner dequeued non-existent shadow %s", shadow_id)
-                span.set_attribute("dispatch.outcome", "missing")
+                span.set_attribute(_DISPATCH_OUTCOME, "missing")
                 return
             if shadow.status != JobStatus.PENDING.value:
                 log.info(
                     "shadow runner skipping shadow %s with status=%s", shadow_id, shadow.status
                 )
-                span.set_attribute("dispatch.outcome", f"skip:{shadow.status}")
+                span.set_attribute(_DISPATCH_OUTCOME, f"skip:{shadow.status}")
                 return
 
             parent = await session.get(Job, shadow.parent_job_id)
@@ -138,7 +142,7 @@ async def _run_async(shadow_id: UUID) -> None:
                 shadow.status = JobStatus.FAILED.value
                 shadow.error = "parent job missing"
                 await session.commit()
-                span.set_attribute("dispatch.outcome", "parent_missing")
+                span.set_attribute(_DISPATCH_OUTCOME, "parent_missing")
                 return
 
             client = await session.get(ClientApp, parent.client_app_id)
@@ -163,7 +167,7 @@ async def _run_async(shadow_id: UUID) -> None:
                         shadow.status = JobStatus.FAILED.value
                         shadow.error = f"shadow model swap failed: {e!r}"
                         await session.commit()
-                        span.set_attribute("dispatch.outcome", "swap_failed")
+                        span.set_attribute(_DISPATCH_OUTCOME, "swap_failed")
                         return
 
             await execute_shadow(
@@ -174,7 +178,7 @@ async def _run_async(shadow_id: UUID) -> None:
                 providers=providers,
                 session=session,
             )
-            span.set_attribute("dispatch.outcome", "executed")
+            span.set_attribute(_DISPATCH_OUTCOME, "executed")
 
 
 # Re-export so RQ can find it as `eval.shadow_runner.run_shadow` and so callers

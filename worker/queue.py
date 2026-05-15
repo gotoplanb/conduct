@@ -9,7 +9,6 @@ quirks.
 from __future__ import annotations
 
 import logging
-import sys
 
 from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
 from prometheus_client import start_http_server as start_metrics_server
@@ -104,4 +103,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    main()

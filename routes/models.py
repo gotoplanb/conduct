@@ -43,7 +43,7 @@ def _ollama(providers: ProviderRegistry) -> OllamaProvider:
     return providers.get("ollama")  # type: ignore[return-value]
 
 
-@router.get("", response_model=ModelsOut)
+@router.get("")
 async def list_models(
     providers: ProviderRegistry = Depends(get_provider_registry),
 ) -> ModelsOut:

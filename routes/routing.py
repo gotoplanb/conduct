@@ -47,7 +47,7 @@ class RoutingListOut(BaseModel):
     rules: list[RoutingRuleOut]
 
 
-@router.get("", response_model=RoutingListOut)
+@router.get("")
 async def list_routing(session: AsyncSession = Depends(get_session)) -> RoutingListOut:
     rows = (await session.scalars(select(RoutingRule).order_by(RoutingRule.task_type))).all()
     return RoutingListOut(rules=[RoutingRuleOut.model_validate(r) for r in rows])

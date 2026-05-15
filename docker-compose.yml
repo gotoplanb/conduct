@@ -4,7 +4,7 @@ services:
     container_name: conduct-postgres
     environment:
       POSTGRES_USER: conduct
-      POSTGRES_PASSWORD: conduct
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
       POSTGRES_DB: conduct
     ports:
       - "5432:5432"
@@ -41,7 +41,7 @@ services:
     command: ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
     env_file: .env
     environment:
-      DATABASE_URL: postgresql+asyncpg://conduct:conduct@postgres:5432/conduct
+      DATABASE_URL: postgresql+asyncpg://conduct:${POSTGRES_PASSWORD}@postgres:5432/conduct
       REDIS_URL: redis://redis:6379/0
       OLLAMA_BASE_URL: http://host.docker.internal:11434
       OTEL_EXPORTER_OTLP_ENDPOINT: http://host.docker.internal:4317
@@ -74,7 +74,7 @@ services:
     command: ["python", "-m", "worker.queue"]
     env_file: .env
     environment:
-      DATABASE_URL: postgresql+asyncpg://conduct:conduct@postgres:5432/conduct
+      DATABASE_URL: postgresql+asyncpg://conduct:${POSTGRES_PASSWORD}@postgres:5432/conduct
       REDIS_URL: redis://redis:6379/0
       OLLAMA_BASE_URL: http://host.docker.internal:11434
       OTEL_EXPORTER_OTLP_ENDPOINT: http://host.docker.internal:4317

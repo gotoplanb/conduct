@@ -68,7 +68,7 @@ class UsageOut(BaseModel):
     by_day: list[DayUsage]
 
 
-@router.post("", response_model=ClientCreateOut, status_code=status.HTTP_201_CREATED)
+@router.post("", status_code=status.HTTP_201_CREATED)
 async def create_client(
     body: ClientCreateIn, session: AsyncSession = Depends(get_session)
 ) -> ClientCreateOut:
@@ -117,7 +117,7 @@ async def patch_client(
     return client
 
 
-@router.get("/{client_id}/usage", response_model=UsageOut)
+@router.get("/{client_id}/usage")
 async def client_usage(
     client_id: UUID,
     days: int = Query(default=30, ge=1, le=365),

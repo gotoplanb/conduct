@@ -40,7 +40,7 @@ class MetricsOut(BaseModel):
     jobs_by_task_type: dict[str, TaskTypeStats]
 
 
-@router.get("/metrics", response_model=MetricsOut)
+@router.get("/metrics")
 async def metrics(
     days: int = Query(default=30, ge=1, le=365),
     client_app_id: UUID | None = None,

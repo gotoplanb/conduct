@@ -30,6 +30,8 @@ from models.shadow import JobShadow
 from routes.eval import _aggregate_metadata_scores
 
 ADMIN_COOKIE = "conduct_admin"
+LOGIN_PATH = "/ui/login"
+JOBS_PATH = "/ui/jobs"
 templates = Jinja2Templates(directory=str(Path(__file__).resolve().parent.parent / "templates"))
 
 router = APIRouter(prefix="/ui", tags=["ui"], include_in_schema=False)
@@ -42,7 +44,7 @@ def _require_admin_cookie(value: str | None) -> bool:
 
 
 def _redirect_to_login() -> RedirectResponse:
-    return RedirectResponse(url="/ui/login", status_code=status.HTTP_303_SEE_OTHER)
+    return RedirectResponse(url=LOGIN_PATH, status_code=status.HTTP_303_SEE_OTHER)
 
 
 async def admin_session(
@@ -56,7 +58,7 @@ async def admin_session(
     if not _require_admin_cookie(conduct_admin):
         raise HTTPException(
             status_code=status.HTTP_303_SEE_OTHER,
-            headers={"Location": "/ui/login"},
+            headers={"Location": LOGIN_PATH},
         )
 
 
@@ -112,7 +114,7 @@ def _humanize_age(dt: datetime) -> str:
 
 @router.get("", response_class=HTMLResponse)
 async def root_redirect(conduct_admin: str | None = Cookie(default=None)) -> RedirectResponse:
-    target = "/ui/jobs" if _require_admin_cookie(conduct_admin) else "/ui/login"
+    target = JOBS_PATH if _require_admin_cookie(conduct_admin) else LOGIN_PATH
     return RedirectResponse(url=target, status_code=status.HTTP_303_SEE_OTHER)
 
 
@@ -130,12 +132,16 @@ async def login(request: Request, admin_key: str = Form(...)) -> HTMLResponse | 
             {"error": "Invalid admin key."},
             status_code=status.HTTP_401_UNAUTHORIZED,
         )
-    resp = RedirectResponse(url="/ui/jobs", status_code=status.HTTP_303_SEE_OTHER)
-    # Local-network tool; httponly is enough. secure=False because we're HTTP.
+    resp = RedirectResponse(url=JOBS_PATH, status_code=status.HTTP_303_SEE_OTHER)
+    # Cookie is HttpOnly to keep it out of JS; `secure` is opt-in via env
+    # (UI_COOKIE_SECURE=true) since local dev is HTTP. Set it to true once
+    # you're behind HTTPS (ngrok / reverse proxy) — otherwise the cookie
+    # silently won't be sent on the HTTPS leg.
     resp.set_cookie(
         key=ADMIN_COOKIE,
         value=admin_key,
         httponly=True,
+        secure=get_settings().ui_cookie_secure,
         samesite="lax",
         max_age=60 * 60 * 24 * 7,  # one week
     )
@@ -144,7 +150,7 @@ async def login(request: Request, admin_key: str = Form(...)) -> HTMLResponse | 
 
 @router.post("/logout")
 async def logout() -> RedirectResponse:
-    resp = RedirectResponse(url="/ui/login", status_code=status.HTTP_303_SEE_OTHER)
+    resp = RedirectResponse(url=LOGIN_PATH, status_code=status.HTTP_303_SEE_OTHER)
     resp.delete_cookie(ADMIN_COOKIE)
     return resp
 

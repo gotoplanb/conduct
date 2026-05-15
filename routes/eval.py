@@ -66,7 +66,7 @@ def _aggregate_metadata_scores(
     return avgs, dict(counts)
 
 
-@router.get("/compare", response_model=CompareOut)
+@router.get("/compare")
 async def compare(
     task_type: str = Query(..., min_length=1),
     days: int = Query(default=30, ge=1, le=365),
@@ -269,7 +269,7 @@ class ReviewOut(BaseModel):
     items: list[ReviewItem]
 
 
-@router.get("/review", response_model=ReviewOut)
+@router.get("/review")
 async def review_queue(
     task_type: str | None = Query(default=None),
     limit: int = Query(default=20, ge=1, le=100),

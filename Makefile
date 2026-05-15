@@ -19,6 +19,7 @@ help:
 	@echo "  make redis-cli — open redis-cli against the dev redis"
 	@echo "  make tunnel    — start the ngrok HTTPS tunnel"
 	@echo "  make download-voice [v=<voice-name>] — download a Piper TTS voice (default en_US-amy-medium)"
+	@echo "  make sonar-scan — run SonarQube static analysis (results at http://localhost:9000/dashboard?id=conduct)"
 
 install:
 	uv sync
@@ -74,6 +75,19 @@ redis-cli:
 
 tunnel:
 	ngrok http 8000
+
+# Run SonarQube static analysis against the local watchtower instance.
+# Reads SONAR_TOKEN from .env. Results appear at http://localhost:9000/dashboard?id=conduct
+sonar-scan:
+	@if [ -z "$$SONAR_TOKEN" ] && ! grep -q '^SONAR_TOKEN=' .env 2>/dev/null; then \
+		echo "Set SONAR_TOKEN in .env (generate at http://localhost:9000)"; exit 1; \
+	fi
+	@set -a; . ./.env; set +a; \
+	docker run --rm \
+		-e SONAR_HOST_URL=http://host.docker.internal:9000 \
+		-e SONAR_TOKEN=$$SONAR_TOKEN \
+		-v "$$(pwd):/usr/src" \
+		sonarsource/sonar-scanner-cli:latest
 
 # Download a Piper voice into ./voices. Override v=<voice-name> to grab a
 # different one. Browse https://huggingface.co/rhasspy/piper-voices for the
