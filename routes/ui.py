@@ -12,6 +12,7 @@ import json
 from collections import defaultdict
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from urllib.parse import quote
 from uuid import UUID
 
 from fastapi import APIRouter, Cookie, Depends, Form, HTTPException, Query, Request, status
@@ -57,6 +58,40 @@ async def admin_session(
             status_code=status.HTTP_303_SEE_OTHER,
             headers={"Location": "/ui/login"},
         )
+
+
+def _grafana_trace_url(job: Job) -> str | None:
+    """Build a Grafana Explore URL pre-loaded with a TraceQL query for this
+    job's spans. Time range is bracketed around the job's actual run window
+    so Tempo's lookup is fast even on busy days. Returns None when Grafana
+    isn't configured."""
+    base = get_settings().grafana_base_url.rstrip("/")
+    if not base:
+        return None
+
+    # Pad ±60s around the job. created_at always exists; completed_at may
+    # not (for still-running or never-started jobs) — fall back to "now".
+    created = job.created_at
+    if created.tzinfo is None:
+        created = created.replace(tzinfo=UTC)
+    completed = job.completed_at or datetime.now(UTC)
+    if completed.tzinfo is None:
+        completed = completed.replace(tzinfo=UTC)
+    from_ms = int((created - timedelta(seconds=60)).timestamp() * 1000)
+    to_ms = int((completed + timedelta(seconds=60)).timestamp() * 1000)
+
+    explore = {
+        "datasource": "Tempo",
+        "queries": [
+            {
+                "refId": "A",
+                "queryType": "traceql",
+                "query": f'{{.job.id="{job.id}"}}',
+            }
+        ],
+        "range": {"from": str(from_ms), "to": str(to_ms)},
+    }
+    return f"{base}/explore?orgId=1&left={quote(json.dumps(explore))}"
 
 
 def _humanize_age(dt: datetime) -> str:
@@ -230,6 +265,7 @@ async def job_detail(
                 for s in shadows
             ],
             "metadata_json": json.dumps(job.job_metadata or {}, indent=2, default=str),
+            "grafana_trace_url": _grafana_trace_url(job),
         },
     )
 

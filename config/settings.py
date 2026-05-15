@@ -34,6 +34,10 @@ class Settings(BaseSettings):
     otel_endpoint: str = Field(default="http://localhost:4317", alias="OTEL_EXPORTER_OTLP_ENDPOINT")
     otel_service_name: str = Field(default="conduct", alias="OTEL_SERVICE_NAME")
 
+    # Grafana base URL used by the UI to build deep-links into Tempo for a
+    # specific job's trace. Set to empty to suppress the link.
+    grafana_base_url: str = Field(default="http://localhost:3000", alias="GRAFANA_BASE_URL")
+
     @property
     def resident_models(self) -> list[str]:
         return [m.strip() for m in self.resident_models_raw.split(",") if m.strip()]

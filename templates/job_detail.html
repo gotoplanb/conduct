@@ -10,13 +10,25 @@
     <h1 class="text-xl font-mono text-zinc-200">{{ job.task_type }}</h1>
     <p class="text-xs text-zinc-500 mt-1 font-mono">{{ job.id }}</p>
   </div>
-  <span class="inline-flex items-center px-3 py-1 rounded-full text-sm
-    {% if job.status == 'complete' %}bg-emerald-900/40 text-emerald-300
-    {% elif job.status == 'failed' %}bg-red-900/40 text-red-300
-    {% elif job.status == 'running' %}bg-amber-900/40 text-amber-300
-    {% else %}bg-zinc-800 text-zinc-300{% endif %}">
-    {{ job.status }}
-  </span>
+  <div class="flex items-center gap-3">
+    {% if grafana_trace_url %}
+    <a href="{{ grafana_trace_url }}" target="_blank" rel="noopener"
+       class="inline-flex items-center gap-1.5 px-3 py-1 rounded-md bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 text-xs text-zinc-200 transition"
+       title="Open this job's trace in Grafana">
+      <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" d="M14 5l7 7m0 0l-7 7m7-7H3"/>
+      </svg>
+      View trace
+    </a>
+    {% endif %}
+    <span class="inline-flex items-center px-3 py-1 rounded-full text-sm
+      {% if job.status == 'complete' %}bg-emerald-900/40 text-emerald-300
+      {% elif job.status == 'failed' %}bg-red-900/40 text-red-300
+      {% elif job.status == 'running' %}bg-amber-900/40 text-amber-300
+      {% else %}bg-zinc-800 text-zinc-300{% endif %}">
+      {{ job.status }}
+    </span>
+  </div>
 </div>
 
 <dl class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
