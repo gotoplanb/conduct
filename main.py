@@ -1,5 +1,8 @@
+from pathlib import Path
+
 from fastapi import FastAPI
 from fastapi.responses import RedirectResponse
+from fastapi.staticfiles import StaticFiles
 
 from lifespan import lifespan
 from routes import clients, health, jobs, metrics_json, metrics_prom, tts, ui
@@ -13,6 +16,10 @@ app = FastAPI(
     version="0.1.0",
     lifespan=lifespan,
 )
+
+# Static assets — favicons, mascot image, anything else the UI references.
+_static_dir = Path(__file__).resolve().parent / "static"
+app.mount("/static", StaticFiles(directory=str(_static_dir)), name="static")
 
 app.include_router(health.router)
 app.include_router(clients.router)
