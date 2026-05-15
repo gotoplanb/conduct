@@ -1,94 +1,86 @@
-"""Prompt resolution: walk client override → shared, capture git lineage.
+"""Prompt resolution against the Postgres-backed `prompts` table.
 
-Reads from disk on every resolve so prompt edits hot-reload without restart.
-The git-hash subprocess is cached briefly to avoid forking per request.
+A job picks a prompt via two lookups:
+  1. Per-client override: (task_type=T, client_id=C)
+  2. Shared default:      (task_type=T, client_id IS NULL)
+
+On every save (via `PUT /prompts/...`), a row is appended to
+`prompt_versions`. Each job records the version id it resolved to, so the
+trace from job → exact prompt content survives even after subsequent edits.
 """
 
 from __future__ import annotations
 
-import os
-import subprocess
-import time
 from dataclasses import dataclass
-from pathlib import Path
 
-DEFAULT_PROMPTS_DIR = Path(__file__).parent / "prompts"
-DEFAULT_HASH_TTL_S = 5.0
-BUILD_SHA_ENV = "CONDUCT_GIT_SHA"
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from models.client import ClientApp
+from models.prompt import Prompt, PromptVersion
 
 
 class PromptNotFoundError(Exception):
-    pass
+    """No row found for the requested (task_type, client) combination."""
 
 
 @dataclass(frozen=True)
 class ResolvedPrompt:
     content: str
-    path: str  # repo-relative, e.g. "prompts/shared/bio_generation.md"
-    git_hash: str | None  # commit SHA of last commit touching this file, or None
+    version_id: int | None  # PromptVersion.id of the most recent save
+    source: str  # human-readable: "client:<name>:<task>" or "shared:<task>"
 
 
-class PromptResolver:
-    def __init__(
-        self,
-        base_dir: Path = DEFAULT_PROMPTS_DIR,
-        hash_ttl_s: float = DEFAULT_HASH_TTL_S,
-    ) -> None:
-        self.base_dir = base_dir
-        self.repo_root = base_dir.parent
-        self.hash_ttl_s = hash_ttl_s
-        self._hash_cache: dict[str, tuple[float, str | None]] = {}
+async def resolve_prompt(
+    session: AsyncSession, task_type: str, client_name: str | None = None
+) -> ResolvedPrompt:
+    """Find the prompt for this task_type, preferring a per-client override
+    when one exists. Raises PromptNotFoundError if neither path matches."""
 
-    def resolve(self, task_type: str, client_name: str | None = None) -> ResolvedPrompt:
-        candidates: list[Path] = []
-        if client_name:
-            candidates.append(self.base_dir / "clients" / client_name / f"{task_type}.md")
-        candidates.append(self.base_dir / "shared" / f"{task_type}.md")
-        for path in candidates:
-            if path.is_file():
-                rel = str(path.relative_to(self.repo_root))
-                return ResolvedPrompt(
-                    content=path.read_text(encoding="utf-8"),
-                    path=rel,
-                    git_hash=self._git_hash(rel),
+    # 1. Client override (if a client was named).
+    if client_name:
+        client = await session.scalar(select(ClientApp).where(ClientApp.name == client_name))
+        if client is not None:
+            row = await session.scalar(
+                select(Prompt).where(
+                    Prompt.task_type == task_type, Prompt.client_id == client.id
                 )
-        raise PromptNotFoundError(
-            f"no prompt found for task_type={task_type!r}, client={client_name!r}"
-        )
-
-    def _git_hash(self, rel_path: str) -> str | None:
-        now = time.monotonic()
-        cached = self._hash_cache.get(rel_path)
-        if cached and now - cached[0] < self.hash_ttl_s:
-            return cached[1]
-        try:
-            result = subprocess.run(
-                ["git", "log", "-1", "--format=%H", "--", rel_path],
-                capture_output=True,
-                text=True,
-                cwd=self.repo_root,
-                check=False,
-                timeout=2.0,
             )
-            sha = result.stdout.strip() if result.returncode == 0 else ""
-            value = sha or None
-        except (subprocess.SubprocessError, OSError):
-            value = None
-        # Container fallback: .git is excluded from the image, so the git CLI
-        # returns nothing. Use the SHA baked in at image-build time so jobs
-        # still record which prompt revision they ran against.
-        if value is None:
-            env_sha = os.environ.get(BUILD_SHA_ENV, "").strip()
-            value = env_sha or None
-        self._hash_cache[rel_path] = (now, value)
-        return value
+            if row is not None:
+                version_id = await _latest_version_id(
+                    session, task_type=task_type, client_id=client.id
+                )
+                return ResolvedPrompt(
+                    content=row.content,
+                    version_id=version_id,
+                    source=f"client:{client_name}:{task_type}",
+                )
+
+    # 2. Shared default.
+    row = await session.scalar(
+        select(Prompt).where(Prompt.task_type == task_type, Prompt.client_id.is_(None))
+    )
+    if row is None:
+        raise PromptNotFoundError(
+            f"no prompt found for task_type={task_type!r} (client={client_name!r})"
+        )
+    version_id = await _latest_version_id(session, task_type=task_type, client_id=None)
+    return ResolvedPrompt(
+        content=row.content,
+        version_id=version_id,
+        source=f"shared:{task_type}",
+    )
 
 
-_resolver: PromptResolver | None = None
-
-
-def get_prompt_resolver() -> PromptResolver:
-    global _resolver
-    if _resolver is None:
-        _resolver = PromptResolver()
-    return _resolver
+async def _latest_version_id(
+    session: AsyncSession, *, task_type: str, client_id
+) -> int | None:
+    """Return the most recent PromptVersion.id matching the given key. May be
+    None on freshly-imported prompts that never went through a save flow."""
+    stmt = select(PromptVersion.id).where(PromptVersion.task_type == task_type)
+    if client_id is None:
+        stmt = stmt.where(PromptVersion.client_id.is_(None))
+    else:
+        stmt = stmt.where(PromptVersion.client_id == client_id)
+    stmt = stmt.order_by(PromptVersion.edited_at.desc()).limit(1)
+    return await session.scalar(stmt)

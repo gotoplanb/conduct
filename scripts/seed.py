@@ -1,11 +1,16 @@
-"""Idempotent bootstrap: seeds client apps and routing rules from yaml configs.
+"""Idempotent bootstrap: seeds client apps, routing rules, and prompts.
 
 Reads:
   - config/seed.clients.yaml    (gitignored; copy from .example.yaml)
   - config/seed.routing.yaml    (committed defaults)
+  - prompts/shared/*.md         (committed defaults — imported as shared prompts)
+  - prompts/clients/<name>/*.md (gitignored or symlinked — imported as
+                                 per-client overrides; <name> must match a
+                                 seeded ClientApp.name)
 
-Both files are optional. Re-running is safe — existing rows are left untouched.
-Routing rules are editable live via `PUT /routing/{task_type}` after seeding.
+All steps are idempotent. Re-running is safe — existing rows are left untouched.
+After seeding, routing rules edit via `PUT /routing/{task_type}` and prompts via
+`PUT /prompts/{task_type}` (or the `conduct prompts edit` CLI).
 """
 
 import asyncio
@@ -19,12 +24,14 @@ from sqlalchemy import select
 from auth import generate_api_key, hash_api_key
 from db.session import SessionLocal, engine
 from models.client import ClientApp
+from models.prompt import Prompt, PromptVersion
 from models.routing import RoutingRule
 from models.types import Sensitivity
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 CLIENTS_PATH = REPO_ROOT / "config" / "seed.clients.yaml"
 ROUTING_PATH = REPO_ROOT / "config" / "seed.routing.yaml"
+PROMPTS_DIR = REPO_ROOT / "prompts"
 
 
 def _load_yaml(path: Path) -> dict[str, Any]:
@@ -84,11 +91,103 @@ async def _seed_routing(session, specs: list[dict]) -> tuple[list[str], list[str
     return created, skipped
 
 
+async def _seed_prompts(session) -> tuple[list[str], list[str], list[str]]:
+    """Import `.md` files from prompts/shared and prompts/clients/<name>.
+
+    File path → (task_type, client_id) mapping:
+      prompts/shared/<task>.md            → (task=task, client_id=NULL)
+      prompts/clients/<name>/<task>.md    → (task=task, client_id=<name>'s id)
+
+    Idempotent: a row that already exists is left alone. Newly-imported
+    rows get a companion `prompt_versions` entry tagged `seed` so the
+    audit log starts from a known point. Returns (created, skipped,
+    warnings) — `warnings` covers per-client folders with no matching
+    ClientApp row.
+    """
+    created: list[str] = []
+    skipped: list[str] = []
+    warnings: list[str] = []
+
+    if not PROMPTS_DIR.is_dir():
+        return created, skipped, warnings
+
+    # Treat README.md (and dotfiles) as docs, not prompts.
+    def _is_prompt_file(path: Path) -> bool:
+        return path.suffix == ".md" and path.name != "README.md" and not path.name.startswith(".")
+
+    # Shared defaults: prompts/shared/<task>.md → client_id=NULL.
+    shared_dir = PROMPTS_DIR / "shared"
+    if shared_dir.is_dir():
+        for f in sorted(p for p in shared_dir.iterdir() if _is_prompt_file(p)):
+            tt = f.stem
+            existing = await session.scalar(
+                select(Prompt).where(Prompt.task_type == tt, Prompt.client_id.is_(None))
+            )
+            if existing is not None:
+                skipped.append(f"shared:{tt}")
+                continue
+            content = f.read_text(encoding="utf-8")
+            session.add(Prompt(task_type=tt, client_id=None, content=content, updated_by="seed"))
+            session.add(
+                PromptVersion(task_type=tt, client_id=None, content=content, edited_by="seed")
+            )
+            created.append(f"shared:{tt}")
+
+    # Per-client overrides: prompts/clients/<name>/<task>.md.
+    clients_root = PROMPTS_DIR / "clients"
+    if clients_root.is_dir():
+        for client_dir in sorted(
+            p for p in clients_root.iterdir() if p.is_dir() and not p.name.startswith(".")
+        ):
+            client_name = client_dir.name
+            client = await session.scalar(
+                select(ClientApp).where(ClientApp.name == client_name)
+            )
+            if client is None:
+                warnings.append(
+                    f"prompts/clients/{client_name}/ has no matching ClientApp — skipped"
+                )
+                continue
+            for f in sorted(p for p in client_dir.iterdir() if _is_prompt_file(p)):
+                tt = f.stem
+                existing = await session.scalar(
+                    select(Prompt).where(
+                        Prompt.task_type == tt, Prompt.client_id == client.id
+                    )
+                )
+                if existing is not None:
+                    skipped.append(f"{client_name}:{tt}")
+                    continue
+                content = f.read_text(encoding="utf-8")
+                session.add(
+                    Prompt(
+                        task_type=tt,
+                        client_id=client.id,
+                        content=content,
+                        updated_by="seed",
+                    )
+                )
+                session.add(
+                    PromptVersion(
+                        task_type=tt,
+                        client_id=client.id,
+                        content=content,
+                        edited_by="seed",
+                    )
+                )
+                created.append(f"{client_name}:{tt}")
+
+    return created, skipped, warnings
+
+
 def _report(
     created_clients: list[tuple[str, str]],
     skipped_clients: list[str],
     created_rules: list[str],
     skipped_rules: list[str],
+    created_prompts: list[str],
+    skipped_prompts: list[str],
+    prompt_warnings: list[str],
 ) -> None:
     if skipped_clients:
         print(
@@ -100,13 +199,22 @@ def _report(
             f"routing rules already present (skipped): {', '.join(skipped_rules)}",
             file=sys.stderr,
         )
+    if skipped_prompts:
+        print(
+            f"prompts already present (skipped): {', '.join(skipped_prompts)}",
+            file=sys.stderr,
+        )
+    for w in prompt_warnings:
+        print(f"warning: {w}", file=sys.stderr)
     if created_rules:
         print(f"\nCreated {len(created_rules)} routing rules: {', '.join(created_rules)}")
+    if created_prompts:
+        print(f"\nCreated {len(created_prompts)} prompts: {', '.join(created_prompts)}")
     if created_clients:
         print("\nCreated clients — store these keys somewhere safe, they will not be shown again:")
         for name, key in created_clients:
             print(f"  {name}: {key}")
-    if not (created_rules or created_clients):
+    if not (created_rules or created_clients or created_prompts):
         print("nothing new to create.", file=sys.stderr)
 
 
@@ -128,11 +236,23 @@ async def seed() -> int:
         async with SessionLocal() as session:
             created_clients, skipped_clients = await _seed_clients(session, seed_clients)
             created_rules, skipped_rules = await _seed_routing(session, seed_routing)
+            # Clients must be visible to the prompt-importer (it joins by name),
+            # so flush before scanning prompts/clients/<name>/.
+            await session.flush()
+            created_prompts, skipped_prompts, prompt_warnings = await _seed_prompts(session)
             await session.commit()
     finally:
         await engine.dispose()
 
-    _report(created_clients, skipped_clients, created_rules, skipped_rules)
+    _report(
+        created_clients,
+        skipped_clients,
+        created_rules,
+        skipped_rules,
+        created_prompts,
+        skipped_prompts,
+        prompt_warnings,
+    )
     return 0
 
 

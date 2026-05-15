@@ -29,6 +29,21 @@ dependencies = [
     "python-multipart>=0.0.20",
 ]
 
+[project.scripts]
+conduct = "scripts.cli:main"
+
+[build-system]
+# Hatchling is the lightest backend that lets `[project.scripts]` resolve.
+# The "force-include" map below keeps the existing top-level layout (no
+# `src/` move) by telling hatch which directories belong in the wheel.
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+# We're an app, not a published library — just enough modules to make the
+# `conduct` console script importable.
+packages = ["scripts"]
+
 [dependency-groups]
 dev = [
     "pytest>=8.3",

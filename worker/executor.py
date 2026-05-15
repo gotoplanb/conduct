@@ -24,7 +24,7 @@ from models.job import Job
 from models.types import JobStatus
 from observability.metrics import record_fallback, record_job_completion
 from observability.tracing import get_tracer
-from prompt_loader import PromptResolver, get_prompt_resolver
+from prompt_loader import ResolvedPrompt, resolve_prompt
 from providers.base import BaseProvider, ProviderError, ProviderResponse
 from providers.registry import ProviderRegistry
 from retry.base import FailureContext, FailureHandler, HandlerAction
@@ -74,15 +74,19 @@ async def _call_provider(
         return response
 
 
-async def _resolve_prompt(
-    job: Job, client_name: str, resolver: PromptResolver
-) -> tuple[str, str | None, str | None]:
-    """Pick the resolved prompt content, repo-relative path, and git hash.
-    A non-empty job.system_prompt overrides the library."""
+async def _resolve_prompt_for_job(
+    job: Job, client_name: str, session: AsyncSession
+) -> tuple[str, ResolvedPrompt | None]:
+    """Pick the prompt content for this job. A non-empty job.system_prompt
+    overrides the library (no DB lookup, no version capture).
+
+    Returns (content, resolved) — `resolved` is None when system_prompt was
+    used so callers can branch on "came from request override" vs "came
+    from the prompts table"."""
     if job.system_prompt:
-        return job.system_prompt, None, None
-    resolved = resolver.resolve(job.task_type, client_name=client_name)
-    return resolved.content, resolved.path, resolved.git_hash
+        return job.system_prompt, None
+    resolved = await resolve_prompt(session, job.task_type, client_name=client_name)
+    return resolved.content, resolved
 
 
 async def _try_fallback(
@@ -147,7 +151,6 @@ async def execute_job(
     client_name: str,
     providers: ProviderRegistry,
     session: AsyncSession,
-    prompt_resolver: PromptResolver | None = None,
     failure_handler: FailureHandler | None = None,
 ) -> Job:
     handler = failure_handler or _default_failure_handler
@@ -161,10 +164,7 @@ async def execute_job(
         job_span.set_attribute("routing.reason", decision.reason)
 
         started = perf_counter()
-        resolver = prompt_resolver or get_prompt_resolver()
-        system_prompt, prompt_path, prompt_hash = await _resolve_prompt(
-            job, client_name, resolver
-        )
+        system_prompt, resolved = await _resolve_prompt_for_job(job, client_name, session)
 
         job.status = JobStatus.RUNNING.value
         job.started_at = datetime.now(UTC)
@@ -210,11 +210,14 @@ async def execute_job(
                 "effective_sensitivity": decision.effective_sensitivity.value,
                 "used_fallback": used_fallback,
             },
-            "prompt": {
-                "source": "request_override" if job.system_prompt else "library",
-                "path": prompt_path,
-                "git_hash": prompt_hash,
-            },
+            "prompt": (
+                {"source": "request_override", "version_id": None}
+                if resolved is None
+                else {
+                    "source": resolved.source,
+                    "version_id": resolved.version_id,
+                }
+            ),
         }
 
         if response is not None:

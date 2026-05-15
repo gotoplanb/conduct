@@ -21,7 +21,7 @@ from models.job import Job
 from models.shadow import JobShadow
 from models.types import JobStatus
 from observability.tracing import get_tracer
-from prompt_loader import PromptResolver, get_prompt_resolver
+from prompt_loader import resolve_prompt
 from providers.base import ProviderError
 from providers.registry import ProviderRegistry
 
@@ -36,7 +36,6 @@ async def execute_shadow(
     max_tokens: int,
     providers: ProviderRegistry,
     session: AsyncSession,
-    prompt_resolver: PromptResolver | None = None,
 ) -> JobShadow:
     """Run a shadow job to completion, persist the result, return the row."""
 
@@ -48,17 +47,12 @@ async def execute_shadow(
         span.set_attribute("job.task_type", parent.task_type)
         span.set_attribute("job.client_app", client_name)
 
-        resolver = prompt_resolver or get_prompt_resolver()
-
         if parent.system_prompt:
             system_prompt = parent.system_prompt
-            prompt_path: str | None = None
-            prompt_hash: str | None = None
+            resolved = None
         else:
-            resolved = resolver.resolve(parent.task_type, client_name=client_name)
+            resolved = await resolve_prompt(session, parent.task_type, client_name=client_name)
             system_prompt = resolved.content
-            prompt_path = resolved.path
-            prompt_hash = resolved.git_hash
 
         shadow.status = JobStatus.RUNNING.value
         shadow.started_at = datetime.now(UTC)
@@ -88,11 +82,11 @@ async def execute_shadow(
         shadow.completed_at = datetime.now(UTC)
         shadow.shadow_metadata = {
             **(shadow.shadow_metadata or {}),
-            "prompt": {
-                "source": "request_override" if parent.system_prompt else "library",
-                "path": prompt_path,
-                "git_hash": prompt_hash,
-            },
+            "prompt": (
+                {"source": "request_override", "version_id": None}
+                if resolved is None
+                else {"source": resolved.source, "version_id": resolved.version_id}
+            ),
             "duration_s": perf_counter() - started,
         }
         await session.commit()

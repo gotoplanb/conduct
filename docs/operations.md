@@ -7,14 +7,29 @@ Day-to-day running: live config, observability, common queries, tests.
 Three things can change at runtime without a restart:
 
 - **Routing rules** — `PUT /routing/{task_type}` writes to the DB and is read on every job. Hot-swap in real time.
-- **Prompts** — `prompts/shared/*.md` and `prompts/clients/*/*.md` are read fresh on every request. Save the file → next job uses the new version. Each job records the resolved file path + git hash in `Job.metadata.prompt` for auditability.
+- **Prompts** — stored in the Postgres `prompts` table; edit with the `conduct` CLI or `PUT /prompts/{task_type}`. Every save appends a row to `prompt_versions`, and each job records the resolved `version_id` in `Job.metadata.prompt` so the exact content a job ran against can be replayed after later edits.
 - **Pricing** — edit `config/pricing.yaml`, then signal the API:
   ```bash
   kill -USR1 $(pgrep -f '/.venv/bin/uvicorn main:app')
   ```
   We use `SIGUSR1` rather than `SIGHUP` because uvicorn intercepts `SIGHUP` for shutdown.
 
-In a containerized run, `prompts/` is baked into the image — edits to local files won't show up until rebuild. That's a known limitation; see [deployment.md](deployment.md#cloud-target-ecs--google-cloud-run) for the unsolved cloud-prompt-storage question.
+### Editing prompts
+
+`prompts/shared/*.md` and `prompts/clients/*/*.md` are import-time seed material — `scripts/seed.py` walks them on first run and inserts each file as a `prompts` row. After that, they're advisory; the DB is the source of truth. Round-trip through the CLI:
+
+```bash
+export CONDUCT_ADMIN_KEY=...                # required
+export CONDUCT_BASE_URL=http://localhost:8000  # optional; this is the default
+
+conduct prompts list                         # all prompts, shared + client-specific
+conduct prompts get bio_generation           # print current content
+conduct prompts get bio_generation --client bosshardt-portal
+conduct prompts edit bio_generation          # opens $EDITOR; PUTs on save
+conduct prompts history bio_generation       # version log
+```
+
+`edit` works like `git commit -e`: it pulls the current row, drops it in `$EDITOR` (falls back to `vi`), and on save sends a `PUT` to `/prompts/{task_type}` — which both updates the live row and appends a `prompt_versions` entry. Saving an empty or unchanged buffer aborts cleanly.
 
 ## Observability
 
@@ -96,4 +111,4 @@ Per [SPEC.md](../SPEC.md):
 - ngrok wiring: `make tunnel` after setting `NGROK_AUTHTOKEN`.
 - At least one client app created idempotently by `make seed` from `config/seed.clients.yaml`.
 - 41 tests pass, lint + format clean.
-- Containerized via `make up`; image carries baked-in `CONDUCT_GIT_SHA` for prompt provenance.
+- Containerized via `make up`. Prompt provenance survives via `prompt_versions` rows in the DB — each job records the `version_id` it resolved to.

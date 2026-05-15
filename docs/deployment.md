@@ -22,14 +22,9 @@ Both paths share the same `.env` file. Compose overrides the localhost-flavored 
 
 The same image runs as either api or worker; Compose distinguishes them via the `command:` override. Built image is ~82MB content / ~389MB on disk.
 
-### Git SHA provenance
+### Prompt provenance
 
-`metadata.prompt.git_hash` records which commit a prompt file came from, for auditing which version a job actually ran against.
-
-- **Host-side** (`make run`) — resolver shells out to `git log -1 --format=%H -- <prompt-path>`, capturing the per-file SHA.
-- **Containerized** — `.git` is excluded from the image, so `git log` returns nothing. The build process bakes `CONDUCT_GIT_SHA=$(git rev-parse HEAD)` into the runtime env at image-build time, and the resolver falls back to that. Per-file granularity collapses to image-build granularity, which is the right model for immutable images: every prompt in image X reports SHA X, and you look X up in git history to see exactly what shipped.
-
-`make build` automatically passes the current `HEAD` SHA. `docker compose build` directly does too, as long as you set `GIT_SHA=$(git rev-parse HEAD)` in your shell first (or in `.env` at the repo root).
+`metadata.prompt.version_id` records the `prompt_versions.id` a job resolved to — every edit through `PUT /prompts/{task_type}` (or `conduct prompts edit`) appends a row to `prompt_versions` before the live row is updated, so older jobs stay tied to their exact content even after later edits. Replay or audit by joining `Job.job_metadata->'prompt'->>'version_id'` against `prompt_versions.id`.
 
 ## Cloud target (ECS / Google Cloud Run)
 
@@ -39,9 +34,9 @@ Conduct is built with the assumption it'll eventually run on AWS ECS or Google C
 - The image runs as non-root with no host-volume requirements at runtime.
 - All config flows through env vars (`DATABASE_URL`, `REDIS_URL`, `OLLAMA_BASE_URL`, `ANTHROPIC_API_KEY`, `CONDUCT_ADMIN_KEY`, `OTEL_EXPORTER_OTLP_ENDPOINT`).
 - Migrations are a separate concern (`alembic upgrade head`), runnable as a one-off ECS task or a Cloud Run job before deploying the new revision.
-- Git SHA is baked at build time, so prompt-version auditing survives the move to immutable infra.
+- Prompts live in Postgres, edited via the admin API / CLI — no filesystem hot-reload needed, audit history travels with the database.
 
-**Open question** — prompts and `seed.clients.yaml` are currently filesystem artifacts. For cloud, the options are: (1) bake them into the image at build time (simple, requires rebuild for prompt edits), (2) fetch from S3/GCS at container start (loses the hot-reload semantic), (3) move them to Postgres rows (most ops-friendly, biggest code change). Not yet decided.
+`seed.clients.yaml` is still a filesystem artifact for first-time bootstrap. In a cloud deploy that's a one-off concern: run `scripts/seed.py` once as part of the initial migration job (it's idempotent — safe to re-run), or mount the file as a secret and let the cold-start seed call pick it up.
 
 ## Private configuration (deployment-specific overrides)
 
@@ -50,7 +45,7 @@ Two paths are deployment-specific and **must not be committed to a public fork**
 | Path | Status | Purpose |
 |---|---|---|
 | `config/seed.clients.yaml` | gitignored | Client app names + per-client knobs (rate limits, cloud opt-in) |
-| `prompts/clients/{client_name}/` | gitignored | Task-prompt overrides specific to a deployment |
+| `prompts/clients/{client_name}/` | gitignored | Per-deployment override files — only used by `scripts/seed.py` on initial import. After seed, edits happen via the `conduct` CLI; the DB row is authoritative. |
 
 `config/seed.clients.example.yaml` and `prompts/clients/.example/` ship as templates. Two patterns for managing the real values on a developer machine:
 

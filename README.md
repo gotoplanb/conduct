@@ -79,7 +79,7 @@ lifespan.py                tracing setup, providers, SIGUSR1 pricing reload
 auth.py                    Bearer auth (client + admin)
 deps.py                    shared deps (provider registry from app.state)
 rate_limit.py              per-client Redis tumbling-window limiter
-prompt_loader.py           clients/{name}/{task}.md → shared/{task}.md resolver
+prompt_loader.py           DB-backed prompt resolver (per-client override → shared)
 
 config/                    settings + pricing
 db/                        SQLAlchemy 2.0 async session + declarative base
@@ -90,8 +90,9 @@ worker/                    queue, runner (RQ entry), executor (sync+async share 
 retry/                     FailureHandler interface (static v1, triage v2 stub)
 observability/             OTel tracer + Prometheus metric helpers
 routes/                    route modules; one per concern
-prompts/                   shared/ + clients/{name}/ overrides; .md files only
-scripts/seed.py            idempotent bootstrap (reads config/seed.{clients,routing}.yaml)
+prompts/                   seed material — shared/ + clients/{name}/ .md files
+scripts/seed.py            idempotent bootstrap (clients, routing rules, prompts)
+scripts/cli.py             `conduct` admin CLI (prompts list/get/edit/history)
 tests/                     unit tests (pytest)
 alembic/                   migrations
 docs/                      verbose docs (architecture, deployment, operations)

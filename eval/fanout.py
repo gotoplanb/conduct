@@ -21,7 +21,6 @@ from models.job import Job
 from models.shadow import JobShadow
 from models.types import JobStatus
 from observability.tracing import get_tracer
-from prompt_loader import PromptResolver, get_prompt_resolver
 from providers.base import ProviderError
 from providers.registry import ProviderRegistry, is_cloud, provider_for_model
 from providers.resident import is_resident
@@ -55,7 +54,6 @@ async def run_fanout_secondaries(
     max_tokens: int,
     providers: ProviderRegistry,
     session: AsyncSession,
-    prompt_resolver: PromptResolver | None = None,
 ) -> list[JobShadow]:
     """Create JobShadow rows for each secondary, run them all in parallel,
     return the resulting rows. The caller is responsible for running the
@@ -63,7 +61,6 @@ async def run_fanout_secondaries(
     if not secondary_models:
         return []
 
-    resolver = prompt_resolver or get_prompt_resolver()
     shadows: list[JobShadow] = []
     for model in secondary_models:
         shadow = JobShadow(
@@ -86,7 +83,6 @@ async def run_fanout_secondaries(
             max_tokens=max_tokens,
             providers=providers,
             session=session,
-            prompt_resolver=resolver,
         )
 
     with _tracer.start_as_current_span("conduct.fanout") as span:
