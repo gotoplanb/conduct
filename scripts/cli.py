@@ -88,7 +88,8 @@ def _open_in_editor(initial: str, *, suffix: str = ".md") -> str | None:
 # --- subcommands ----
 
 
-def cmd_prompts_list(args: argparse.Namespace) -> int:
+def cmd_prompts_list(args: argparse.Namespace) -> None:
+    """Print all prompts. Errors raise via HTTPStatusError → handled in main()."""
     with httpx.Client(base_url=_base_url(), headers=_headers(), timeout=30) as c:
         r = c.get("/prompts")
         r.raise_for_status()
@@ -96,12 +97,11 @@ def cmd_prompts_list(args: argparse.Namespace) -> int:
     rows = data.get("prompts", [])
     if not rows:
         print("(no prompts)")
-        return 0
+        return
     width = max(len(p["task_type"]) for p in rows)
     for p in rows:
         client = p["client_name"] or "<shared>"
         print(f"{p['task_type']:<{width}}  {client:<24}  {p['bytes']:>6}B  {p['updated_at']}")
-    return 0
 
 
 def cmd_prompts_get(args: argparse.Namespace) -> int:
@@ -118,7 +118,10 @@ def cmd_prompts_get(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_prompts_edit(args: argparse.Namespace) -> int:
+def cmd_prompts_edit(args: argparse.Namespace) -> None:
+    """Open $EDITOR on the current content, PUT the result on save. A 404
+    from the GET means we're creating a new prompt — start with an empty
+    buffer. Empty / unchanged buffers abort with no DB write."""
     base = _base_url()
     headers = _headers()
     params = _client_params(args.client)
@@ -138,7 +141,7 @@ def cmd_prompts_edit(args: argparse.Namespace) -> int:
 
         new_content = _open_in_editor(initial)
         if new_content is None:
-            return 0
+            return
 
         put = c.put(
             f"/prompts/{args.task_type}",
@@ -152,7 +155,6 @@ def cmd_prompts_edit(args: argparse.Namespace) -> int:
         f"saved prompts/{args.task_type} ({target}) — "
         f"{len(out['content'].encode('utf-8'))} bytes, updated_by={out['updated_by']}"
     )
-    return 0
 
 
 def cmd_prompts_history(args: argparse.Namespace) -> int:
@@ -215,7 +217,11 @@ def main(argv: list[str] | None = None) -> None:
     parser = _build_parser()
     args = parser.parse_args(argv)
     try:
-        sys.exit(args.func(args))
+        # Subcommands either return an explicit exit code (e.g. `get` returns
+        # 1 on 404) or return None for "success — exit 0". sys.exit() handles
+        # None natively, but coerce here so the intent is explicit.
+        rc = args.func(args)
+        sys.exit(rc if isinstance(rc, int) else 0)
     except httpx.HTTPStatusError as e:
         # Render a useful message — the body usually has FastAPI's `detail`.
         detail = ""

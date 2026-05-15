@@ -91,93 +91,90 @@ async def _seed_routing(session, specs: list[dict]) -> tuple[list[str], list[str
     return created, skipped
 
 
-async def _seed_prompts(session) -> tuple[list[str], list[str], list[str]]:
-    """Import `.md` files from prompts/shared and prompts/clients/<name>.
+def _is_prompt_file(path: Path) -> bool:
+    """Treat README.md and dotfiles as documentation, not prompts."""
+    return path.suffix == ".md" and path.name != "README.md" and not path.name.startswith(".")
 
-    File path → (task_type, client_id) mapping:
-      prompts/shared/<task>.md            → (task=task, client_id=NULL)
-      prompts/clients/<name>/<task>.md    → (task=task, client_id=<name>'s id)
 
-    Idempotent: a row that already exists is left alone. Newly-imported
-    rows get a companion `prompt_versions` entry tagged `seed` so the
-    audit log starts from a known point. Returns (created, skipped,
-    warnings) — `warnings` covers per-client folders with no matching
-    ClientApp row.
-    """
+async def _import_prompt_file(
+    session, file: Path, *, client_id, label: str
+) -> str | None:
+    """Idempotent single-file import. Returns the created label, or None
+    if the row already existed."""
+    tt = file.stem
+    stmt = select(Prompt).where(Prompt.task_type == tt)
+    if client_id is None:
+        stmt = stmt.where(Prompt.client_id.is_(None))
+    else:
+        stmt = stmt.where(Prompt.client_id == client_id)
+    if await session.scalar(stmt) is not None:
+        return None
+    content = file.read_text(encoding="utf-8")
+    session.add(Prompt(task_type=tt, client_id=client_id, content=content, updated_by="seed"))
+    session.add(
+        PromptVersion(task_type=tt, client_id=client_id, content=content, edited_by="seed")
+    )
+    return f"{label}:{tt}"
+
+
+async def _seed_shared_prompts(session) -> tuple[list[str], list[str]]:
+    """Import prompts/shared/<task>.md as `client_id=NULL` rows."""
+    created: list[str] = []
+    skipped: list[str] = []
+    shared_dir = PROMPTS_DIR / "shared"
+    files = (
+        sorted(p for p in shared_dir.iterdir() if _is_prompt_file(p))
+        if shared_dir.is_dir()
+        else []
+    )
+    for f in files:
+        result = await _import_prompt_file(session, f, client_id=None, label="shared")
+        (created if result else skipped).append(result or f"shared:{f.stem}")
+    return created, skipped
+
+
+async def _seed_client_prompts(session) -> tuple[list[str], list[str], list[str]]:
+    """Import prompts/clients/<name>/<task>.md as per-client overrides.
+    Folders with no matching ClientApp surface as warnings."""
     created: list[str] = []
     skipped: list[str] = []
     warnings: list[str] = []
-
-    if not PROMPTS_DIR.is_dir():
+    clients_root = PROMPTS_DIR / "clients"
+    if not clients_root.is_dir():
         return created, skipped, warnings
 
-    # Treat README.md (and dotfiles) as docs, not prompts.
-    def _is_prompt_file(path: Path) -> bool:
-        return path.suffix == ".md" and path.name != "README.md" and not path.name.startswith(".")
-
-    # Shared defaults: prompts/shared/<task>.md → client_id=NULL.
-    shared_dir = PROMPTS_DIR / "shared"
-    if shared_dir.is_dir():
-        for f in sorted(p for p in shared_dir.iterdir() if _is_prompt_file(p)):
-            tt = f.stem
-            existing = await session.scalar(
-                select(Prompt).where(Prompt.task_type == tt, Prompt.client_id.is_(None))
+    client_dirs = sorted(
+        p for p in clients_root.iterdir() if p.is_dir() and not p.name.startswith(".")
+    )
+    for client_dir in client_dirs:
+        client = await session.scalar(
+            select(ClientApp).where(ClientApp.name == client_dir.name)
+        )
+        if client is None:
+            warnings.append(
+                f"prompts/clients/{client_dir.name}/ has no matching ClientApp — skipped"
             )
-            if existing is not None:
-                skipped.append(f"shared:{tt}")
-                continue
-            content = f.read_text(encoding="utf-8")
-            session.add(Prompt(task_type=tt, client_id=None, content=content, updated_by="seed"))
-            session.add(
-                PromptVersion(task_type=tt, client_id=None, content=content, edited_by="seed")
+            continue
+        for f in sorted(p for p in client_dir.iterdir() if _is_prompt_file(p)):
+            result = await _import_prompt_file(
+                session, f, client_id=client.id, label=client_dir.name
             )
-            created.append(f"shared:{tt}")
-
-    # Per-client overrides: prompts/clients/<name>/<task>.md.
-    clients_root = PROMPTS_DIR / "clients"
-    if clients_root.is_dir():
-        for client_dir in sorted(
-            p for p in clients_root.iterdir() if p.is_dir() and not p.name.startswith(".")
-        ):
-            client_name = client_dir.name
-            client = await session.scalar(
-                select(ClientApp).where(ClientApp.name == client_name)
-            )
-            if client is None:
-                warnings.append(
-                    f"prompts/clients/{client_name}/ has no matching ClientApp — skipped"
-                )
-                continue
-            for f in sorted(p for p in client_dir.iterdir() if _is_prompt_file(p)):
-                tt = f.stem
-                existing = await session.scalar(
-                    select(Prompt).where(
-                        Prompt.task_type == tt, Prompt.client_id == client.id
-                    )
-                )
-                if existing is not None:
-                    skipped.append(f"{client_name}:{tt}")
-                    continue
-                content = f.read_text(encoding="utf-8")
-                session.add(
-                    Prompt(
-                        task_type=tt,
-                        client_id=client.id,
-                        content=content,
-                        updated_by="seed",
-                    )
-                )
-                session.add(
-                    PromptVersion(
-                        task_type=tt,
-                        client_id=client.id,
-                        content=content,
-                        edited_by="seed",
-                    )
-                )
-                created.append(f"{client_name}:{tt}")
-
+            (created if result else skipped).append(result or f"{client_dir.name}:{f.stem}")
     return created, skipped, warnings
+
+
+async def _seed_prompts(session) -> tuple[list[str], list[str], list[str]]:
+    """Import `.md` files from prompts/shared and prompts/clients/<name>.
+
+    Idempotent: a row that already exists is left alone. Newly-imported
+    rows get a companion `prompt_versions` entry tagged `seed` so the
+    audit log starts from a known point.
+    """
+    if not PROMPTS_DIR.is_dir():
+        return [], [], []
+    shared_created, shared_skipped = await _seed_shared_prompts(session)
+    client_created, client_skipped, warnings = await _seed_client_prompts(session)
+    return shared_created + client_created, shared_skipped + client_skipped, warnings
 
 
 def _report(
