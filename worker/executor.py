@@ -74,6 +74,72 @@ async def _call_provider(
         return response
 
 
+async def _resolve_prompt(
+    job: Job, client_name: str, resolver: PromptResolver
+) -> tuple[str, str | None, str | None]:
+    """Pick the resolved prompt content, repo-relative path, and git hash.
+    A non-empty job.system_prompt overrides the library."""
+    if job.system_prompt:
+        return job.system_prompt, None, None
+    resolved = resolver.resolve(job.task_type, client_name=client_name)
+    return resolved.content, resolved.path, resolved.git_hash
+
+
+async def _try_fallback(
+    *,
+    job: Job,
+    decision: RoutingDecision,
+    primary_err: ProviderError,
+    handler: FailureHandler,
+    providers: ProviderRegistry,
+    system_prompt: str,
+    job_span,
+) -> tuple[ProviderResponse | None, bool, str]:
+    """Consult the FailureHandler and, if it returns FALLBACK, attempt the
+    fallback model. Returns (response, used_fallback, error_message).
+    Updates job.model_used so per-model attribution stays accurate."""
+    ctx = FailureContext(
+        error_type=type(primary_err).__name__,
+        error_message=str(primary_err),
+        job_task_type=job.task_type,
+        job_sensitivity=job.sensitivity,
+        decision=decision,
+        available_providers=frozenset(providers.names),
+    )
+    handler_decision = await handler.on_provider_error(ctx)
+    job_span.set_attribute("failure_handler.action", handler_decision.action.value)
+
+    if handler_decision.action != HandlerAction.FALLBACK:
+        # action == FAIL (v1) or v2 actions not yet implemented
+        job_span.record_exception(primary_err)
+        return None, False, f"{type(primary_err).__name__}: {primary_err}"
+
+    fb_provider_name = handler_decision.target_provider or decision.fallback_provider
+    fb_model = handler_decision.target_model or decision.fallback_model
+    record_fallback(
+        from_provider=decision.provider,
+        to_provider=fb_provider_name,
+        reason=type(primary_err).__name__,
+    )
+    job.model_used = fb_model
+    try:
+        response = await _call_provider(
+            providers.get(fb_provider_name),
+            prompt=job.prompt,
+            model=fb_model,
+            system_prompt=system_prompt,
+            max_tokens=decision.max_tokens,
+            is_local=fb_provider_name == "ollama",
+        )
+        return response, True, ""
+    except ProviderError as fb_err:
+        job_span.record_exception(fb_err)
+        return None, False, (
+            f"primary {type(primary_err).__name__}: {primary_err}; "
+            f"fallback {type(fb_err).__name__}: {fb_err}"
+        )
+
+
 async def execute_job(
     *,
     job: Job,
@@ -96,16 +162,9 @@ async def execute_job(
 
         started = perf_counter()
         resolver = prompt_resolver or get_prompt_resolver()
-
-        if job.system_prompt:
-            system_prompt = job.system_prompt
-            prompt_path: str | None = None
-            prompt_hash: str | None = None
-        else:
-            resolved = resolver.resolve(job.task_type, client_name=client_name)
-            system_prompt = resolved.content
-            prompt_path = resolved.path
-            prompt_hash = resolved.git_hash
+        system_prompt, prompt_path, prompt_hash = await _resolve_prompt(
+            job, client_name, resolver
+        )
 
         job.status = JobStatus.RUNNING.value
         job.started_at = datetime.now(UTC)
@@ -118,66 +177,30 @@ async def execute_job(
         response: ProviderResponse | None = None
         error_message = ""
         used_fallback = False
-        primary_is_local = decision.provider == "ollama"
-        primary_provider = providers.get(decision.provider)
 
         try:
             response = await _call_provider(
-                primary_provider,
+                providers.get(decision.provider),
                 prompt=job.prompt,
                 model=decision.model,
                 system_prompt=system_prompt,
                 max_tokens=decision.max_tokens,
-                is_local=primary_is_local,
+                is_local=decision.provider == "ollama",
             )
         except ProviderError as primary_err:
             job_span.add_event(
                 "primary_failed",
                 {"error.type": type(primary_err).__name__, "error.message": str(primary_err)},
             )
-            ctx = FailureContext(
-                error_type=type(primary_err).__name__,
-                error_message=str(primary_err),
-                job_task_type=job.task_type,
-                job_sensitivity=job.sensitivity,
+            response, used_fallback, error_message = await _try_fallback(
+                job=job,
                 decision=decision,
-                available_providers=frozenset(providers.names),
+                primary_err=primary_err,
+                handler=handler,
+                providers=providers,
+                system_prompt=system_prompt,
+                job_span=job_span,
             )
-            handler_decision = await handler.on_provider_error(ctx)
-            job_span.set_attribute("failure_handler.action", handler_decision.action.value)
-
-            if handler_decision.action == HandlerAction.FALLBACK:
-                fb_provider_name = handler_decision.target_provider or decision.fallback_provider
-                fb_model = handler_decision.target_model or decision.fallback_model
-                record_fallback(
-                    from_provider=decision.provider,
-                    to_provider=fb_provider_name,
-                    reason=type(primary_err).__name__,
-                )
-                fb_provider = providers.get(fb_provider_name)
-                fb_is_local = fb_provider_name == "ollama"
-                # Attribute the fallback attempt to its model regardless of outcome.
-                job.model_used = fb_model
-                try:
-                    response = await _call_provider(
-                        fb_provider,
-                        prompt=job.prompt,
-                        model=fb_model,
-                        system_prompt=system_prompt,
-                        max_tokens=decision.max_tokens,
-                        is_local=fb_is_local,
-                    )
-                    used_fallback = True
-                except ProviderError as fb_err:
-                    error_message = (
-                        f"primary {type(primary_err).__name__}: {primary_err}; "
-                        f"fallback {type(fb_err).__name__}: {fb_err}"
-                    )
-                    job_span.record_exception(fb_err)
-            else:
-                # action == FAIL (v1) or v2 actions not yet implemented
-                error_message = f"{type(primary_err).__name__}: {primary_err}"
-                job_span.record_exception(primary_err)
 
         job.completed_at = datetime.now(UTC)
         job.job_metadata = {

@@ -13,6 +13,7 @@ import hmac
 import logging
 import re
 from pathlib import Path
+from typing import Annotated
 
 from fastapi import APIRouter, Cookie, Depends, HTTPException, status
 from fastapi.responses import FileResponse, JSONResponse
@@ -67,8 +68,8 @@ class TTSCreateIn(BaseModel):
 @tts_router.post("", status_code=status.HTTP_202_ACCEPTED)
 async def submit_tts(
     body: TTSCreateIn,
-    client: ClientApp = Depends(rate_limited_client),
-    session: AsyncSession = Depends(get_session),
+    client: Annotated[ClientApp, Depends(rate_limited_client)],
+    session: Annotated[AsyncSession, Depends(get_session)],
 ) -> JSONResponse:
     settings = get_settings()
     if len(body.text) > settings.tts_max_chars:

@@ -37,6 +37,44 @@ def _is_allowed(model: str, sensitivity: Sensitivity, allow_cloud_for_internal: 
     return True  # public
 
 
+def _explicit_override(
+    model_requested: str,
+    effective: Sensitivity,
+    allow_cloud_for_internal: bool,
+    max_tokens: int,
+) -> RoutingDecision:
+    """Build the decision when the caller specified a model directly. Raises
+    SensitivityViolation if the requested model isn't allowed."""
+    if not _is_allowed(model_requested, effective, allow_cloud_for_internal):
+        raise SensitivityViolation(
+            f"model {model_requested} disallowed for sensitivity={effective.value}"
+        )
+    return RoutingDecision(
+        model=model_requested,
+        provider=provider_for_model(model_requested),
+        fallback_model=None,
+        fallback_provider=None,
+        effective_sensitivity=effective,
+        max_tokens=max_tokens,
+        reason="explicit-override",
+    )
+
+
+def _rule_preferred_and_fallback(
+    rule: RoutingRule | None,
+    effective: Sensitivity,
+    default_model: str,
+    default_sensitive_model: str,
+) -> tuple[str, str | None, str]:
+    """Pick (preferred, fallback, reason) from either the rule or env defaults."""
+    if rule:
+        return rule.preferred_model, rule.fallback_model, f"rule:{rule.task_type}"
+    preferred = (
+        default_sensitive_model if effective == Sensitivity.CONFIDENTIAL else default_model
+    )
+    return preferred, None, "default"
+
+
 def decide(
     *,
     sensitivity: Sensitivity,
@@ -49,37 +87,16 @@ def decide(
     # Rule sensitivity acts as a floor; clients can request stricter but not looser.
     rule_sensitivity = Sensitivity(rule.sensitivity) if rule else Sensitivity.INTERNAL
     effective = stricter(sensitivity, rule_sensitivity)
-
     max_tokens = rule.max_tokens if rule else 1000
 
-    # 1. Explicit model override wins (subject to sensitivity).
     if model_requested:
-        if not _is_allowed(model_requested, effective, allow_cloud_for_internal):
-            raise SensitivityViolation(
-                f"model {model_requested} disallowed for sensitivity={effective.value}"
-            )
-        return RoutingDecision(
-            model=model_requested,
-            provider=provider_for_model(model_requested),
-            fallback_model=None,
-            fallback_provider=None,
-            effective_sensitivity=effective,
-            max_tokens=max_tokens,
-            reason="explicit-override",
+        return _explicit_override(
+            model_requested, effective, allow_cloud_for_internal, max_tokens
         )
 
-    # 2. Rule lookup, or fall back to env defaults.
-    if rule:
-        preferred = rule.preferred_model
-        fallback: str | None = rule.fallback_model
-        reason = f"rule:{rule.task_type}"
-    else:
-        preferred = (
-            default_sensitive_model if effective == Sensitivity.CONFIDENTIAL else default_model
-        )
-        fallback = None
-        reason = "default"
-
+    preferred, fallback, reason = _rule_preferred_and_fallback(
+        rule, effective, default_model, default_sensitive_model
+    )
     preferred_ok = _is_allowed(preferred, effective, allow_cloud_for_internal)
     fallback_ok = fallback is not None and _is_allowed(
         fallback, effective, allow_cloud_for_internal

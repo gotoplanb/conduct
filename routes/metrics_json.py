@@ -5,6 +5,7 @@ and ad-hoc queries with filters. Admin-only.
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from typing import Annotated
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Query
@@ -42,10 +43,10 @@ class MetricsOut(BaseModel):
 
 @router.get("/metrics")
 async def metrics(
-    days: int = Query(default=30, ge=1, le=365),
+    session: Annotated[AsyncSession, Depends(get_session)],
+    days: Annotated[int, Query(ge=1, le=365)] = 30,
     client_app_id: UUID | None = None,
     task_type: str | None = None,
-    session: AsyncSession = Depends(get_session),
 ) -> MetricsOut:
     since = datetime.now(UTC) - timedelta(days=days)
 

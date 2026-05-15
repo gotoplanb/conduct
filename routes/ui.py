@@ -9,9 +9,9 @@ from __future__ import annotations
 
 import hmac
 import json
-from collections import defaultdict
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Annotated
 from urllib.parse import quote
 from uuid import UUID
 
@@ -23,11 +23,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from config.settings import get_settings
 from db.session import get_session
+from eval.rollup import compute_rollup
 from models.client import ClientApp
 from models.job import Job
 from models.routing import RoutingRule
 from models.shadow import JobShadow
-from routes.eval import _aggregate_metadata_scores
 
 ADMIN_COOKIE = "conduct_admin"
 LOGIN_PATH = "/ui/login"
@@ -48,7 +48,7 @@ def _redirect_to_login() -> RedirectResponse:
 
 
 async def admin_session(
-    conduct_admin: str | None = Cookie(default=None),
+    conduct_admin: Annotated[str | None, Cookie()] = None,
 ) -> None:
     """Cookie-based admin guard. Used as a dep on every authed UI route.
 
@@ -113,7 +113,9 @@ def _humanize_age(dt: datetime) -> str:
 
 
 @router.get("", response_class=HTMLResponse)
-async def root_redirect(conduct_admin: str | None = Cookie(default=None)) -> RedirectResponse:
+async def root_redirect(
+    conduct_admin: Annotated[str | None, Cookie()] = None,
+) -> RedirectResponse:
     target = JOBS_PATH if _require_admin_cookie(conduct_admin) else LOGIN_PATH
     return RedirectResponse(url=target, status_code=status.HTTP_303_SEE_OTHER)
 
@@ -124,7 +126,9 @@ async def login_form(request: Request) -> HTMLResponse:
 
 
 @router.post("/login", response_model=None)
-async def login(request: Request, admin_key: str = Form(...)) -> HTMLResponse | RedirectResponse:
+async def login(
+    request: Request, admin_key: Annotated[str, Form()]
+) -> HTMLResponse | RedirectResponse:
     if not hmac.compare_digest(admin_key, get_settings().admin_key):
         return templates.TemplateResponse(
             request,
@@ -205,10 +209,10 @@ async def _load_jobs(
 @router.get("/jobs", response_class=HTMLResponse, dependencies=[Depends(admin_session)])
 async def jobs_page(
     request: Request,
-    task_type: str | None = Query(default=None),
-    job_status: str | None = Query(default=None, alias="status"),
-    q: str | None = Query(default=None),
-    session: AsyncSession = Depends(get_session),
+    session: Annotated[AsyncSession, Depends(get_session)],
+    task_type: Annotated[str | None, Query()] = None,
+    job_status: Annotated[str | None, Query(alias="status")] = None,
+    q: Annotated[str | None, Query()] = None,
 ) -> HTMLResponse:
     jobs, task_types = await _load_jobs(
         session, task_type=task_type, job_status=job_status, q=q
@@ -228,10 +232,10 @@ async def jobs_page(
 @router.get("/jobs/partial", response_class=HTMLResponse, dependencies=[Depends(admin_session)])
 async def jobs_partial(
     request: Request,
-    task_type: str | None = Query(default=None),
-    job_status: str | None = Query(default=None, alias="status"),
-    q: str | None = Query(default=None),
-    session: AsyncSession = Depends(get_session),
+    session: Annotated[AsyncSession, Depends(get_session)],
+    task_type: Annotated[str | None, Query()] = None,
+    job_status: Annotated[str | None, Query(alias="status")] = None,
+    q: Annotated[str | None, Query()] = None,
 ) -> HTMLResponse:
     jobs, _ = await _load_jobs(session, task_type=task_type, job_status=job_status, q=q)
     return templates.TemplateResponse(request, "_jobs_table.html", {"jobs": jobs})
@@ -241,7 +245,7 @@ async def jobs_partial(
 async def job_detail(
     request: Request,
     job_id: UUID,
-    session: AsyncSession = Depends(get_session),
+    session: Annotated[AsyncSession, Depends(get_session)],
 ) -> HTMLResponse:
     job = await session.get(Job, job_id)
     if job is None:
@@ -282,133 +286,9 @@ async def job_detail(
 async def _compute_eval(
     session: AsyncSession, *, task_type: str, days: int
 ) -> list[dict]:
-    """Mirrors /eval/compare but shaped for the template. Keeps the UI from
-    needing to call the JSON API internally."""
-    from sqlalchemy import case, func
-
-    from models.types import JobStatus
-
-    since = datetime.now(UTC) - timedelta(days=days)
-    job_is_complete = case((Job.status == JobStatus.COMPLETE.value, 1), else_=0)
-    job_is_failed = case((Job.status == JobStatus.FAILED.value, 1), else_=0)
-    shadow_is_complete = case((JobShadow.status == JobStatus.COMPLETE.value, 1), else_=0)
-    shadow_is_failed = case((JobShadow.status == JobStatus.FAILED.value, 1), else_=0)
-
-    job_rows = (
-        await session.execute(
-            select(
-                Job.model_used,
-                func.count().label("attempts"),
-                func.sum(job_is_complete).label("successes"),
-                func.sum(job_is_failed).label("failures"),
-                func.avg(Job.latency_ms).filter(Job.status == JobStatus.COMPLETE.value),
-                func.avg(Job.tokens_out).filter(Job.status == JobStatus.COMPLETE.value),
-                func.coalesce(
-                    func.sum(Job.cost_usd).filter(Job.status == JobStatus.COMPLETE.value),
-                    0,
-                ),
-            )
-            .where(Job.task_type == task_type, Job.created_at >= since, Job.model_used != "")
-            .group_by(Job.model_used)
-        )
-    ).all()
-
-    shadow_rows = (
-        await session.execute(
-            select(
-                JobShadow.model,
-                func.count(),
-                func.sum(shadow_is_complete),
-                func.sum(shadow_is_failed),
-                func.avg(JobShadow.latency_ms).filter(JobShadow.status == JobStatus.COMPLETE.value),
-                func.avg(JobShadow.tokens_out).filter(JobShadow.status == JobStatus.COMPLETE.value),
-                func.coalesce(
-                    func.sum(JobShadow.cost_usd).filter(
-                        JobShadow.status == JobStatus.COMPLETE.value
-                    ),
-                    0,
-                ),
-            )
-            .join(Job, Job.id == JobShadow.parent_job_id)
-            .where(Job.task_type == task_type, JobShadow.created_at >= since)
-            .group_by(JobShadow.model)
-        )
-    ).all()
-
-    rolled: dict[str, dict] = defaultdict(
-        lambda: {
-            "attempts": 0,
-            "successes": 0,
-            "failures": 0,
-            "latency_sum": 0.0,
-            "latency_count": 0,
-            "tokens_sum": 0.0,
-            "tokens_count": 0,
-            "cost_total": 0.0,
-        }
-    )
-    for source in (job_rows, shadow_rows):
-        for model, attempts, successes, failures, avg_lat, avg_tok, total_cost in source:
-            e = rolled[model]
-            attempts_i = int(attempts or 0)
-            successes_i = int(successes or 0)
-            e["attempts"] += attempts_i
-            e["successes"] += successes_i
-            e["failures"] += int(failures or 0)
-            e["cost_total"] += float(total_cost or 0)
-            if avg_lat is not None and successes_i:
-                e["latency_sum"] += float(avg_lat) * successes_i
-                e["latency_count"] += successes_i
-            if avg_tok is not None and successes_i:
-                e["tokens_sum"] += float(avg_tok) * successes_i
-                e["tokens_count"] += successes_i
-
-    # Score rollup
-    score_pairs: list[tuple[str, dict | None]] = []
-    score_pairs.extend(
-        (m, meta)
-        for m, meta in (
-            await session.execute(
-                select(Job.model_used, Job.job_metadata).where(
-                    Job.task_type == task_type,
-                    Job.created_at >= since,
-                    Job.model_used != "",
-                )
-            )
-        ).all()
-    )
-    score_pairs.extend(
-        (m, meta)
-        for m, meta in (
-            await session.execute(
-                select(JobShadow.model, JobShadow.shadow_metadata)
-                .join(Job, Job.id == JobShadow.parent_job_id)
-                .where(Job.task_type == task_type, JobShadow.created_at >= since)
-            )
-        ).all()
-    )
-    avg_scores, score_counts = _aggregate_metadata_scores(score_pairs)
-
-    out: list[dict] = []
-    for model, e in sorted(rolled.items(), key=lambda kv: -kv[1]["attempts"]):
-        successes = e["successes"]
-        out.append(
-            {
-                "model": model,
-                "job_count": e["attempts"],
-                "failure_rate": (e["failures"] / e["attempts"]) if e["attempts"] else 0.0,
-                "avg_latency_ms": (
-                    e["latency_sum"] / e["latency_count"] if e["latency_count"] else None
-                ),
-                "avg_tokens_out": (
-                    e["tokens_sum"] / e["tokens_count"] if e["tokens_count"] else None
-                ),
-                "cost_per_job_usd": (e["cost_total"] / successes) if successes else 0.0,
-                "avg_score": avg_scores.get(model),
-                "score_count": score_counts.get(model, 0),
-            }
-        )
-    return out
+    """Thin wrapper around the shared rollup helper. Kept as a local symbol
+    so the route handlers don't need to know about eval.rollup directly."""
+    return await compute_rollup(session, task_type=task_type, days=days)
 
 
 async def _known_task_types(session: AsyncSession) -> list[str]:
@@ -423,9 +303,9 @@ async def _known_task_types(session: AsyncSession) -> list[str]:
 @router.get("/eval", response_class=HTMLResponse, dependencies=[Depends(admin_session)])
 async def eval_page(
     request: Request,
-    task_type: str | None = Query(default=None),
-    days: int = Query(default=7, ge=1, le=365),
-    session: AsyncSession = Depends(get_session),
+    session: Annotated[AsyncSession, Depends(get_session)],
+    task_type: Annotated[str | None, Query()] = None,
+    days: Annotated[int, Query(ge=1, le=365)] = 7,
 ) -> HTMLResponse:
     task_types = await _known_task_types(session)
     selected = task_type or (task_types[0] if task_types else "")
@@ -445,9 +325,9 @@ async def eval_page(
 @router.get("/eval/partial", response_class=HTMLResponse, dependencies=[Depends(admin_session)])
 async def eval_partial(
     request: Request,
-    task_type: str = Query(...),
-    days: int = Query(default=7, ge=1, le=365),
-    session: AsyncSession = Depends(get_session),
+    session: Annotated[AsyncSession, Depends(get_session)],
+    task_type: Annotated[str, Query()],
+    days: Annotated[int, Query(ge=1, le=365)] = 7,
 ) -> HTMLResponse:
     models = await _compute_eval(session, task_type=task_type, days=days)
     return templates.TemplateResponse(request, "_eval_table.html", {"models": models})

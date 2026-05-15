@@ -8,17 +8,18 @@ either a Job ID or a JobShadow ID (ID-discriminated, single URL).
 
 from __future__ import annotations
 
-from collections import defaultdict
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
+from typing import Annotated
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
-from sqlalchemy import case, func, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from auth import admin_only
 from db.session import get_session
+from eval.rollup import compute_rollup
 from models.job import Job
 from models.shadow import JobShadow
 from models.types import JobStatus
@@ -45,168 +46,18 @@ class CompareOut(BaseModel):
     models: list[ModelEval]
 
 
-def _aggregate_metadata_scores(
-    pairs: list[tuple[str, dict | None]],
-) -> tuple[dict[str, float], dict[str, int]]:
-    """Walk metadata.quality_scores entries, return per-model avg + count."""
-    sums: dict[str, float] = defaultdict(float)
-    counts: dict[str, int] = defaultdict(int)
-    for model, meta in pairs:
-        if not model:
-            continue
-        scores = (meta or {}).get("quality_scores", [])
-        for entry in scores:
-            try:
-                value = float(entry.get("score"))
-            except (TypeError, ValueError):
-                continue
-            sums[model] += value
-            counts[model] += 1
-    avgs = {m: sums[m] / counts[m] for m in counts}
-    return avgs, dict(counts)
-
-
 @router.get("/compare")
 async def compare(
-    task_type: str = Query(..., min_length=1),
-    days: int = Query(default=30, ge=1, le=365),
-    session: AsyncSession = Depends(get_session),
+    session: Annotated[AsyncSession, Depends(get_session)],
+    task_type: Annotated[str, Query(min_length=1)],
+    days: Annotated[int, Query(ge=1, le=365)] = 30,
 ) -> CompareOut:
-    since = datetime.now(UTC) - timedelta(days=days)
-
-    job_is_complete = case((Job.status == JobStatus.COMPLETE.value, 1), else_=0)
-    job_is_failed = case((Job.status == JobStatus.FAILED.value, 1), else_=0)
-    shadow_is_complete = case((JobShadow.status == JobStatus.COMPLETE.value, 1), else_=0)
-    shadow_is_failed = case((JobShadow.status == JobStatus.FAILED.value, 1), else_=0)
-
-    job_rows = (
-        await session.execute(
-            select(
-                Job.model_used.label("model"),
-                func.count().label("attempts"),
-                func.sum(job_is_complete).label("successes"),
-                func.sum(job_is_failed).label("failures"),
-                func.avg(Job.latency_ms).filter(Job.status == JobStatus.COMPLETE.value),
-                func.avg(Job.tokens_out).filter(Job.status == JobStatus.COMPLETE.value),
-                func.coalesce(
-                    func.sum(Job.cost_usd).filter(Job.status == JobStatus.COMPLETE.value),
-                    0,
-                ),
-            )
-            .where(
-                Job.task_type == task_type,
-                Job.created_at >= since,
-                Job.model_used != "",
-            )
-            .group_by(Job.model_used)
-        )
-    ).all()
-
-    # Shadows: join to parent for the task_type filter.
-    shadow_rows = (
-        await session.execute(
-            select(
-                JobShadow.model.label("model"),
-                func.count().label("attempts"),
-                func.sum(shadow_is_complete).label("successes"),
-                func.sum(shadow_is_failed).label("failures"),
-                func.avg(JobShadow.latency_ms).filter(JobShadow.status == JobStatus.COMPLETE.value),
-                func.avg(JobShadow.tokens_out).filter(JobShadow.status == JobStatus.COMPLETE.value),
-                func.coalesce(
-                    func.sum(JobShadow.cost_usd).filter(
-                        JobShadow.status == JobStatus.COMPLETE.value
-                    ),
-                    0,
-                ),
-            )
-            .join(Job, Job.id == JobShadow.parent_job_id)
-            .where(
-                Job.task_type == task_type,
-                JobShadow.created_at >= since,
-            )
-            .group_by(JobShadow.model)
-        )
-    ).all()
-
-    # Merge job + shadow stats per model.
-    rolled: dict[str, dict] = {}
-    for source_rows in (job_rows, shadow_rows):
-        for row in source_rows:
-            model, attempts, successes, failures, avg_latency, avg_tok_out, total_cost = row
-            entry = rolled.setdefault(
-                model,
-                {
-                    "attempts": 0,
-                    "successes": 0,
-                    "failures": 0,
-                    "latency_sum": 0.0,
-                    "latency_count": 0,
-                    "tokens_sum": 0.0,
-                    "tokens_count": 0,
-                    "cost_total": 0.0,
-                },
-            )
-            attempts_i = int(attempts or 0)
-            successes_i = int(successes or 0)
-            entry["attempts"] += attempts_i
-            entry["successes"] += successes_i
-            entry["failures"] += int(failures or 0)
-            entry["cost_total"] += float(total_cost or 0)
-            if avg_latency is not None and successes_i:
-                entry["latency_sum"] += float(avg_latency) * successes_i
-                entry["latency_count"] += successes_i
-            if avg_tok_out is not None and successes_i:
-                entry["tokens_sum"] += float(avg_tok_out) * successes_i
-                entry["tokens_count"] += successes_i
-
-    # Score rollup — single pass over both tables' metadata blobs.
-    score_pairs: list[tuple[str, dict | None]] = []
-    score_pairs.extend(
-        (m, meta)
-        for m, meta in (
-            await session.execute(
-                select(Job.model_used, Job.job_metadata).where(
-                    Job.task_type == task_type,
-                    Job.created_at >= since,
-                    Job.model_used != "",
-                )
-            )
-        ).all()
+    rows = await compute_rollup(session, task_type=task_type, days=days)
+    return CompareOut(
+        task_type=task_type,
+        period_days=days,
+        models=[ModelEval(**row) for row in rows],
     )
-    score_pairs.extend(
-        (m, meta)
-        for m, meta in (
-            await session.execute(
-                select(JobShadow.model, JobShadow.shadow_metadata)
-                .join(Job, Job.id == JobShadow.parent_job_id)
-                .where(Job.task_type == task_type, JobShadow.created_at >= since)
-            )
-        ).all()
-    )
-    avg_scores, score_counts = _aggregate_metadata_scores(score_pairs)
-
-    models: list[ModelEval] = []
-    for model, e in sorted(rolled.items(), key=lambda kv: -kv[1]["attempts"]):
-        successes = e["successes"]
-        cost_per_job = (e["cost_total"] / successes) if successes else 0.0
-        avg_lat = (e["latency_sum"] / e["latency_count"]) if e["latency_count"] else None
-        avg_tok = (e["tokens_sum"] / e["tokens_count"]) if e["tokens_count"] else None
-        models.append(
-            ModelEval(
-                model=model,
-                job_count=e["attempts"],
-                success_count=successes,
-                failure_count=e["failures"],
-                failure_rate=(e["failures"] / e["attempts"]) if e["attempts"] else 0.0,
-                avg_latency_ms=avg_lat,
-                avg_tokens_out=avg_tok,
-                cost_per_job_usd=cost_per_job,
-                avg_score=avg_scores.get(model),
-                score_count=score_counts.get(model, 0),
-            )
-        )
-
-    return CompareOut(task_type=task_type, period_days=days, models=models)
 
 
 class ScoreIn(BaseModel):
@@ -219,7 +70,7 @@ class ScoreIn(BaseModel):
 async def score_target(
     target_id: UUID,
     body: ScoreIn,
-    session: AsyncSession = Depends(get_session),
+    session: Annotated[AsyncSession, Depends(get_session)],
 ) -> dict:
     """Score either a Job or a JobShadow. The URL stays the same; we look
     up by ID in jobs first, then job_shadows. (UUIDs don't collide across
@@ -271,9 +122,9 @@ class ReviewOut(BaseModel):
 
 @router.get("/review")
 async def review_queue(
-    task_type: str | None = Query(default=None),
-    limit: int = Query(default=20, ge=1, le=100),
-    session: AsyncSession = Depends(get_session),
+    session: Annotated[AsyncSession, Depends(get_session)],
+    task_type: Annotated[str | None, Query()] = None,
+    limit: Annotated[int, Query(ge=1, le=100)] = 20,
 ) -> ReviewOut:
     """Return completed shadow rows that haven't been scored yet, joined with
     their parent for the task_type and prompt content. Oldest-first."""

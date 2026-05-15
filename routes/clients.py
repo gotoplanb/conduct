@@ -1,5 +1,6 @@
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
+from typing import Annotated
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -70,7 +71,7 @@ class UsageOut(BaseModel):
 
 @router.post("", status_code=status.HTTP_201_CREATED)
 async def create_client(
-    body: ClientCreateIn, session: AsyncSession = Depends(get_session)
+    body: ClientCreateIn, session: Annotated[AsyncSession, Depends(get_session)]
 ) -> ClientCreateOut:
     raw_key = generate_api_key()
     client = ClientApp(
@@ -97,14 +98,16 @@ async def create_client(
 
 
 @router.get("", response_model=list[ClientOut])
-async def list_clients(session: AsyncSession = Depends(get_session)) -> list[ClientApp]:
+async def list_clients(session: Annotated[AsyncSession, Depends(get_session)]) -> list[ClientApp]:
     result = await session.scalars(select(ClientApp).order_by(ClientApp.created_at))
     return list(result.all())
 
 
 @router.patch("/{client_id}", response_model=ClientOut)
 async def patch_client(
-    client_id: UUID, body: ClientPatchIn, session: AsyncSession = Depends(get_session)
+    client_id: UUID,
+    body: ClientPatchIn,
+    session: Annotated[AsyncSession, Depends(get_session)],
 ) -> ClientApp:
     client = await session.get(ClientApp, client_id)
     if client is None:
@@ -120,8 +123,8 @@ async def patch_client(
 @router.get("/{client_id}/usage")
 async def client_usage(
     client_id: UUID,
-    days: int = Query(default=30, ge=1, le=365),
-    session: AsyncSession = Depends(get_session),
+    session: Annotated[AsyncSession, Depends(get_session)],
+    days: Annotated[int, Query(ge=1, le=365)] = 30,
 ) -> UsageOut:
     client = await session.get(ClientApp, client_id)
     if client is None:

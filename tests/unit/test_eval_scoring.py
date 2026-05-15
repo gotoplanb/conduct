@@ -3,7 +3,7 @@ avg_score column."""
 
 from __future__ import annotations
 
-from routes.eval import _aggregate_metadata_scores
+from eval.rollup import aggregate_scores as _aggregate_metadata_scores
 
 
 def test_empty_input_returns_empty() -> None:

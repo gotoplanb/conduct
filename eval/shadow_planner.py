@@ -24,6 +24,33 @@ class ShadowPlan:
     provider: str
 
 
+def _cloud_target_blocked(
+    *,
+    model: str,
+    spec: dict,
+    sensitivity: Sensitivity,
+    allow_cloud_for_internal: bool,
+    today_cost_by_model: dict[str, Decimal],
+) -> bool:
+    """Sensitivity + daily-cost gates for a cloud shadow target. Local models
+    skip this entirely."""
+    if sensitivity == Sensitivity.CONFIDENTIAL:
+        return True
+    if sensitivity == Sensitivity.INTERNAL and not allow_cloud_for_internal:
+        return True
+    cap = spec.get("daily_cost_cap_usd")
+    if cap is not None:
+        spent = Decimal(str(today_cost_by_model.get(model, 0)))
+        if spent >= Decimal(str(cap)):
+            return True
+    return False
+
+
+def _sampled_in(spec: dict, rng: random.Random) -> bool:
+    rate = float(spec.get("rate", 0))
+    return rate > 0 and rng.random() < rate
+
+
 def plan_shadows(
     *,
     rule: RoutingRule | None,
@@ -35,13 +62,8 @@ def plan_shadows(
 ) -> list[ShadowPlan]:
     """Return the shadow targets to enqueue for this parent job.
 
-    Gates, in order:
-      1. Rule has `eval_shadow_models` configured (else: no shadows).
-      2. Target model != primary model (no point shadowing yourself).
-      3. Sensitivity: confidential never shadows cloud; internal only when
-         the client opted in via `allow_cloud_for_internal`.
-      4. Daily cost cap (per-model). Local models have no cap.
-      5. Random sample using the per-target rate.
+    Gates, in order: rule present, target != primary, sensitivity (cloud
+    only), daily cost cap (cloud only), per-target sample rate.
     """
     if rule is None or not rule.eval_shadow_models:
         return []
@@ -52,21 +74,15 @@ def plan_shadows(
         model = spec.get("model")
         if not model or model == primary_model:
             continue
-
-        if is_cloud(model):
-            if sensitivity == Sensitivity.CONFIDENTIAL:
-                continue
-            if sensitivity == Sensitivity.INTERNAL and not allow_cloud_for_internal:
-                continue
-            cap = spec.get("daily_cost_cap_usd")
-            if cap is not None:
-                spent = Decimal(str(today_cost_by_model.get(model, 0)))
-                if spent >= Decimal(str(cap)):
-                    continue
-
-        rate = float(spec.get("rate", 0))
-        if rate <= 0 or r.random() >= rate:
+        if is_cloud(model) and _cloud_target_blocked(
+            model=model,
+            spec=spec,
+            sensitivity=sensitivity,
+            allow_cloud_for_internal=allow_cloud_for_internal,
+            today_cost_by_model=today_cost_by_model,
+        ):
             continue
-
+        if not _sampled_in(spec, r):
+            continue
         plans.append(ShadowPlan(model=model, provider=provider_for_model(model)))
     return plans

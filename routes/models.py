@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
@@ -45,7 +46,7 @@ def _ollama(providers: ProviderRegistry) -> OllamaProvider:
 
 @router.get("")
 async def list_models(
-    providers: ProviderRegistry = Depends(get_provider_registry),
+    providers: Annotated[ProviderRegistry, Depends(get_provider_registry)],
 ) -> ModelsOut:
     ollama = _ollama(providers)
 
@@ -87,7 +88,7 @@ async def list_models(
 @router.post("/{name:path}/load")
 async def load_model(
     name: str,
-    providers: ProviderRegistry = Depends(get_provider_registry),
+    providers: Annotated[ProviderRegistry, Depends(get_provider_registry)],
 ) -> dict:
     ollama = _ollama(providers)
     try:
@@ -102,7 +103,7 @@ async def load_model(
 @router.post("/{name:path}/unload")
 async def unload_model(
     name: str,
-    providers: ProviderRegistry = Depends(get_provider_registry),
+    providers: Annotated[ProviderRegistry, Depends(get_provider_registry)],
 ) -> dict:
     if is_resident(name):
         raise HTTPException(

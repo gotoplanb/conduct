@@ -31,6 +31,10 @@ from worker.executor import execute_job
 log = logging.getLogger(__name__)
 _tracer = get_tracer(__name__)
 
+# Span attribute key used at each early-return / completion point of the
+# worker dispatch flow.
+_DISPATCH_OUTCOME = "dispatch.outcome"
+
 _providers: ProviderRegistry | None = None
 
 
@@ -51,6 +55,97 @@ def run_job(job_id_str: str) -> None:
     asyncio.run(_run_async(UUID(job_id_str)))
 
 
+async def _decide_or_fail(
+    job: Job,
+    client: ClientApp,
+    rule: RoutingRule | None,
+    settings,
+    session,
+    dispatch_span,
+):
+    """Run the routing engine. On SensitivityViolation, mark the job failed,
+    emit metrics, and return None so the caller bails out."""
+    try:
+        return decide(
+            sensitivity=Sensitivity(job.sensitivity),
+            model_requested=job.model_requested or None,
+            allow_cloud_for_internal=client.allow_cloud_for_internal,
+            rule=rule,
+            default_model=settings.default_model,
+            default_sensitive_model=settings.default_sensitive_model,
+        )
+    except SensitivityViolation as e:
+        job.status = JobStatus.FAILED.value
+        job.error = f"routing: {e}"
+        await session.commit()
+        dispatch_span.set_attribute(_DISPATCH_OUTCOME, "sensitivity_violation")
+        dispatch_span.record_exception(e)
+        record_job_completion(
+            status=JobStatus.FAILED.value,
+            task_type=job.task_type,
+            model="",
+            client_app=client.name,
+        )
+        return None
+
+
+async def _swap_ollama_if_needed(
+    decision,
+    providers: ProviderRegistry,
+    job: Job,
+    client_name: str,
+    session,
+    dispatch_span,
+) -> bool:
+    """Ensure the target Ollama model is loaded. Returns True on success or
+    when no swap was required; False when a swap was attempted but failed
+    (caller should bail). Marks the job failed and records metrics on
+    failure."""
+    if decision.provider != "ollama":
+        return True
+    ollama = providers.get("ollama")
+    with _tracer.start_as_current_span("conduct.worker.swap") as swap_span:
+        swap_span.set_attribute("model.target", decision.model)
+        try:
+            loaded = await ollama.list_loaded()
+            loaded_names = {m["name"] for m in loaded}
+        except Exception:
+            loaded_names = set()
+        swap_span.set_attribute("model.already_loaded", decision.model in loaded_names)
+        if decision.model in loaded_names:
+            return True
+
+        from_model = next(iter(loaded_names), "")
+        swap_span.set_attribute("model.from", from_model)
+        t0 = time.perf_counter()
+        try:
+            await ollama.load(decision.model)
+        except Exception as e:
+            job.status = JobStatus.FAILED.value
+            job.error = f"model swap failed: {e!r}"
+            job.model_used = decision.model  # for per-model failure attribution
+            await session.commit()
+            swap_span.record_exception(e)
+            dispatch_span.set_attribute(_DISPATCH_OUTCOME, "swap_failed")
+            record_job_completion(
+                status=JobStatus.FAILED.value,
+                task_type=job.task_type,
+                model=decision.model,
+                client_app=client_name,
+            )
+            return False
+        swap_s = time.perf_counter() - t0
+        swap_span.set_attribute("swap.duration_s", swap_s)
+        record_model_swap(
+            from_model=from_model, to_model=decision.model, duration_s=swap_s
+        )
+        job.job_metadata = {
+            **(job.job_metadata or {}),
+            "model_swap_ms": int(swap_s * 1000),
+        }
+        return True
+
+
 async def _run_async(job_id: UUID) -> None:
     providers = _get_providers()
     settings = get_settings()
@@ -63,14 +158,14 @@ async def _run_async(job_id: UUID) -> None:
             job = await session.get(Job, job_id)
             if job is None:
                 log.warning("worker dequeued non-existent job %s", job_id)
-                dispatch_span.set_attribute("dispatch.outcome", "missing")
+                dispatch_span.set_attribute(_DISPATCH_OUTCOME, "missing")
                 return
 
             # Skip jobs that aren't pending — they may have been cancelled or
             # already processed if the queue replayed.
             if job.status != JobStatus.PENDING.value:
                 log.info("worker skipping job %s with status=%s", job_id, job.status)
-                dispatch_span.set_attribute("dispatch.outcome", f"skip:{job.status}")
+                dispatch_span.set_attribute(_DISPATCH_OUTCOME, f"skip:{job.status}")
                 return
 
             dispatch_span.set_attribute("job.task_type", job.task_type)
@@ -85,82 +180,25 @@ async def _run_async(job_id: UUID) -> None:
                 from tts.executor import execute_tts  # noqa: PLC0415
 
                 await execute_tts(job=job, client_name=client.name, session=session)
-                dispatch_span.set_attribute("dispatch.outcome", "tts_executed")
+                dispatch_span.set_attribute(_DISPATCH_OUTCOME, "tts_executed")
                 return
 
             rule = await session.scalar(
                 select(RoutingRule).where(RoutingRule.task_type == job.task_type)
             )
-
-            try:
-                decision = decide(
-                    sensitivity=Sensitivity(job.sensitivity),
-                    model_requested=job.model_requested or None,
-                    allow_cloud_for_internal=client.allow_cloud_for_internal,
-                    rule=rule,
-                    default_model=settings.default_model,
-                    default_sensitive_model=settings.default_sensitive_model,
-                )
-            except SensitivityViolation as e:
-                job.status = JobStatus.FAILED.value
-                job.error = f"routing: {e}"
-                await session.commit()
-                dispatch_span.set_attribute("dispatch.outcome", "sensitivity_violation")
-                dispatch_span.record_exception(e)
-                record_job_completion(
-                    status=JobStatus.FAILED.value,
-                    task_type=job.task_type,
-                    model="",
-                    client_app=client.name,
-                )
+            decision = await _decide_or_fail(
+                job, client, rule, settings, session, dispatch_span
+            )
+            if decision is None:
                 return
 
             dispatch_span.set_attribute("model.target", decision.model)
             dispatch_span.set_attribute("model.provider", decision.provider)
 
-            # Local model swap, if needed. Worker is the only component that does this.
-            if decision.provider == "ollama":
-                ollama = providers.get("ollama")
-                with _tracer.start_as_current_span("conduct.worker.swap") as swap_span:
-                    swap_span.set_attribute("model.target", decision.model)
-                    try:
-                        loaded = await ollama.list_loaded()
-                        loaded_names = {m["name"] for m in loaded}
-                    except Exception:
-                        loaded_names = set()
-                    swap_span.set_attribute("model.already_loaded", decision.model in loaded_names)
-                    if decision.model not in loaded_names:
-                        from_model = next(iter(loaded_names), "")
-                        swap_span.set_attribute("model.from", from_model)
-                        t0 = time.perf_counter()
-                        try:
-                            await ollama.load(decision.model)
-                        except Exception as e:
-                            job.status = JobStatus.FAILED.value
-                            job.error = f"model swap failed: {e!r}"
-                            # Attribute the failure to the model we tried to load.
-                            job.model_used = decision.model
-                            await session.commit()
-                            swap_span.record_exception(e)
-                            dispatch_span.set_attribute("dispatch.outcome", "swap_failed")
-                            record_job_completion(
-                                status=JobStatus.FAILED.value,
-                                task_type=job.task_type,
-                                model=decision.model,
-                                client_app=client.name,
-                            )
-                            return
-                        swap_s = time.perf_counter() - t0
-                        swap_span.set_attribute("swap.duration_s", swap_s)
-                        record_model_swap(
-                            from_model=from_model,
-                            to_model=decision.model,
-                            duration_s=swap_s,
-                        )
-                        job.job_metadata = {
-                            **(job.job_metadata or {}),
-                            "model_swap_ms": int(swap_s * 1000),
-                        }
+            if not await _swap_ollama_if_needed(
+                decision, providers, job, client.name, session, dispatch_span
+            ):
+                return
 
             await execute_job(
                 job=job,
@@ -169,7 +207,7 @@ async def _run_async(job_id: UUID) -> None:
                 providers=providers,
                 session=session,
             )
-            dispatch_span.set_attribute("dispatch.outcome", "executed")
+            dispatch_span.set_attribute(_DISPATCH_OUTCOME, "executed")
 
             # Plan + enqueue shadow jobs after a successful original. Failed
             # originals don't shadow — there's nothing meaningful to compare

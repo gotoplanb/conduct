@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 from datetime import datetime
 from decimal import Decimal
+from typing import Annotated
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -110,28 +111,16 @@ def _should_enqueue(body: JobCreateIn, decision: RoutingDecision) -> bool:
     return not is_resident(decision.model)
 
 
-@router.post(
-    "",
-    response_model=None,
-    responses={
-        200: {"model": JobOut, "description": "sync result"},
-        202: {"description": "queued for async execution"},
-    },
-)
-async def submit_job(
-    body: JobCreateIn,
-    client: ClientApp = Depends(rate_limited_client),
-    session: AsyncSession = Depends(get_session),
-    providers: ProviderRegistry = Depends(get_provider_registry),
-) -> JSONResponse | JobOut:
-    rule = await session.scalar(select(RoutingRule).where(RoutingRule.task_type == body.task_type))
+def _resolve_decision(
+    body: JobCreateIn, client: ClientApp, rule: RoutingRule | None
+) -> RoutingDecision:
+    """Run the routing engine, mapping SensitivityViolation to a 400."""
+    settings = get_settings()
     requested_sensitivity = body.sensitivity or (
         Sensitivity(rule.sensitivity) if rule else Sensitivity.INTERNAL
     )
-
-    settings = get_settings()
     try:
-        decision = decide(
+        return decide(
             sensitivity=requested_sensitivity,
             model_requested=body.model,
             allow_cloud_for_internal=client.allow_cloud_for_internal,
@@ -142,38 +131,136 @@ async def submit_job(
     except SensitivityViolation as e:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e)) from e
 
-    # Fan-out validation: every target must be directly callable from the
-    # API (cloud or resident-local). The primary is held to the same bar —
-    # otherwise we'd need to interleave queue + sync execution, which breaks
-    # the parallelism guarantee.
-    if body.fanout:
-        try:
-            validate_fanout_targets(body.fanout)
-        except FanoutValidationError as e:
-            raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e)) from e
-        if not (is_cloud(decision.model) or is_resident(decision.model)):
-            raise HTTPException(
-                status.HTTP_400_BAD_REQUEST,
-                f"primary model {decision.model!r} is non-resident local — "
-                "fanout requires the primary to be cloud or in RESIDENT_MODELS",
+
+def _validate_fanout(
+    body: JobCreateIn, decision: RoutingDecision, client: ClientApp
+) -> None:
+    """Every fan-out target (including the primary) must be directly callable
+    from the API path — cloud or resident-local. Cloud targets are further
+    gated on sensitivity. Raises HTTPException(400) on any violation."""
+    if not body.fanout:
+        return
+    try:
+        validate_fanout_targets(body.fanout)
+    except FanoutValidationError as e:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e)) from e
+    if not (is_cloud(decision.model) or is_resident(decision.model)):
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            f"primary model {decision.model!r} is non-resident local — "
+            "fanout requires the primary to be cloud or in RESIDENT_MODELS",
+        )
+    for target in body.fanout:
+        if is_cloud(target):
+            _check_cloud_target_sensitivity(target, decision, client)
+
+
+def _check_cloud_target_sensitivity(
+    target: str, decision: RoutingDecision, client: ClientApp
+) -> None:
+    if decision.effective_sensitivity == Sensitivity.CONFIDENTIAL:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            f"fanout target {target!r} is cloud — disallowed for confidential",
+        )
+    if (
+        decision.effective_sensitivity == Sensitivity.INTERNAL
+        and not client.allow_cloud_for_internal
+    ):
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            f"fanout target {target!r} is cloud — client lacks allow_cloud_for_internal",
+        )
+
+
+async def _enqueue_for_async(job: Job, session: AsyncSession) -> JSONResponse:
+    try:
+        get_queue().enqueue(
+            run_job,
+            str(job.id),
+            job_id=str(job.id),
+            job_timeout=DEFAULT_JOB_TIMEOUT_S,
+        )
+    except Exception as e:
+        # If Redis is down, we still have the row — flip it to failed so the
+        # client gets a definite signal rather than a perpetually-pending job.
+        log.exception("failed to enqueue job %s", job.id)
+        job.status = JobStatus.FAILED.value
+        job.error = f"enqueue failed: {e}"
+        await session.commit()
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE, "queue backend unavailable"
+        ) from e
+    return JSONResponse(
+        status_code=status.HTTP_202_ACCEPTED,
+        content={
+            "job_id": str(job.id),
+            "status": JobStatus.PENDING.value,
+            "poll_url": f"/jobs/{job.id}",
+        },
+    )
+
+
+async def _execute_sync(
+    *,
+    job: Job,
+    decision: RoutingDecision,
+    body: JobCreateIn,
+    client: ClientApp,
+    providers: ProviderRegistry,
+    session: AsyncSession,
+) -> None:
+    """Run the primary (and any fan-out secondaries) inline. Translates
+    PromptNotFoundError → 500 and ProviderError → 502."""
+    import asyncio as _asyncio
+
+    try:
+        primary = execute_job(
+            job=job,
+            decision=decision,
+            client_name=client.name,
+            providers=providers,
+            session=session,
+        )
+        if body.fanout:
+            secondaries = run_fanout_secondaries(
+                parent=job,
+                secondary_models=body.fanout,
+                client_name=client.name,
+                max_tokens=decision.max_tokens,
+                providers=providers,
+                session=session,
             )
-        # Apply same sensitivity gates the planner uses, just inline here.
-        for target in body.fanout:
-            if is_cloud(target):
-                if decision.effective_sensitivity == Sensitivity.CONFIDENTIAL:
-                    raise HTTPException(
-                        status.HTTP_400_BAD_REQUEST,
-                        f"fanout target {target!r} is cloud — disallowed for confidential",
-                    )
-                if (
-                    decision.effective_sensitivity == Sensitivity.INTERNAL
-                    and not client.allow_cloud_for_internal
-                ):
-                    raise HTTPException(
-                        status.HTTP_400_BAD_REQUEST,
-                        f"fanout target {target!r} is cloud — client lacks "
-                        "allow_cloud_for_internal",
-                    )
+            await _asyncio.gather(primary, secondaries)
+        else:
+            await primary
+    except PromptNotFoundError as e:
+        job.status = JobStatus.FAILED.value
+        job.error = f"prompt resolution failed: {e}"
+        await session.commit()
+        raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, str(e)) from e
+    except ProviderError as e:
+        await session.rollback()
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, str(e)) from e
+
+
+@router.post(
+    "",
+    response_model=None,
+    responses={
+        200: {"model": JobOut, "description": "sync result"},
+        202: {"description": "queued for async execution"},
+    },
+)
+async def submit_job(
+    body: JobCreateIn,
+    client: Annotated[ClientApp, Depends(rate_limited_client)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+    providers: Annotated[ProviderRegistry, Depends(get_provider_registry)],
+) -> JSONResponse | JobOut:
+    rule = await session.scalar(select(RoutingRule).where(RoutingRule.task_type == body.task_type))
+    decision = _resolve_decision(body, client, rule)
+    _validate_fanout(body, decision, client)
 
     if not providers.has(decision.provider) and not _should_enqueue(body, decision):
         # Sync path needs the provider in-process; async path defers the check
@@ -199,80 +286,24 @@ async def submit_job(
     await session.refresh(job)
 
     if _should_enqueue(body, decision):
-        try:
-            get_queue().enqueue(
-                run_job,
-                str(job.id),
-                job_id=str(job.id),
-                job_timeout=DEFAULT_JOB_TIMEOUT_S,
-            )
-        except Exception as e:
-            # If Redis is down, we still have the row — flip it to failed so the
-            # client gets a definite signal rather than a perpetually-pending job.
-            log.exception("failed to enqueue job %s", job.id)
-            job.status = JobStatus.FAILED.value
-            job.error = f"enqueue failed: {e}"
-            await session.commit()
-            raise HTTPException(
-                status.HTTP_503_SERVICE_UNAVAILABLE, "queue backend unavailable"
-            ) from e
-        return JSONResponse(
-            status_code=status.HTTP_202_ACCEPTED,
-            content={
-                "job_id": str(job.id),
-                "status": JobStatus.PENDING.value,
-                "poll_url": f"/jobs/{job.id}",
-            },
-        )
+        return await _enqueue_for_async(job, session)
 
-    # Sync path: cloud, resident-local, or fan-out.
-    try:
-        if body.fanout:
-            import asyncio as _asyncio
-
-            primary_task = execute_job(
-                job=job,
-                decision=decision,
-                client_name=client.name,
-                providers=providers,
-                session=session,
-            )
-            secondary_task = run_fanout_secondaries(
-                parent=job,
-                secondary_models=body.fanout,
-                client_name=client.name,
-                max_tokens=decision.max_tokens,
-                providers=providers,
-                session=session,
-            )
-            # asyncio.gather runs both concurrently; the slowest determines
-            # total wall time, not the sum of latencies.
-            await _asyncio.gather(primary_task, secondary_task)
-        else:
-            await execute_job(
-                job=job,
-                decision=decision,
-                client_name=client.name,
-                providers=providers,
-                session=session,
-            )
-    except PromptNotFoundError as e:
-        job.status = JobStatus.FAILED.value
-        job.error = f"prompt resolution failed: {e}"
-        await session.commit()
-        raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, str(e)) from e
-    except ProviderError as e:
-        await session.rollback()
-        raise HTTPException(status.HTTP_502_BAD_GATEWAY, str(e)) from e
-
+    await _execute_sync(
+        job=job,
+        decision=decision,
+        body=body,
+        client=client,
+        providers=providers,
+        session=session,
+    )
     return JobOut.from_job(job)
 
 
 @router.get("/{job_id}")
 async def get_job(
     job_id: UUID,
-    client: ClientApp = Depends(current_client),
-    session: AsyncSession = Depends(get_session),
+    client: Annotated[ClientApp, Depends(current_client)],
+    session: Annotated[AsyncSession, Depends(get_session)],
 ) -> JobOut:
     job = await session.get(Job, job_id)
     if job is None or job.client_app_id != client.id:
@@ -283,8 +314,8 @@ async def get_job(
 @router.delete("/{job_id}")
 async def cancel_job(
     job_id: UUID,
-    client: ClientApp = Depends(current_client),
-    session: AsyncSession = Depends(get_session),
+    client: Annotated[ClientApp, Depends(current_client)],
+    session: Annotated[AsyncSession, Depends(get_session)],
 ) -> JobOut:
     job = await session.get(Job, job_id)
     if job is None or job.client_app_id != client.id:

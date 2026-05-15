@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, ConfigDict, Field
@@ -48,7 +49,9 @@ class RoutingListOut(BaseModel):
 
 
 @router.get("")
-async def list_routing(session: AsyncSession = Depends(get_session)) -> RoutingListOut:
+async def list_routing(
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> RoutingListOut:
     rows = (await session.scalars(select(RoutingRule).order_by(RoutingRule.task_type))).all()
     return RoutingListOut(rules=[RoutingRuleOut.model_validate(r) for r in rows])
 
@@ -57,7 +60,7 @@ async def list_routing(session: AsyncSession = Depends(get_session)) -> RoutingL
 async def upsert_routing(
     task_type: str,
     body: RoutingRuleIn,
-    session: AsyncSession = Depends(get_session),
+    session: Annotated[AsyncSession, Depends(get_session)],
 ) -> RoutingRule:
     if not task_type or len(task_type) > 100:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "task_type must be 1-100 chars")
