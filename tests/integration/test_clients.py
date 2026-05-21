@@ -76,6 +76,42 @@ async def test_patch_nonexistent_client_is_404(client, admin_headers) -> None:
     assert r.status_code == 404
 
 
+async def test_rotate_key_returns_new_key_and_invalidates_old(
+    client, admin_headers, seeded_client
+) -> None:
+    row, old_key = seeded_client
+    r = await client.post(f"/clients/{row.id}/rotate-key", headers=admin_headers)
+    assert r.status_code == 200
+    body = r.json()
+    new_key = body["api_key"]
+    assert new_key.startswith("cdt_")
+    assert new_key != old_key
+    assert str(row.id) == body["id"]
+
+
+async def test_rotate_key_nonexistent_client_is_404(client, admin_headers) -> None:
+    r = await client.post(
+        "/clients/00000000-0000-0000-0000-000000000000/rotate-key",
+        headers=admin_headers,
+    )
+    assert r.status_code == 404
+
+
+async def test_rotate_key_unauthenticated_is_403(client, seeded_client) -> None:
+    row, _ = seeded_client
+    r = await client.post(f"/clients/{row.id}/rotate-key")
+    assert r.status_code == 403
+
+
+async def test_list_clients_includes_key_created_at(
+    client, admin_headers, seeded_client
+) -> None:
+    r = await client.get("/clients", headers=admin_headers)
+    assert r.status_code == 200
+    me = next(c for c in r.json() if c["id"] == str(seeded_client[0].id))
+    assert "key_created_at" in me
+
+
 async def test_usage_aggregates_by_day(
     client, admin_headers, seeded_client, db_session: AsyncSession
 ) -> None:

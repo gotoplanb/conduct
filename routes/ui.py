@@ -19,8 +19,10 @@ from fastapi import APIRouter, Cookie, Depends, Form, HTTPException, Query, Requ
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from auth import generate_api_key, hash_api_key
 from config.settings import get_settings
 from db.session import get_session
 from eval.rollup import compute_rollup
@@ -277,6 +279,143 @@ async def job_detail(
             "metadata_json": json.dumps(job.job_metadata or {}, indent=2, default=str),
             "grafana_trace_url": _grafana_trace_url(job),
         },
+    )
+
+
+# ---------- clients ----------
+
+
+async def _load_clients(session: AsyncSession) -> list[dict]:
+    rows = (await session.scalars(select(ClientApp).order_by(ClientApp.created_at))).all()
+    return [
+        {
+            "id": str(c.id),
+            "name": c.name,
+            "is_active": c.is_active,
+            "rate_limit_per_minute": c.rate_limit_per_minute,
+            "allow_cloud_for_internal": c.allow_cloud_for_internal,
+            "notes": c.notes,
+            "created_at": c.created_at,
+            "key_created_at": c.key_created_at,
+            "key_created_rel": _humanize_age(c.key_created_at),
+        }
+        for c in rows
+    ]
+
+
+async def _render_clients(
+    request: Request,
+    session: AsyncSession,
+    *,
+    new_key: dict | None = None,
+    flash: str | None = None,
+    error: str | None = None,
+    status_code: int = status.HTTP_200_OK,
+) -> HTMLResponse:
+    clients = await _load_clients(session)
+    return templates.TemplateResponse(
+        request,
+        "clients_list.html",
+        {"clients": clients, "new_key": new_key, "flash": flash, "error": error},
+        status_code=status_code,
+    )
+
+
+@router.get("/clients", response_class=HTMLResponse, dependencies=[Depends(admin_session)])
+async def clients_page(
+    request: Request, session: Annotated[AsyncSession, Depends(get_session)]
+) -> HTMLResponse:
+    return await _render_clients(request, session)
+
+
+@router.post("/clients", response_class=HTMLResponse, dependencies=[Depends(admin_session)])
+async def clients_create(
+    request: Request,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    name: Annotated[str, Form()],
+    notes: Annotated[str, Form()] = "",
+    rate_limit_per_minute: Annotated[str, Form()] = "",
+    allow_cloud_for_internal: Annotated[bool, Form()] = False,
+) -> HTMLResponse:
+    name = name.strip()
+    if not name:
+        return await _render_clients(
+            request, session, error="Name is required.",
+            status_code=status.HTTP_400_BAD_REQUEST,
+        )
+    rate = int(rate_limit_per_minute) if rate_limit_per_minute.strip() else None
+    raw_key = generate_api_key()
+    client = ClientApp(
+        name=name,
+        api_key_hash=hash_api_key(raw_key),
+        notes=notes.strip(),
+        rate_limit_per_minute=rate,
+        allow_cloud_for_internal=allow_cloud_for_internal,
+    )
+    session.add(client)
+    try:
+        await session.commit()
+    except IntegrityError:
+        await session.rollback()
+        return await _render_clients(
+            request, session, error=f"A client named {name!r} already exists.",
+            status_code=status.HTTP_409_CONFLICT,
+        )
+    return await _render_clients(
+        request,
+        session,
+        new_key={"name": name, "api_key": raw_key, "action": "created"},
+    )
+
+
+@router.post(
+    "/clients/{client_id}/rotate",
+    response_class=HTMLResponse,
+    dependencies=[Depends(admin_session)],
+)
+async def clients_rotate(
+    request: Request,
+    client_id: UUID,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> HTMLResponse:
+    client = await session.get(ClientApp, client_id)
+    if client is None:
+        return await _render_clients(
+            request, session, error="Client not found.",
+            status_code=status.HTTP_404_NOT_FOUND,
+        )
+    raw_key = generate_api_key()
+    client.api_key_hash = hash_api_key(raw_key)
+    client.key_created_at = datetime.now(UTC)
+    await session.commit()
+    return await _render_clients(
+        request,
+        session,
+        new_key={"name": client.name, "api_key": raw_key, "action": "rotated"},
+    )
+
+
+@router.post(
+    "/clients/{client_id}/toggle",
+    response_class=HTMLResponse,
+    dependencies=[Depends(admin_session)],
+)
+async def clients_toggle(
+    request: Request,
+    client_id: UUID,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> HTMLResponse:
+    client = await session.get(ClientApp, client_id)
+    if client is None:
+        return await _render_clients(
+            request, session, error="Client not found.",
+            status_code=status.HTTP_404_NOT_FOUND,
+        )
+    client.is_active = not client.is_active
+    state = "active" if client.is_active else "inactive"
+    await session.commit()
+    return await _render_clients(
+        request, session, flash=f"{client.name} is now {state}."
     )
 
 

@@ -1,0 +1,122 @@
+{% extends "base.html" %}
+{% block title %}Clients — Conduct{% endblock %}
+{% block content %}
+<div x-data="{ showNew: false }">
+  <div class="flex items-center justify-between mb-6">
+    <h1 class="text-2xl font-semibold">Clients</h1>
+    <button @click="showNew = !showNew"
+            class="bg-zinc-100 text-zinc-900 font-medium rounded-md px-3 py-1.5 text-sm hover:bg-white transition">
+      <span x-show="!showNew">New client</span>
+      <span x-show="showNew" x-cloak>Cancel</span>
+    </button>
+  </div>
+
+  {% if new_key %}
+  <div x-data="{ copied: false }"
+       class="mb-6 rounded-lg border border-amber-600/60 bg-amber-900/20 px-4 py-3">
+    <div class="text-sm font-medium text-amber-200 mb-1">
+      API key {{ new_key.action }} for <span class="font-semibold">{{ new_key.name }}</span>
+    </div>
+    <p class="text-xs text-amber-300/80 mb-3">
+      Copy this now — it is shown only once and cannot be retrieved later.
+    </p>
+    <div class="flex items-center gap-2">
+      <code class="flex-1 rounded bg-zinc-950 border border-zinc-700 px-3 py-2 text-sm text-zinc-100 break-all select-all">{{ new_key.api_key }}</code>
+      <button @click="navigator.clipboard.writeText('{{ new_key.api_key }}'); copied = true; setTimeout(() => copied = false, 1500)"
+              class="shrink-0 bg-zinc-100 text-zinc-900 font-medium rounded-md px-3 py-2 text-sm hover:bg-white transition">
+        <span x-show="!copied">Copy</span>
+        <span x-show="copied" x-cloak>Copied</span>
+      </button>
+    </div>
+  </div>
+  {% endif %}
+
+  {% if flash %}
+  <div class="mb-4 rounded border border-emerald-700 bg-emerald-900/30 px-3 py-2 text-sm text-emerald-200">{{ flash }}</div>
+  {% endif %}
+  {% if error %}
+  <div class="mb-4 rounded border border-red-700 bg-red-900/30 px-3 py-2 text-sm text-red-200">{{ error }}</div>
+  {% endif %}
+
+  <form method="post" action="/ui/clients" x-show="showNew" x-cloak
+        class="mb-6 rounded-lg border border-zinc-800 bg-zinc-900/40 p-4 grid gap-4 sm:grid-cols-2">
+    <div>
+      <label class="block text-xs uppercase text-zinc-500 mb-1">Name</label>
+      <input type="text" name="name" required
+             class="w-full bg-zinc-900 border border-zinc-700 rounded-md px-3 py-1.5 text-sm">
+    </div>
+    <div>
+      <label class="block text-xs uppercase text-zinc-500 mb-1">Rate limit / min <span class="text-zinc-600">(optional)</span></label>
+      <input type="number" name="rate_limit_per_minute" min="1"
+             class="w-full bg-zinc-900 border border-zinc-700 rounded-md px-3 py-1.5 text-sm">
+    </div>
+    <div class="sm:col-span-2">
+      <label class="block text-xs uppercase text-zinc-500 mb-1">Notes</label>
+      <input type="text" name="notes"
+             class="w-full bg-zinc-900 border border-zinc-700 rounded-md px-3 py-1.5 text-sm">
+    </div>
+    <label class="flex items-center gap-2 text-sm text-zinc-300">
+      <input type="checkbox" name="allow_cloud_for_internal" value="true"
+             class="rounded border-zinc-700 bg-zinc-900">
+      Allow cloud models for internal-sensitivity jobs
+    </label>
+    <div class="sm:col-span-2">
+      <button type="submit"
+              class="bg-zinc-100 text-zinc-900 font-medium rounded-md px-4 py-2 text-sm hover:bg-white transition">
+        Create client
+      </button>
+    </div>
+  </form>
+
+  <div class="rounded-lg border border-zinc-800 overflow-hidden">
+    <table class="w-full text-sm">
+      <thead class="bg-zinc-900/60 text-zinc-400 text-xs uppercase">
+        <tr>
+          <th class="text-left font-medium px-4 py-2.5">Name</th>
+          <th class="text-left font-medium px-4 py-2.5">Status</th>
+          <th class="text-left font-medium px-4 py-2.5">Key created</th>
+          <th class="text-left font-medium px-4 py-2.5">Rate limit</th>
+          <th class="text-left font-medium px-4 py-2.5">Cloud</th>
+          <th class="text-left font-medium px-4 py-2.5">Notes</th>
+          <th class="text-right font-medium px-4 py-2.5">Actions</th>
+        </tr>
+      </thead>
+      <tbody class="divide-y divide-zinc-800">
+        {% for c in clients %}
+        <tr class="hover:bg-zinc-900/40">
+          <td class="px-4 py-2.5 font-medium">{{ c.name }}</td>
+          <td class="px-4 py-2.5">
+            {% if c.is_active %}
+            <span class="inline-flex items-center rounded-full bg-emerald-900/40 text-emerald-300 px-2 py-0.5 text-xs">active</span>
+            {% else %}
+            <span class="inline-flex items-center rounded-full bg-zinc-800 text-zinc-400 px-2 py-0.5 text-xs">inactive</span>
+            {% endif %}
+          </td>
+          <td class="px-4 py-2.5 text-zinc-400" title="{{ c.key_created_at.strftime('%Y-%m-%d %H:%M UTC') }}">{{ c.key_created_rel }}</td>
+          <td class="px-4 py-2.5 text-zinc-400">{{ c.rate_limit_per_minute if c.rate_limit_per_minute is not none else '—' }}</td>
+          <td class="px-4 py-2.5 text-zinc-400">{{ 'yes' if c.allow_cloud_for_internal else '—' }}</td>
+          <td class="px-4 py-2.5 text-zinc-500 max-w-xs truncate" title="{{ c.notes }}">{{ c.notes or '—' }}</td>
+          <td class="px-4 py-2.5">
+            <div class="flex items-center justify-end gap-2">
+              <form method="post" action="/ui/clients/{{ c.id }}/rotate"
+                    onsubmit="return confirm('Rotate the key for {{ c.name }}? The current key stops working immediately.')">
+                <button class="rounded-md border border-zinc-700 px-2.5 py-1 text-xs text-zinc-300 hover:bg-zinc-800">Rotate key</button>
+              </form>
+              <form method="post" action="/ui/clients/{{ c.id }}/toggle">
+                {% if c.is_active %}
+                <button class="rounded-md border border-zinc-700 px-2.5 py-1 text-xs text-amber-300 hover:bg-zinc-800">Deactivate</button>
+                {% else %}
+                <button class="rounded-md border border-zinc-700 px-2.5 py-1 text-xs text-emerald-300 hover:bg-zinc-800">Activate</button>
+                {% endif %}
+              </form>
+            </div>
+          </td>
+        </tr>
+        {% else %}
+        <tr><td colspan="7" class="px-4 py-6 text-center text-zinc-500">No clients yet.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}

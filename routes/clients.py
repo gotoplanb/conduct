@@ -15,6 +15,8 @@ from models.client import ClientApp, ClientAppUsage
 
 router = APIRouter(prefix="/clients", tags=["clients"], dependencies=[Depends(admin_only)])
 
+_CLIENT_NOT_FOUND = "client not found"
+
 
 class ClientCreateIn(BaseModel):
     name: str = Field(min_length=1, max_length=100)
@@ -41,6 +43,14 @@ class ClientOut(BaseModel):
     allow_cloud_for_internal: bool
     notes: str
     created_at: datetime
+    key_created_at: datetime
+
+
+class RotateKeyOut(BaseModel):
+    id: UUID
+    name: str
+    api_key: str
+    key_created_at: datetime
 
 
 class ClientPatchIn(BaseModel):
@@ -111,13 +121,35 @@ async def patch_client(
 ) -> ClientApp:
     client = await session.get(ClientApp, client_id)
     if client is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "client not found")
+        raise HTTPException(status.HTTP_404_NOT_FOUND, _CLIENT_NOT_FOUND)
     updates = body.model_dump(exclude_unset=True)
     for k, v in updates.items():
         setattr(client, k, v)
     await session.commit()
     await session.refresh(client)
     return client
+
+
+@router.post("/{client_id}/rotate-key")
+async def rotate_key(
+    client_id: UUID, session: Annotated[AsyncSession, Depends(get_session)]
+) -> RotateKeyOut:
+    """Mint a fresh API key for an existing client. The old key stops working
+    immediately. The raw key is returned once here and never again."""
+    client = await session.get(ClientApp, client_id)
+    if client is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, _CLIENT_NOT_FOUND)
+    raw_key = generate_api_key()
+    client.api_key_hash = hash_api_key(raw_key)
+    client.key_created_at = datetime.now(UTC)
+    await session.commit()
+    await session.refresh(client)
+    return RotateKeyOut(
+        id=client.id,
+        name=client.name,
+        api_key=raw_key,
+        key_created_at=client.key_created_at,
+    )
 
 
 @router.get("/{client_id}/usage")
@@ -128,7 +160,7 @@ async def client_usage(
 ) -> UsageOut:
     client = await session.get(ClientApp, client_id)
     if client is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "client not found")
+        raise HTTPException(status.HTTP_404_NOT_FOUND, _CLIENT_NOT_FOUND)
 
     today = datetime.now(UTC).date()
     since = today - timedelta(days=days - 1)

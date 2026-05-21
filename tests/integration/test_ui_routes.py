@@ -119,6 +119,70 @@ async def test_ui_eval_page(client, db_session, seeded_client, admin_token) -> N
     assert r.status_code == 200
 
 
+async def test_ui_clients_unauth_redirects(client) -> None:
+    r = await client.get("/ui/clients", follow_redirects=False)
+    assert r.status_code == 303
+    assert r.headers["location"] == "/ui/login"
+
+
+async def test_ui_clients_lists_clients(client, seeded_client, admin_token) -> None:
+    r = await client.get("/ui/clients", cookies={"conduct_admin": admin_token})
+    assert r.status_code == 200
+    assert seeded_client[0].name in r.text
+
+
+async def test_ui_clients_create_reveals_key_once(client, admin_token) -> None:
+    r = await client.post(
+        "/ui/clients",
+        data={"name": "ui-created", "notes": "from ui"},
+        cookies={"conduct_admin": admin_token},
+    )
+    assert r.status_code == 200
+    assert "ui-created" in r.text
+    # The raw key is rendered once in the reveal banner.
+    assert "cdt_" in r.text
+    assert "shown only once" in r.text
+
+
+async def test_ui_clients_create_blank_name_is_400(client, admin_token) -> None:
+    r = await client.post(
+        "/ui/clients",
+        data={"name": "   "},
+        cookies={"conduct_admin": admin_token},
+    )
+    assert r.status_code == 400
+    assert "Name is required" in r.text
+
+
+async def test_ui_clients_rotate_shows_new_key(client, seeded_client, admin_token) -> None:
+    row, _ = seeded_client
+    r = await client.post(
+        f"/ui/clients/{row.id}/rotate",
+        cookies={"conduct_admin": admin_token},
+    )
+    assert r.status_code == 200
+    assert "rotated" in r.text
+    assert "cdt_" in r.text
+
+
+async def test_ui_clients_toggle_flips_active(client, seeded_client, admin_token) -> None:
+    row, _ = seeded_client
+    r = await client.post(
+        f"/ui/clients/{row.id}/toggle",
+        cookies={"conduct_admin": admin_token},
+    )
+    assert r.status_code == 200
+    assert "now inactive" in r.text
+
+
+async def test_ui_clients_rotate_missing_is_404(client, admin_token) -> None:
+    r = await client.post(
+        "/ui/clients/00000000-0000-0000-0000-000000000000/rotate",
+        cookies={"conduct_admin": admin_token},
+    )
+    assert r.status_code == 404
+
+
 async def test_ui_logout_clears_cookie(client, admin_token) -> None:
     r = await client.post(
         "/ui/logout",

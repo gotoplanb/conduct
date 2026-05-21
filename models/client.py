@@ -37,6 +37,11 @@ class ClientApp(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC)
     )
+    # When the current api_key_hash was minted. Distinct from created_at so a
+    # rotation can be dated independently of when the client was first created.
+    key_created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC)
+    )
 
 
 class ClientAppUsage(Base):
