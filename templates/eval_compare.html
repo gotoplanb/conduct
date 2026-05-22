@@ -2,7 +2,10 @@
 {% block title %}Eval — Conduct{% endblock %}
 {% block content %}
 <div x-data="{ task_type: '{{ task_type }}', days: '{{ days }}' }">
-  <h1 class="text-2xl font-semibold mb-6">Eval — per-model rollup</h1>
+  <div class="flex items-center justify-between mb-6 gap-4 flex-wrap">
+    <h1 class="text-2xl font-semibold">Eval — per-model rollup</h1>
+    <a :href="'/ui/eval/review?task_type=' + task_type" class="text-sm text-zinc-400 hover:text-zinc-100">Review &amp; score →</a>
+  </div>
 
   <form
     hx-get="/ui/eval/partial"

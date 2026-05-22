@@ -8,7 +8,7 @@ either a Job ID or a JobShadow ID (ID-discriminated, single URL).
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import Annotated
 from uuid import UUID
 
@@ -20,6 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from auth import admin_only
 from db.session import get_session
 from eval.rollup import compute_rollup
+from eval.scoring import apply_score
 from models.job import Job
 from models.shadow import JobShadow
 from models.types import JobStatus
@@ -75,35 +76,13 @@ async def score_target(
     """Score either a Job or a JobShadow. The URL stays the same; we look
     up by ID in jobs first, then job_shadows. (UUIDs don't collide across
     tables.)"""
-    entry = {
-        "score": body.score,
-        "reviewer": body.reviewer or "",
-        "note": body.note or "",
-        "at": datetime.now(UTC).isoformat(),
-    }
-
-    job = await session.get(Job, target_id)
-    if job is not None:
-        existing = job.job_metadata.get("quality_scores", []) if job.job_metadata else []
-        existing.append(entry)
-        job.job_metadata = {**(job.job_metadata or {}), "quality_scores": existing}
-        await session.commit()
-        return {"kind": "job", "id": str(target_id), "scores": existing}
-
-    shadow = await session.get(JobShadow, target_id)
-    if shadow is not None:
-        existing = (
-            shadow.shadow_metadata.get("quality_scores", []) if shadow.shadow_metadata else []
-        )
-        existing.append(entry)
-        shadow.shadow_metadata = {
-            **(shadow.shadow_metadata or {}),
-            "quality_scores": existing,
-        }
-        await session.commit()
-        return {"kind": "shadow", "id": str(target_id), "scores": existing}
-
-    raise HTTPException(status.HTTP_404_NOT_FOUND, "no job or shadow with that id")
+    result = await apply_score(
+        session, target_id, score=body.score, reviewer=body.reviewer, note=body.note
+    )
+    if result is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "no job or shadow with that id")
+    kind, scores = result
+    return {"kind": kind, "id": str(target_id), "scores": scores}
 
 
 class ReviewItem(BaseModel):

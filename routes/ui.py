@@ -26,11 +26,13 @@ from auth import generate_api_key, hash_api_key
 from config.settings import get_settings
 from db.session import get_session
 from eval.rollup import compute_rollup
+from eval.scoring import apply_score, score_state
 from models.client import ClientApp
 from models.job import Job
 from models.prompt import Prompt, PromptVersion
 from models.routing import RoutingRule
 from models.shadow import JobShadow
+from models.types import JobStatus
 
 ADMIN_COOKIE = "conduct_admin"
 LOGIN_PATH = "/ui/login"
@@ -590,3 +592,108 @@ async def eval_partial(
 ) -> HTMLResponse:
     models = await _compute_eval(session, task_type=task_type, days=days)
     return templates.TemplateResponse(request, "_eval_table.html", {"models": models})
+
+
+# ---------- eval review (human scoring) ----------
+
+
+def _candidate(*, target_id, model: str, response: str, meta: dict | None, is_production: bool):
+    return {
+        "target_id": str(target_id),
+        "model": model or "?",
+        "response": response or "",
+        "is_production": is_production,
+        "score": score_state((meta or {}).get("quality_scores", [])),
+    }
+
+
+async def _load_review(session: AsyncSession, task_type: str, *, limit: int = 10) -> list[dict]:
+    """Group completed jobs (with their completed shadows) for a task_type so
+    the reviewer sees one prompt and every model's answer side by side. Newest
+    jobs first; capped at `limit` parent jobs."""
+    rows = (
+        await session.execute(
+            select(JobShadow, Job)
+            .join(Job, Job.id == JobShadow.parent_job_id)
+            .where(
+                Job.task_type == task_type,
+                Job.status == JobStatus.COMPLETE.value,
+                JobShadow.status == JobStatus.COMPLETE.value,
+            )
+            .order_by(Job.created_at.desc())
+        )
+    ).all()
+
+    grouped: dict[str, dict] = {}
+    order: list[str] = []
+    for shadow, job in rows:
+        key = str(job.id)
+        if key not in grouped:
+            if len(order) >= limit:
+                continue
+            order.append(key)
+            grouped[key] = {
+                "job_id": key,
+                "prompt": job.prompt,
+                "created_rel": _humanize_age(job.created_at),
+                "candidates": [
+                    _candidate(
+                        target_id=job.id,
+                        model=job.model_used,
+                        response=job.response,
+                        meta=job.job_metadata,
+                        is_production=True,
+                    )
+                ],
+            }
+        grouped[key]["candidates"].append(
+            _candidate(
+                target_id=shadow.id,
+                model=shadow.model,
+                response=shadow.response,
+                meta=shadow.shadow_metadata,
+                is_production=False,
+            )
+        )
+    return [grouped[k] for k in order]
+
+
+@router.get("/eval/review", response_class=HTMLResponse, dependencies=[Depends(admin_session)])
+async def eval_review_page(
+    request: Request,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    task_type: Annotated[str | None, Query()] = None,
+) -> HTMLResponse:
+    task_types = await _known_task_types(session)
+    selected = task_type or (task_types[0] if task_types else "")
+    jobs = await _load_review(session, selected) if selected else []
+    return templates.TemplateResponse(
+        request,
+        "eval_review.html",
+        {"task_types": task_types, "task_type": selected, "jobs": jobs},
+    )
+
+
+@router.post(
+    "/eval/review/score", response_class=HTMLResponse, dependencies=[Depends(admin_session)]
+)
+async def eval_review_score(
+    request: Request,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    target_id: Annotated[str, Form()],
+    score: Annotated[int, Form()],
+    note: Annotated[str, Form()] = "",
+) -> HTMLResponse:
+    if not 1 <= score <= 5:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "score must be 1-5")
+    result = await apply_score(
+        session, UUID(target_id), score=score, reviewer="ui", note=note or None
+    )
+    if result is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "no job or shadow with that id")
+    _, scores = result
+    return templates.TemplateResponse(
+        request,
+        "_review_score.html",
+        {"target_id": target_id, "score": score_state(scores)},
+    )

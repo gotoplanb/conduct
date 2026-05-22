@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+{% block title %}Eval review — Conduct{% endblock %}
+{% block content %}
+<div x-data="{ task_type: '{{ task_type }}' }">
+  <div class="flex items-center justify-between mb-6 gap-4 flex-wrap">
+    <h1 class="text-2xl font-semibold">Eval review — score model outputs</h1>
+    <a href="/ui/eval?task_type={{ task_type }}" class="text-sm text-zinc-400 hover:text-zinc-100">← Rollup</a>
+  </div>
+
+  <form method="get" action="/ui/eval/review" class="flex flex-wrap gap-3 mb-6 items-end">
+    <div>
+      <label class="block text-xs uppercase text-zinc-500 mb-1">Task type</label>
+      <select name="task_type" x-model="task_type" onchange="this.form.submit()"
+              class="bg-zinc-900 border border-zinc-700 rounded-md px-3 py-1.5 text-sm">
+        {% for tt in task_types %}
+        <option value="{{ tt }}">{{ tt }}</option>
+        {% endfor %}
+      </select>
+    </div>
+  </form>
+
+  {% if not jobs %}
+  <div class="rounded-lg border border-zinc-800 px-4 py-6 text-center text-zinc-500">
+    No completed jobs with shadows for this task yet. Configure shadow models on the routing rule and let some jobs run.
+  </div>
+  {% endif %}
+
+  <div class="space-y-6">
+    {% for job in jobs %}
+    <div class="rounded-lg border border-zinc-800 overflow-hidden">
+      <div class="bg-zinc-900/60 px-4 py-3">
+        <div class="text-xs uppercase text-zinc-500 mb-1">Prompt · {{ job.created_rel }}</div>
+        <pre class="text-sm text-zinc-200 whitespace-pre-wrap break-words max-h-32 overflow-auto">{{ job.prompt }}</pre>
+      </div>
+      <div class="grid gap-px bg-zinc-800 md:grid-cols-2 lg:grid-cols-3">
+        {% for cand in job.candidates %}
+        <div class="bg-zinc-950 p-4 flex flex-col gap-3">
+          <div class="flex items-center gap-2">
+            <span class="font-mono text-xs text-zinc-300">{{ cand.model }}</span>
+            {% if cand.is_production %}
+            <span class="rounded-full bg-indigo-900/40 text-indigo-300 px-2 py-0.5 text-xs">production</span>
+            {% else %}
+            <span class="rounded-full bg-amber-900/30 text-amber-300 px-2 py-0.5 text-xs">shadow</span>
+            {% endif %}
+          </div>
+          <pre class="flex-1 rounded bg-zinc-900 border border-zinc-800 p-3 text-xs text-zinc-200 whitespace-pre-wrap break-words max-h-72 overflow-auto">{{ cand.response }}</pre>
+          {% with target_id = cand.target_id, score = cand.score %}
+          {% include '_review_score.html' %}
+          {% endwith %}
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+</div>
+{% endblock %}

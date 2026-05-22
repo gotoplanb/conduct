@@ -1,0 +1,17 @@
+<div id="score-{{ target_id }}">
+  {% if score.count %}
+  <div class="text-xs text-emerald-300 mb-1">scored {{ score.count }}× · avg {{ '%.1f'|format(score.avg) }}</div>
+  {% else %}
+  <div class="text-xs text-zinc-500 mb-1">unscored</div>
+  {% endif %}
+  <form hx-post="/ui/eval/review/score" hx-target="#score-{{ target_id }}" hx-swap="outerHTML"
+        class="flex items-center gap-1.5">
+    <input type="hidden" name="target_id" value="{{ target_id }}">
+    {% for n in [1, 2, 3, 4, 5] %}
+    <button name="score" value="{{ n }}"
+            class="w-7 h-7 rounded-md border border-zinc-700 text-xs text-zinc-300 hover:bg-zinc-100 hover:text-zinc-900 transition">{{ n }}</button>
+    {% endfor %}
+    <input type="text" name="note" placeholder="note"
+           class="ml-1 flex-1 min-w-0 bg-zinc-900 border border-zinc-700 rounded-md px-2 py-1 text-xs">
+  </form>
+</div>
