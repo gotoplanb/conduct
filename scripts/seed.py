@@ -85,6 +85,7 @@ async def _seed_routing(session, specs: list[dict]) -> tuple[list[str], list[str
                 sensitivity=sensitivity.value,
                 max_tokens=int(spec.get("max_tokens", 1000)),
                 notes=spec.get("notes", ""),
+                eval_shadow_models=spec.get("eval_shadow_models") or [],
             )
         )
         created.append(tt)

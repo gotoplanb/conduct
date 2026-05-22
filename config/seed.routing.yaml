@@ -3,12 +3,21 @@
 # changes hot-reload because the route reads the rule from the DB on every job.
 #
 # `sensitivity` here is a floor — clients can request stricter, never looser.
+#
+# `eval_shadow_models` (optional) — candidate models replayed on a sample of
+# real jobs for A/B eval. Each entry: {model, rate (0-1 sampling fraction),
+# daily_cost_cap_usd (optional, cloud only)}. Cloud shadows are skipped on
+# internal/confidential jobs unless the client opts in; local models always run.
 
 rules:
   - task_type: bio_generation
     preferred_model: llama3.3:70b
     fallback_model: claude-sonnet-4-5
     sensitivity: internal
+    # Eval: is the small local model good enough for bios vs 70b production?
+    eval_shadow_models:
+      - model: llama3.2:3b
+        rate: 1.0
 
   - task_type: email_classification
     preferred_model: llama3.3:70b
