@@ -6,6 +6,8 @@ from datetime import UTC, datetime
 from decimal import Decimal
 
 from models.job import Job
+from models.prompt import Prompt, PromptVersion
+from models.routing import RoutingRule
 
 
 async def _seed_job(db, *, client_id, model="llama3.3:70b", task="bio_generation"):
@@ -181,6 +183,77 @@ async def test_ui_clients_rotate_missing_is_404(client, admin_token) -> None:
         cookies={"conduct_admin": admin_token},
     )
     assert r.status_code == 404
+
+
+async def test_ui_tasks_unauth_redirects(client) -> None:
+    r = await client.get("/ui/tasks", follow_redirects=False)
+    assert r.status_code == 303
+    assert r.headers["location"] == "/ui/login"
+
+
+async def test_ui_tasks_lists_rule_and_shared_prompt(
+    client, db_session, admin_token
+) -> None:
+    db_session.add(
+        RoutingRule(
+            task_type="marketing_blurb",
+            preferred_model="llama3.3:70b",
+            fallback_model="claude-sonnet-4-5",
+            sensitivity="internal",
+        )
+    )
+    db_session.add(
+        Prompt(task_type="marketing_blurb", client_id=None, content="be punchy")
+    )
+    await db_session.commit()
+
+    r = await client.get("/ui/tasks", cookies={"conduct_admin": admin_token})
+    assert r.status_code == 200
+    assert "marketing_blurb" in r.text
+    assert "llama3.3:70b" in r.text
+    assert "shared" in r.text
+
+
+async def test_ui_tasks_shows_client_override(
+    client, db_session, seeded_client, admin_token
+) -> None:
+    c, _ = seeded_client
+    db_session.add(
+        Prompt(task_type="marketing_blurb", client_id=c.id, content="client tone")
+    )
+    await db_session.commit()
+
+    r = await client.get("/ui/tasks", cookies={"conduct_admin": admin_token})
+    assert r.status_code == 200
+    assert c.name in r.text
+
+
+async def test_ui_task_history_partial(client, db_session, admin_token) -> None:
+    db_session.add(
+        PromptVersion(
+            task_type="marketing_blurb",
+            client_id=None,
+            content="v1",
+            edited_by="seed",
+        )
+    )
+    await db_session.commit()
+
+    r = await client.get(
+        "/ui/tasks/marketing_blurb/history",
+        cookies={"conduct_admin": admin_token},
+    )
+    assert r.status_code == 200
+    assert "seed" in r.text
+
+
+async def test_ui_task_history_empty(client, admin_token) -> None:
+    r = await client.get(
+        "/ui/tasks/does_not_exist/history",
+        cookies={"conduct_admin": admin_token},
+    )
+    assert r.status_code == 200
+    assert "no history" in r.text
 
 
 async def test_ui_logout_clears_cookie(client, admin_token) -> None:

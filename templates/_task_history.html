@@ -1,0 +1,14 @@
+{% if versions %}
+<ul class="divide-y divide-zinc-800 text-xs">
+  {% for v in versions %}
+  <li class="flex items-center gap-4 px-3 py-1.5">
+    <span class="text-zinc-600 w-12">#{{ v.id }}</span>
+    <span class="text-zinc-400 flex-1" title="{{ v.edited_at.strftime('%Y-%m-%d %H:%M UTC') }}">{{ v.edited_rel }}</span>
+    <span class="text-zinc-400">by {{ v.edited_by }}</span>
+    <span class="text-zinc-600 w-16 text-right">{{ v.bytes }}B</span>
+  </li>
+  {% endfor %}
+</ul>
+{% else %}
+<div class="px-3 py-2 text-xs text-zinc-500">(no history)</div>
+{% endif %}

@@ -18,7 +18,7 @@ from uuid import UUID
 from fastapi import APIRouter, Cookie, Depends, Form, HTTPException, Query, Request, status
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -28,6 +28,7 @@ from db.session import get_session
 from eval.rollup import compute_rollup
 from models.client import ClientApp
 from models.job import Job
+from models.prompt import Prompt, PromptVersion
 from models.routing import RoutingRule
 from models.shadow import JobShadow
 
@@ -417,6 +418,125 @@ async def clients_toggle(
     return await _render_clients(
         request, session, flash=f"{client.name} is now {state}."
     )
+
+
+# ---------- tasks (read-only config view) ----------
+
+
+def _shadow_summary(rule: RoutingRule) -> list[str]:
+    """Human-readable 'model @ rate' strings for a rule's shadow models."""
+    return [f"{s.get('model')} @ {s.get('rate')}" for s in (rule.eval_shadow_models or [])]
+
+
+async def _load_tasks(session: AsyncSession) -> list[dict]:
+    """Assemble one view object per task_type: its routing rule (if any) plus
+    the shared prompt and any per-client overrides. Read-only — this is the
+    operator's map of 'what tasks exist and who has customized them'."""
+    rules = {r.task_type: r for r in (await session.scalars(select(RoutingRule))).all()}
+    prompts = (await session.scalars(select(Prompt))).all()
+
+    client_ids = {p.client_id for p in prompts if p.client_id is not None}
+    clients = (
+        {
+            c.id: c.name
+            for c in (
+                await session.scalars(select(ClientApp).where(ClientApp.id.in_(client_ids)))
+            ).all()
+        }
+        if client_ids
+        else {}
+    )
+
+    version_rows = (
+        await session.execute(
+            select(PromptVersion.task_type, PromptVersion.client_id, func.count()).group_by(
+                PromptVersion.task_type, PromptVersion.client_id
+            )
+        )
+    ).all()
+    vcounts = {(tt, cid): n for tt, cid, n in version_rows}
+
+    task_types = sorted(set(rules) | {p.task_type for p in prompts})
+    by_task: dict[str, dict] = {}
+    for tt in task_types:
+        rule = rules.get(tt)
+        by_task[tt] = {
+            "task_type": tt,
+            "rule": (
+                {
+                    "preferred_model": rule.preferred_model,
+                    "fallback_model": rule.fallback_model,
+                    "sensitivity": rule.sensitivity,
+                    "max_tokens": rule.max_tokens,
+                    "notes": rule.notes,
+                    "shadows": _shadow_summary(rule),
+                }
+                if rule
+                else None
+            ),
+            "prompts": [],
+        }
+
+    for p in prompts:
+        scope = clients.get(p.client_id, "shared") if p.client_id else "shared"
+        by_task[p.task_type]["prompts"].append(
+            {
+                "scope": scope,
+                "key": str(p.client_id) if p.client_id else "shared",
+                "client_id": str(p.client_id) if p.client_id else "",
+                "is_shared": p.client_id is None,
+                "bytes": len(p.content.encode("utf-8")),
+                "updated_rel": _humanize_age(p.updated_at),
+                "updated_by": p.updated_by or "—",
+                "versions": vcounts.get((p.task_type, p.client_id), 0),
+                "content": p.content,
+            }
+        )
+
+    for tt in task_types:
+        by_task[tt]["prompts"].sort(key=lambda e: (not e["is_shared"], e["scope"]))
+    return [by_task[tt] for tt in task_types]
+
+
+@router.get("/tasks", response_class=HTMLResponse, dependencies=[Depends(admin_session)])
+async def tasks_page(
+    request: Request, session: Annotated[AsyncSession, Depends(get_session)]
+) -> HTMLResponse:
+    return templates.TemplateResponse(
+        request, "tasks_list.html", {"tasks": await _load_tasks(session)}
+    )
+
+
+@router.get(
+    "/tasks/{task_type}/history",
+    response_class=HTMLResponse,
+    dependencies=[Depends(admin_session)],
+)
+async def task_history(
+    request: Request,
+    task_type: str,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    client_id: Annotated[str | None, Query()] = None,
+) -> HTMLResponse:
+    stmt = select(PromptVersion).where(PromptVersion.task_type == task_type)
+    if client_id:
+        stmt = stmt.where(PromptVersion.client_id == UUID(client_id))
+    else:
+        stmt = stmt.where(PromptVersion.client_id.is_(None))
+    versions = (
+        await session.scalars(stmt.order_by(PromptVersion.edited_at.desc()).limit(50))
+    ).all()
+    rows = [
+        {
+            "id": v.id,
+            "edited_rel": _humanize_age(v.edited_at),
+            "edited_at": v.edited_at,
+            "edited_by": v.edited_by or "—",
+            "bytes": len(v.content.encode("utf-8")),
+        }
+        for v in versions
+    ]
+    return templates.TemplateResponse(request, "_task_history.html", {"versions": rows})
 
 
 # ---------- eval ----------
