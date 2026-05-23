@@ -1,0 +1,147 @@
+{% extends "base.html" %}
+{% block title %}Connectors — Conduct{% endblock %}
+{% block content %}
+<div x-data="{ showNew: false }">
+  <div class="flex items-center justify-between mb-2">
+    <h1 class="text-2xl font-semibold">Connectors</h1>
+    <button @click="showNew = !showNew"
+            class="bg-zinc-100 text-zinc-900 font-medium rounded-md px-3 py-1.5 text-sm hover:bg-white transition">
+      <span x-show="!showNew">New connector</span>
+      <span x-show="showNew" x-cloak>Cancel</span>
+    </button>
+  </div>
+  <p class="text-sm text-zinc-400 mb-6">OAuth clients that let Claude (iOS / desktop / web) reach the Conduct MCP server on your behalf.</p>
+
+  {% if new_pair %}
+  <div x-data="{ copied: '' }" class="mb-6 rounded-lg border border-amber-600/60 bg-amber-900/20 px-4 py-3">
+    <div class="text-sm font-medium text-amber-200 mb-1">
+      Connector {{ new_pair.action }}: <span class="font-semibold">{{ new_pair.name }}</span>
+    </div>
+    <p class="text-xs text-amber-300/80 mb-3">Copy the secret now — it is shown only once and cannot be retrieved later.</p>
+    <div class="space-y-2">
+      <div>
+        <div class="text-xs uppercase text-zinc-500 mb-1">Client ID</div>
+        <div class="flex items-center gap-2">
+          <code class="flex-1 rounded bg-zinc-950 border border-zinc-700 px-3 py-2 text-sm text-zinc-100 break-all select-all">{{ new_pair.client_id }}</code>
+          <button @click="navigator.clipboard.writeText('{{ new_pair.client_id }}'); copied='id'; setTimeout(() => copied='', 1500)"
+                  class="shrink-0 border border-zinc-700 rounded-md px-3 py-2 text-sm text-zinc-300 hover:bg-zinc-800">
+            <span x-show="copied !== 'id'">Copy</span><span x-show="copied === 'id'" x-cloak>Copied</span>
+          </button>
+        </div>
+      </div>
+      <div>
+        <div class="text-xs uppercase text-zinc-500 mb-1">Client secret</div>
+        <div class="flex items-center gap-2">
+          <code class="flex-1 rounded bg-zinc-950 border border-zinc-700 px-3 py-2 text-sm text-zinc-100 break-all select-all">{{ new_pair.client_secret }}</code>
+          <button @click="navigator.clipboard.writeText('{{ new_pair.client_secret }}'); copied='secret'; setTimeout(() => copied='', 1500)"
+                  class="shrink-0 bg-zinc-100 text-zinc-900 font-medium rounded-md px-3 py-2 text-sm hover:bg-white">
+            <span x-show="copied !== 'secret'">Copy</span><span x-show="copied === 'secret'" x-cloak>Copied</span>
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+  {% endif %}
+
+  {% if flash %}
+  <div class="mb-4 rounded border border-emerald-700 bg-emerald-900/30 px-3 py-2 text-sm text-emerald-200">{{ flash }}</div>
+  {% endif %}
+  {% if error %}
+  <div class="mb-4 rounded border border-red-700 bg-red-900/30 px-3 py-2 text-sm text-red-200">{{ error }}</div>
+  {% endif %}
+
+  <form method="post" action="/ui/connectors" x-show="showNew" x-cloak
+        class="mb-6 rounded-lg border border-zinc-800 bg-zinc-900/40 p-4 grid gap-4 sm:grid-cols-2">
+    <div>
+      <label class="block text-xs uppercase text-zinc-500 mb-1">Name</label>
+      <input type="text" name="name" placeholder="e.g. dave-ios" required
+             class="w-full bg-zinc-900 border border-zinc-700 rounded-md px-3 py-1.5 text-sm">
+    </div>
+    <div>
+      <label class="block text-xs uppercase text-zinc-500 mb-1">Bind to client</label>
+      {% if client_apps %}
+      <select name="client_app_id" required
+              class="w-full bg-zinc-900 border border-zinc-700 rounded-md px-3 py-1.5 text-sm">
+        {% for a in client_apps %}<option value="{{ a.id }}">{{ a.name }}</option>{% endfor %}
+      </select>
+      {% else %}
+      <p class="text-xs text-amber-300/80">No clients yet — create one under <a href="/ui/clients" class="underline">Clients</a> first.</p>
+      {% endif %}
+    </div>
+    <div class="sm:col-span-2">
+      <label class="block text-xs uppercase text-zinc-500 mb-1">Redirect URIs <span class="text-zinc-600">(one per line)</span></label>
+      <textarea name="redirect_uris" rows="2"
+                class="w-full bg-zinc-900 border border-zinc-700 rounded-md px-3 py-1.5 text-sm font-mono">{{ default_redirect }}</textarea>
+    </div>
+    <div class="sm:col-span-2">
+      <button type="submit" {% if not client_apps %}disabled{% endif %}
+              class="bg-zinc-100 text-zinc-900 font-medium rounded-md px-4 py-2 text-sm hover:bg-white transition disabled:opacity-40">
+        Create connector
+      </button>
+    </div>
+  </form>
+
+  <div class="rounded-lg border border-zinc-800 overflow-hidden mb-8">
+    <table class="w-full text-sm">
+      <thead class="bg-zinc-900/60 text-zinc-400 text-xs uppercase">
+        <tr>
+          <th class="text-left font-medium px-4 py-2.5">Name</th>
+          <th class="text-left font-medium px-4 py-2.5">Client ID</th>
+          <th class="text-left font-medium px-4 py-2.5">Client</th>
+          <th class="text-left font-medium px-4 py-2.5">Status</th>
+          <th class="text-left font-medium px-4 py-2.5">Created</th>
+          <th class="text-right font-medium px-4 py-2.5">Actions</th>
+        </tr>
+      </thead>
+      <tbody class="divide-y divide-zinc-800">
+        {% for c in connectors %}
+        <tr class="hover:bg-zinc-900/40">
+          <td class="px-4 py-2.5 font-medium">{{ c.name }}</td>
+          <td class="px-4 py-2.5 font-mono text-xs text-zinc-400">{{ c.client_id }}</td>
+          <td class="px-4 py-2.5 text-zinc-400">{{ c.client_app_name }}</td>
+          <td class="px-4 py-2.5">
+            {% if c.is_active %}
+            <span class="inline-flex items-center rounded-full bg-emerald-900/40 text-emerald-300 px-2 py-0.5 text-xs">active</span>
+            {% else %}
+            <span class="inline-flex items-center rounded-full bg-zinc-800 text-zinc-400 px-2 py-0.5 text-xs">inactive</span>
+            {% endif %}
+          </td>
+          <td class="px-4 py-2.5 text-zinc-400">{{ c.created_rel }}</td>
+          <td class="px-4 py-2.5">
+            <div class="flex items-center justify-end gap-2">
+              <form method="post" action="/ui/connectors/{{ c.id }}/rotate-secret"
+                    onsubmit="return confirm('Rotate the secret for {{ c.name }}? You will need to update Claude with the new secret.')">
+                <button class="rounded-md border border-zinc-700 px-2.5 py-1 text-xs text-zinc-300 hover:bg-zinc-800">Rotate secret</button>
+              </form>
+              <form method="post" action="/ui/connectors/{{ c.id }}/toggle">
+                {% if c.is_active %}
+                <button class="rounded-md border border-zinc-700 px-2.5 py-1 text-xs text-amber-300 hover:bg-zinc-800">Deactivate</button>
+                {% else %}
+                <button class="rounded-md border border-zinc-700 px-2.5 py-1 text-xs text-emerald-300 hover:bg-zinc-800">Activate</button>
+                {% endif %}
+              </form>
+            </div>
+          </td>
+        </tr>
+        {% else %}
+        <tr><td colspan="6" class="px-4 py-6 text-center text-zinc-500">No connectors yet.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  <div class="rounded-lg border border-zinc-800 bg-zinc-900/40 p-4">
+    <h2 class="text-sm font-semibold mb-3">How to connect in Claude</h2>
+    <ol class="list-decimal list-inside space-y-1.5 text-sm text-zinc-300">
+      <li>In Claude (web or iOS): <span class="text-zinc-400">Settings → Connectors → Add custom connector</span>.</li>
+      <li>Set the server URL to <code class="text-zinc-100">{{ instructions.mcp_url }}</code></li>
+      <li>Expand <span class="text-zinc-400">Advanced settings</span> and paste the connector's <span class="text-zinc-100">Client ID</span> and <span class="text-zinc-100">Client Secret</span> (shown once above).</li>
+      <li>Connect — Claude will send you to Conduct to approve, then the job tools appear.</li>
+    </ol>
+    <p class="text-xs text-zinc-500 mt-3">
+      Conduct advertises its OAuth endpoints automatically (authorize: <code>{{ instructions.authorize_url }}</code>, token: <code>{{ instructions.token_url }}</code>).
+      If the URL above is localhost, set <code>CONDUCT_PUBLIC_URL</code> to your public tunnel so Claude can reach it.
+    </p>
+  </div>
+</div>
+{% endblock %}

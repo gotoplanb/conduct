@@ -29,14 +29,17 @@ from eval.rollup import compute_rollup
 from eval.scoring import apply_score, score_state
 from models.client import ClientApp
 from models.job import Job
+from models.oauth import OAuthClient
 from models.prompt import Prompt, PromptVersion
 from models.routing import RoutingRule
 from models.shadow import JobShadow
 from models.types import JobStatus
+from oauth_provider import hash_secret, new_client_id, new_client_secret
 
 ADMIN_COOKIE = "conduct_admin"
 LOGIN_PATH = "/ui/login"
 JOBS_PATH = "/ui/jobs"
+_CLIENT_NOT_FOUND = "Client not found."
 templates = Jinja2Templates(directory=str(Path(__file__).resolve().parent.parent / "templates"))
 
 router = APIRouter(prefix="/ui", tags=["ui"], include_in_schema=False)
@@ -398,7 +401,7 @@ async def clients_rotate(
     client = await session.get(ClientApp, client_id)
     if client is None:
         return await _render_clients(
-            request, session, error="Client not found.",
+            request, session, error=_CLIENT_NOT_FOUND,
             status_code=status.HTTP_404_NOT_FOUND,
         )
     raw_key = generate_api_key()
@@ -425,7 +428,7 @@ async def clients_toggle(
     client = await session.get(ClientApp, client_id)
     if client is None:
         return await _render_clients(
-            request, session, error="Client not found.",
+            request, session, error=_CLIENT_NOT_FOUND,
             status_code=status.HTTP_404_NOT_FOUND,
         )
     client.is_active = not client.is_active
@@ -433,6 +436,190 @@ async def clients_toggle(
     await session.commit()
     return await _render_clients(
         request, session, flash=f"{client.name} is now {state}."
+    )
+
+
+# ---------- connectors (OAuth clients for the MCP server) ----------
+
+DEFAULT_CONNECTOR_REDIRECT = "https://claude.ai/api/mcp/auth_callback"
+
+
+async def _load_connectors(session: AsyncSession) -> list[dict]:
+    rows = (await session.scalars(select(OAuthClient).order_by(OAuthClient.created_at))).all()
+    app_ids = {c.client_app_id for c in rows}
+    apps = (
+        {
+            a.id: a.name
+            for a in (
+                await session.scalars(select(ClientApp).where(ClientApp.id.in_(app_ids)))
+            ).all()
+        }
+        if app_ids
+        else {}
+    )
+    return [
+        {
+            "id": str(c.id),
+            "name": c.name,
+            "client_id": c.client_id,
+            "client_app_name": apps.get(c.client_app_id, "?"),
+            "redirect_uris": c.redirect_uris or [],
+            "is_active": c.is_active,
+            "created_rel": _humanize_age(c.created_at),
+        }
+        for c in rows
+    ]
+
+
+def _connector_instructions() -> dict:
+    base = get_settings().public_base_url.rstrip("/")
+    return {
+        "base_url": base,
+        "mcp_url": f"{base}/mcp",
+        "authorize_url": f"{base}/oauth/authorize",
+        "token_url": f"{base}/oauth/token",
+    }
+
+
+async def _render_connectors(
+    request: Request,
+    session: AsyncSession,
+    *,
+    new_pair: dict | None = None,
+    flash: str | None = None,
+    error: str | None = None,
+    status_code: int = status.HTTP_200_OK,
+) -> HTMLResponse:
+    apps = (await session.scalars(select(ClientApp).order_by(ClientApp.name))).all()
+    return templates.TemplateResponse(
+        request,
+        "connectors_list.html",
+        {
+            "connectors": await _load_connectors(session),
+            "client_apps": [{"id": str(a.id), "name": a.name} for a in apps],
+            "instructions": _connector_instructions(),
+            "default_redirect": DEFAULT_CONNECTOR_REDIRECT,
+            "new_pair": new_pair,
+            "flash": flash,
+            "error": error,
+        },
+        status_code=status_code,
+    )
+
+
+def _parse_redirect_uris(raw: str) -> list[str]:
+    uris = [u.strip() for u in raw.replace(",", "\n").splitlines() if u.strip()]
+    return uris or [DEFAULT_CONNECTOR_REDIRECT]
+
+
+@router.get("/connectors", response_class=HTMLResponse, dependencies=[Depends(admin_session)])
+async def connectors_page(
+    request: Request, session: Annotated[AsyncSession, Depends(get_session)]
+) -> HTMLResponse:
+    return await _render_connectors(request, session)
+
+
+@router.post("/connectors", response_class=HTMLResponse, dependencies=[Depends(admin_session)])
+async def connectors_create(
+    request: Request,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    name: Annotated[str, Form()],
+    client_app_id: Annotated[str, Form()],
+    redirect_uris: Annotated[str, Form()] = "",
+) -> HTMLResponse:
+    name = name.strip()
+    if not name:
+        return await _render_connectors(
+            request, session, error="Name is required.", status_code=status.HTTP_400_BAD_REQUEST
+        )
+    try:
+        app_uuid = UUID(client_app_id)
+    except ValueError:
+        return await _render_connectors(
+            request, session, error="Pick a client to bind to.",
+            status_code=status.HTTP_400_BAD_REQUEST,
+        )
+    app = await session.get(ClientApp, app_uuid)
+    if app is None:
+        return await _render_connectors(
+            request, session, error=_CLIENT_NOT_FOUND, status_code=status.HTTP_404_NOT_FOUND
+        )
+
+    raw_secret = new_client_secret()
+    client_id = new_client_id()
+    session.add(
+        OAuthClient(
+            client_id=client_id,
+            client_secret_hash=hash_secret(raw_secret),
+            name=name,
+            client_app_id=app.id,
+            redirect_uris=_parse_redirect_uris(redirect_uris),
+            created_by="ui",
+        )
+    )
+    await session.commit()
+    return await _render_connectors(
+        request,
+        session,
+        new_pair={
+            "name": name,
+            "client_id": client_id,
+            "client_secret": raw_secret,
+            "action": "created",
+        },
+    )
+
+
+@router.post(
+    "/connectors/{connector_id}/rotate-secret",
+    response_class=HTMLResponse,
+    dependencies=[Depends(admin_session)],
+)
+async def connectors_rotate(
+    request: Request,
+    connector_id: UUID,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> HTMLResponse:
+    connector = await session.get(OAuthClient, connector_id)
+    if connector is None:
+        return await _render_connectors(
+            request, session, error="Connector not found.", status_code=status.HTTP_404_NOT_FOUND
+        )
+    raw_secret = new_client_secret()
+    connector.client_secret_hash = hash_secret(raw_secret)
+    await session.commit()
+    return await _render_connectors(
+        request,
+        session,
+        new_pair={
+            "name": connector.name,
+            "client_id": connector.client_id,
+            "client_secret": raw_secret,
+            "action": "rotated",
+        },
+    )
+
+
+@router.post(
+    "/connectors/{connector_id}/toggle",
+    response_class=HTMLResponse,
+    dependencies=[Depends(admin_session)],
+)
+async def connectors_toggle(
+    request: Request,
+    connector_id: UUID,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> HTMLResponse:
+    connector = await session.get(OAuthClient, connector_id)
+    if connector is None:
+        return await _render_connectors(
+            request, session, error="Connector not found.", status_code=status.HTTP_404_NOT_FOUND
+        )
+    connector.is_active = not connector.is_active
+    state = "active" if connector.is_active else "inactive"
+    await session.commit()
+    return await _render_connectors(
+        request, session, flash=f"{connector.name} is now {state}."
     )
 
 

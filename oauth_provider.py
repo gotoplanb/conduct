@@ -220,6 +220,11 @@ async def resolve_access_token(session: AsyncSession, raw_access: str) -> Client
     )
     if row is None or row.revoked or _aware(row.access_expires_at) < datetime.now(UTC):
         return None
+    # Deactivating the connector (OAuthClient) is a kill switch for all its
+    # tokens, even ones not yet expired.
+    connector = await get_active_client(session, row.client_id)
+    if connector is None:
+        return None
     client_app = await session.get(ClientApp, row.client_app_id)
     if client_app is None or not client_app.is_active:
         return None
