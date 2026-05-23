@@ -38,7 +38,10 @@ services:
         GIT_SHA: ${GIT_SHA:-}
     image: conduct:local
     container_name: conduct-api
-    command: ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+    # --proxy-headers + forwarded-allow-ips=* so uvicorn honors ngrok's
+    # X-Forwarded-Proto (TLS terminates at the edge); without it, redirects
+    # like /mcp -> /mcp/ downgrade to http and MCP clients balk.
+    command: ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers", "--forwarded-allow-ips", "*"]
     env_file: .env
     environment:
       DATABASE_URL: postgresql+asyncpg://conduct:${POSTGRES_PASSWORD}@postgres:5432/conduct
