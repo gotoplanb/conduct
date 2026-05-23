@@ -61,7 +61,24 @@ All four services run as containers via `docker-compose.yml`. Ollama stays on th
 | GET     | `/eval/review`                | admin  | unscored shadows for human rating |
 | POST    | `/tts`                        | client | enqueue text→MP3 job; returns poll URL |
 | GET     | `/output/{file}.mp3`          | admin  | serve generated audiobook chunks |
+| GET     | `/.well-known/oauth-*`        | open   | OAuth discovery for MCP connectors |
+| GET/POST| `/oauth/authorize`            | admin  | consent screen (approved via admin login) |
+| POST    | `/oauth/token`                | client pair | auth-code + PKCE, refresh |
+| POST    | `/mcp`                        | oauth  | remote MCP server (Streamable HTTP) — see below |
 | GET     | `/health`                     | open   | DB ping |
+
+## Claude connector (MCP)
+
+Conduct ships a remote MCP server so the Claude apps (iOS / desktop / web) can list and create jobs as a custom connector. It's an OAuth-protected Streamable-HTTP endpoint at `/mcp` exposing four tools: `list_task_types`, `list_jobs`, `get_job`, and `create_job` (asynchronous — create, then poll `get_job` for the result).
+
+Conduct itself acts as the OAuth 2.0 authorization server (authorization-code + PKCE, refresh tokens). Each token binds to a client app, so MCP-created jobs inherit that client's attribution, rate limits, and cloud permissions. Deactivating a connector revokes all of its tokens.
+
+Setup:
+
+1. Set `CONDUCT_PUBLIC_URL` to your public origin (tunnel / reverse proxy) and `UI_COOKIE_SECURE=true` for HTTPS, then restart the API.
+2. In the UI → **Connectors** → *New connector*: name it, bind it to a client app, and copy the generated Client ID + Secret (shown once).
+3. In Claude → Settings → Connectors → *Add custom connector*: set the server URL to `https://<your-domain>/mcp`, then paste the Client ID and Secret under Advanced settings.
+4. Connect → approve the consent screen in Conduct (admin login) → the four job tools appear in Claude.
 
 ## Read more
 
@@ -80,6 +97,8 @@ auth.py                    Bearer auth (client + admin)
 deps.py                    shared deps (provider registry from app.state)
 rate_limit.py              per-client Redis tumbling-window limiter
 prompt_loader.py           DB-backed prompt resolver (per-client override → shared)
+oauth_provider.py          OAuth 2.0 authorization-server core (PKCE, tokens)
+mcp_server.py              remote MCP server (FastMCP) for Claude connectors
 
 config/                    settings + pricing
 db/                        SQLAlchemy 2.0 async session + declarative base
