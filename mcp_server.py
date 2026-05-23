@@ -15,9 +15,11 @@ from __future__ import annotations
 import contextvars
 from decimal import Decimal
 from typing import Any
+from urllib.parse import urlparse
 from uuid import UUID
 
 from mcp.server.fastmcp import FastMCP
+from mcp.server.transport_security import TransportSecuritySettings
 from sqlalchemy import select
 
 from config.settings import get_settings
@@ -36,7 +38,30 @@ _principal: contextvars.ContextVar[dict | None] = contextvars.ContextVar(
     "mcp_principal", default=None
 )
 
-mcp = FastMCP("Conduct", stateless_http=True, streamable_http_path="/", json_response=False)
+
+def _transport_security() -> TransportSecuritySettings:
+    """The SDK's DNS-rebinding guard defaults to localhost-only, which 421s
+    every request once we're behind a public host. Allow our public origin
+    (from CONDUCT_PUBLIC_URL) plus localhost for local dev."""
+    host = urlparse(get_settings().public_base_url.rstrip("/")).netloc or "localhost:8000"
+    return TransportSecuritySettings(
+        enable_dns_rebinding_protection=True,
+        allowed_hosts=[host, f"{host}:*", "localhost:*", "127.0.0.1:*", "[::1]:*"],
+        allowed_origins=[
+            get_settings().public_base_url.rstrip("/"),
+            "http://localhost:*",
+            "http://127.0.0.1:*",
+        ],
+    )
+
+
+mcp = FastMCP(
+    "Conduct",
+    stateless_http=True,
+    streamable_http_path="/",
+    json_response=False,
+    transport_security=_transport_security(),
+)
 
 
 def _client_app_id() -> UUID:

@@ -244,6 +244,20 @@ async def test_mcp_middleware_passes_with_valid_token(
     assert seen["principal"]["client_app_id"] == capp.id
 
 
+def test_transport_security_allows_public_host(monkeypatch) -> None:
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(
+        mcp_server,
+        "get_settings",
+        lambda: SimpleNamespace(public_base_url="https://conduct.ngrok.app"),
+    )
+    sec = mcp_server._transport_security()
+    assert sec.enable_dns_rebinding_protection is True
+    assert "conduct.ngrok.app" in sec.allowed_hosts
+    assert "localhost:*" in sec.allowed_hosts
+
+
 async def test_mcp_middleware_passes_non_http(mcp_sessionmaker) -> None:
     called = {"v": False}
 
