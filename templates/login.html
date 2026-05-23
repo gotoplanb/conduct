@@ -8,6 +8,7 @@
   <div class="mb-4 rounded border border-red-700 bg-red-900/30 px-3 py-2 text-sm text-red-200">{{ error }}</div>
   {% endif %}
   <form action="/ui/login" method="post" class="space-y-4">
+    {% if next %}<input type="hidden" name="next" value="{{ next }}">{% endif %}
     <div>
       <label for="admin_key" class="block text-sm font-medium text-zinc-300 mb-1">Admin key</label>
       <input type="password" name="admin_key" id="admin_key" required autofocus autocomplete="current-password"

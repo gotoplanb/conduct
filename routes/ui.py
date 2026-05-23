@@ -125,23 +125,37 @@ async def root_redirect(
     return RedirectResponse(url=target, status_code=status.HTTP_303_SEE_OTHER)
 
 
+def _safe_next(next_url: str | None) -> str | None:
+    """Only allow same-site redirects: a path starting with a single '/'.
+    Blocks '//evil.com' and scheme-relative / absolute URLs (open redirect)."""
+    if not next_url or not next_url.startswith("/") or next_url.startswith("//"):
+        return None
+    return next_url
+
+
 @router.get("/login", response_class=HTMLResponse)
-async def login_form(request: Request) -> HTMLResponse:
-    return templates.TemplateResponse(request, "login.html", {})
+async def login_form(
+    request: Request, next: Annotated[str | None, Query()] = None
+) -> HTMLResponse:
+    return templates.TemplateResponse(request, "login.html", {"next": _safe_next(next) or ""})
 
 
 @router.post("/login", response_model=None)
 async def login(
-    request: Request, admin_key: Annotated[str, Form()]
+    request: Request,
+    admin_key: Annotated[str, Form()],
+    next: Annotated[str, Form()] = "",
 ) -> HTMLResponse | RedirectResponse:
     if not hmac.compare_digest(admin_key, get_settings().admin_key):
         return templates.TemplateResponse(
             request,
             "login.html",
-            {"error": "Invalid admin key."},
+            {"error": "Invalid admin key.", "next": _safe_next(next) or ""},
             status_code=status.HTTP_401_UNAUTHORIZED,
         )
-    resp = RedirectResponse(url=JOBS_PATH, status_code=status.HTTP_303_SEE_OTHER)
+    resp = RedirectResponse(
+        url=_safe_next(next) or JOBS_PATH, status_code=status.HTTP_303_SEE_OTHER
+    )
     # Cookie is HttpOnly to keep it out of JS; `secure` is opt-in via env
     # (UI_COOKIE_SECURE=true) since local dev is HTTP. Set it to true once
     # you're behind HTTPS (ngrok / reverse proxy) — otherwise the cookie

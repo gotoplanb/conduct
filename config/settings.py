@@ -15,6 +15,12 @@ class Settings(BaseSettings):
 
     admin_key: str = Field(alias="CONDUCT_ADMIN_KEY")
 
+    # Public HTTPS origin Conduct is reachable at (the tunnel / reverse proxy).
+    # Used as the OAuth issuer and to build the authorize/token URLs that go
+    # into a Claude custom connector. Must match what external clients hit, so
+    # set it to the public URL in prod; localhost is fine for local dev.
+    public_base_url: str = Field(default="http://localhost:8000", alias="CONDUCT_PUBLIC_URL")
+
     default_model: str = Field(default="llama3.3:70b", alias="DEFAULT_MODEL")
     default_sensitive_model: str = Field(default="llama3.3:70b", alias="DEFAULT_SENSITIVE_MODEL")
 

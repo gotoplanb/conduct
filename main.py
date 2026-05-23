@@ -5,7 +5,7 @@ from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from lifespan import lifespan
-from routes import clients, health, jobs, metrics_json, metrics_prom, prompts, tts, ui
+from routes import clients, health, jobs, metrics_json, metrics_prom, oauth, prompts, tts, ui
 from routes import eval as eval_route
 from routes import models as models_route
 from routes import routing as routing_route
@@ -30,6 +30,7 @@ app.include_router(metrics_prom.router)
 app.include_router(metrics_json.router)
 app.include_router(eval_route.router)
 app.include_router(prompts.router)
+app.include_router(oauth.router)
 app.include_router(tts.tts_router)
 app.include_router(tts.output_router)
 app.include_router(ui.router)
