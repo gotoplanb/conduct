@@ -66,6 +66,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         # Windows or no running loop in tests
         log.info("SIGUSR1 not available (%s) — pricing must be reloaded by restart", e)
 
-    yield
+    # Start the MCP server's Streamable-HTTP session manager. The /mcp app is
+    # mounted in main.py but its session manager only runs while this context
+    # is open, so it lives for the lifetime of the app.
+    from mcp_server import mcp
+
+    async with mcp.session_manager.run():
+        yield
 
     HTTPXClientInstrumentor().uninstrument()

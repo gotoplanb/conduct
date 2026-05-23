@@ -5,6 +5,7 @@ from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from lifespan import lifespan
+from mcp_server import build_mcp_app
 from routes import clients, health, jobs, metrics_json, metrics_prom, oauth, prompts, tts, ui
 from routes import eval as eval_route
 from routes import models as models_route
@@ -34,6 +35,10 @@ app.include_router(oauth.router)
 app.include_router(tts.tts_router)
 app.include_router(tts.output_router)
 app.include_router(ui.router)
+
+# Remote MCP server for Claude custom connectors. Streamable-HTTP transport
+# behind the OAuth bearer gate; its session manager is started in lifespan.
+app.mount("/mcp", build_mcp_app())
 
 
 @app.get("/", include_in_schema=False)

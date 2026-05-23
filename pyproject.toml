@@ -27,6 +27,7 @@ dependencies = [
     "piper-tts>=1.4",
     "jinja2>=3.1",
     "python-multipart>=0.0.20",
+    "mcp>=1.2",
 ]
 
 [project.scripts]
