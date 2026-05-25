@@ -53,3 +53,15 @@ rules:
     preferred_model: llama3.3:70b
     fallback_model: claude-sonnet-4-5
     sensitivity: internal
+
+  # Demo task — exercises the whole stack end to end (MCP create_job →
+  # small-model primary → 70b eval shadow → review/rollup).
+  - task_type: dad_joke
+    preferred_model: llama3.2:3b
+    fallback_model: llama3.3:70b
+    sensitivity: public
+    max_tokens: 150
+    notes: "Demo task: one family-friendly dad joke. Shadows 70b to compare small-vs-large humor."
+    eval_shadow_models:
+      - model: llama3.3:70b
+        rate: 1.0
