@@ -11,7 +11,7 @@ from providers.resident import is_resident, resident_model_names
 
 
 def test_resident_model_names_empty_when_unset(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("RESIDENT_MODELS", raising=False)
+    monkeypatch.setenv("RESIDENT_MODELS", "")  # force unset, ignoring any .env value
     from config.settings import get_settings
 
     get_settings.cache_clear()
@@ -48,7 +48,7 @@ def test_is_resident_checks_membership(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_validate_accepts_cloud_targets(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("RESIDENT_MODELS", raising=False)
+    monkeypatch.setenv("RESIDENT_MODELS", "")  # force unset, ignoring any .env value
     from config.settings import get_settings
 
     get_settings.cache_clear()
@@ -74,7 +74,7 @@ def test_validate_rejects_non_resident_local(monkeypatch: pytest.MonkeyPatch) ->
 
 
 def test_validate_rejects_when_residents_unset(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("RESIDENT_MODELS", raising=False)
+    monkeypatch.setenv("RESIDENT_MODELS", "")  # force unset, ignoring any .env value
     from config.settings import get_settings
 
     get_settings.cache_clear()
@@ -92,7 +92,7 @@ def test_validate_mixed_cloud_and_resident(monkeypatch: pytest.MonkeyPatch) -> N
 
 
 def test_validate_empty_list_is_noop(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("RESIDENT_MODELS", raising=False)
+    monkeypatch.setenv("RESIDENT_MODELS", "")  # force unset, ignoring any .env value
     from config.settings import get_settings
 
     get_settings.cache_clear()

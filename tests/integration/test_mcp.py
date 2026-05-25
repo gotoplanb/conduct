@@ -10,6 +10,7 @@ from uuid import UUID, uuid4
 
 import pytest
 import pytest_asyncio
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 import mcp_server
@@ -23,7 +24,9 @@ from mcp_server import (
 from models.client import ClientApp
 from models.job import Job
 from models.oauth import OAuthClient, OAuthToken
+from models.prompt import Prompt
 from models.routing import RoutingRule
+from models.shadow import JobShadow
 from models.types import JobStatus
 from oauth_provider import hash_secret
 
@@ -179,6 +182,69 @@ async def test_create_job_invalid_sensitivity(
 ) -> None:
     with principal(seeded_client[0]), pytest.raises(ValueError, match="invalid sensitivity"):
         await create_job(task_type=task_type, prompt="x", sensitivity="banana")
+
+
+@pytest.fixture
+def sync_registry(stub_registry):
+    mcp_server.set_provider_registry(stub_registry)
+    yield stub_registry
+    mcp_server.set_provider_registry(None)
+
+
+async def test_create_job_runs_sync_for_eligible_model(
+    db_session, seeded_client, task_type, mcp_sessionmaker, sync_registry, fake_redis, monkeypatch
+) -> None:
+    # Make the routed model sync-eligible (resident) and give it a prompt + a
+    # shadow so we can assert both the inline result and the async fan-out.
+    monkeypatch.setattr(mcp_server, "is_resident", lambda m: True)
+    db_session.add(
+        RoutingRule(
+            task_type=task_type,
+            preferred_model="llama3.2:3b",
+            fallback_model="llama3.3:70b",
+            sensitivity="public",
+            eval_shadow_models=[{"model": "llama3.3:70b", "rate": 1.0}],
+        )
+    )
+    db_session.add(Prompt(task_type=task_type, client_id=None, content="be funny"))
+    await db_session.commit()
+
+    with principal(seeded_client[0]):
+        out = await create_job(task_type=task_type, prompt="joke please")
+
+    # Result came back inline, not pending.
+    assert out["status"] == JobStatus.COMPLETE.value
+    assert out["response"] == "stub response"
+    # The eval shadow still fanned out asynchronously.
+    job = await db_session.get(Job, UUID(out["job_id"]))
+    shadows = (
+        await db_session.scalars(
+            select(JobShadow).where(JobShadow.parent_job_id == job.id)
+        )
+    ).all()
+    assert len(shadows) == 1
+    assert shadows[0].model == "llama3.3:70b"
+
+
+async def test_create_job_async_when_not_sync_eligible(
+    db_session, seeded_client, task_type, mcp_sessionmaker, sync_registry, fake_queue, monkeypatch
+) -> None:
+    # Registry is set, but the model isn't resident → must still enqueue async.
+    monkeypatch.setattr(mcp_server, "is_resident", lambda m: False)
+    db_session.add(
+        RoutingRule(
+            task_type=task_type,
+            preferred_model="llama3.3:70b",
+            fallback_model="llama3.3:70b",
+            sensitivity="internal",
+        )
+    )
+    await db_session.commit()
+
+    with principal(seeded_client[0]):
+        out = await create_job(task_type=task_type, prompt="x")
+    assert out["status"] == JobStatus.PENDING.value
+    assert len(fake_queue.calls) == 1
 
 
 # --- OAuth ASGI middleware ---

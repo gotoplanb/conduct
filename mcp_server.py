@@ -24,12 +24,17 @@ from sqlalchemy import select
 
 from config.settings import get_settings
 from db.session import SessionLocal
+from eval.shadow_runner import enqueue_shadows_for_parent
 from models.client import ClientApp
 from models.job import Job
 from models.routing import RoutingRule
 from models.types import JobStatus, Sensitivity
 from oauth_provider import resolve_access_token
-from routing.engine import SensitivityViolation, decide
+from prompt_loader import PromptNotFoundError
+from providers.registry import ProviderRegistry
+from providers.resident import is_resident
+from routing.engine import RoutingDecision, SensitivityViolation, decide
+from worker.executor import execute_job
 from worker.queue import DEFAULT_JOB_TIMEOUT_S, get_queue
 from worker.runner import run_job
 
@@ -37,6 +42,24 @@ from worker.runner import run_job
 _principal: contextvars.ContextVar[dict | None] = contextvars.ContextVar(
     "mcp_principal", default=None
 )
+
+# The API's provider registry, handed in from the app lifespan. Lets sync-
+# eligible jobs run inline in this process. None until the lifespan sets it
+# (and in tests unless explicitly provided).
+_provider_registry: ProviderRegistry | None = None
+
+
+def set_provider_registry(registry: ProviderRegistry) -> None:
+    global _provider_registry
+    _provider_registry = registry
+
+
+def _sync_eligible(decision: RoutingDecision) -> bool:
+    """The API can run a job inline only for cloud models or resident local
+    models (the worker owns Ollama swaps for everything else)."""
+    if decision.provider != "ollama":
+        return True
+    return is_resident(decision.model)
 
 
 def _transport_security() -> TransportSecuritySettings:
@@ -152,9 +175,11 @@ async def get_job(job_id: str) -> dict[str, Any]:
 async def create_job(
     task_type: str, prompt: str, system_prompt: str = "", sensitivity: str | None = None
 ) -> dict[str, Any]:
-    """Create a job. It runs asynchronously; poll get_job(job_id) for the
-    result. `task_type` should be one from list_task_types. `sensitivity`
-    (public/internal/confidential) may raise the floor, never lower it."""
+    """Create a job. Fast tasks (cloud or resident local models) run inline
+    and the result is returned directly; heavier ones return status=pending —
+    poll get_job(job_id) for those. `task_type` should be one from
+    list_task_types. `sensitivity` (public/internal/confidential) may raise the
+    floor, never lower it."""
     client_app_id = _client_app_id()
     settings = get_settings()
     try:
@@ -198,6 +223,31 @@ async def create_job(
         await session.refresh(job)
         job_id = str(job.id)
 
+        registry = _provider_registry
+        if _sync_eligible(decision) and registry is not None and registry.has(decision.provider):
+            # Run inline (cloud or resident-local model) and return the answer
+            # in one call. Eval shadows still fan out async afterward.
+            try:
+                await execute_job(
+                    job=job,
+                    decision=decision,
+                    client_name=client.name,
+                    providers=registry,
+                    session=session,
+                )
+            except PromptNotFoundError as e:
+                job.status = JobStatus.FAILED.value
+                job.error = f"prompt resolution failed: {e}"
+                await session.commit()
+            if job.status == JobStatus.COMPLETE.value:
+                await enqueue_shadows_for_parent(
+                    parent_job=job, rule=rule, client=client, session=session
+                )
+            await session.refresh(job)
+            return _job_detail(job)
+
+    # Async path: the worker owns this model (non-resident local). It runs the
+    # primary and fans out eval shadows itself.
     get_queue().enqueue(run_job, job_id, job_id=job_id, job_timeout=DEFAULT_JOB_TIMEOUT_S)
     return {
         "job_id": job_id,

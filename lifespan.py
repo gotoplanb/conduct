@@ -49,6 +49,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     else:
         log.warning("ANTHROPIC_API_KEY not set — Anthropic-routed jobs will fail.")
     app.state.providers = registry
+    # Hand the registry to the MCP server so sync-eligible tools run inline.
+    from mcp_server import set_provider_registry
+
+    set_provider_registry(registry)
 
     # Eagerly load pricing so SIGHUP can reload it later.
     pricing = get_pricing()
