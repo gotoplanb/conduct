@@ -218,6 +218,18 @@ def cmd_jobs_get(args: argparse.Namespace) -> int:
     ):
         if j.get(k) is not None:
             print(f"{k:<13}: {j[k]}")
+
+    scores = (j.get("metadata") or {}).get("quality_scores", [])
+    if scores:
+        vals = [s["score"] for s in scores if isinstance(s.get("score"), int | float)]
+        avg = sum(vals) / len(vals) if vals else 0
+        print(f"\n--- eval ({len(scores)} score(s), avg {avg:.1f}) ---")
+        for s in scores:
+            via = s.get("via") or "?"
+            reviewer = s.get("reviewer") or "?"
+            note = f"  {s['note']!r}" if s.get("note") else ""
+            print(f"  {s['score']}/5  via={via:<5} by {reviewer:<16} {s.get('at', '')}{note}")
+
     if j.get("response"):
         print("\n--- response ---")
         print(j["response"])
