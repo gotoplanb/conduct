@@ -21,6 +21,9 @@ class Settings(BaseSettings):
     # set it to the public URL in prod; localhost is fine for local dev.
     public_base_url: str = Field(default="http://localhost:8000", alias="CONDUCT_PUBLIC_URL")
 
+    # TTL for single-use job eval tokens (the credential-less scoring link).
+    eval_token_ttl_days: int = Field(default=7, alias="EVAL_TOKEN_TTL_DAYS")
+
     default_model: str = Field(default="llama3.3:70b", alias="DEFAULT_MODEL")
     default_sensitive_model: str = Field(default="llama3.3:70b", alias="DEFAULT_SENSITIVE_MODEL")
 

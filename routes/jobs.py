@@ -19,6 +19,7 @@ from config.settings import get_settings
 from db.session import get_session
 from deps import get_provider_registry
 from eval.fanout import FanoutValidationError, run_fanout_secondaries, validate_fanout_targets
+from eval.scoring import EvalTokenError, mint_eval_token, redeem_eval_token
 from models.client import ClientApp
 from models.job import Job
 from models.routing import RoutingRule
@@ -36,6 +37,8 @@ from worker.runner import run_job
 log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
+
+_JOB_NOT_FOUND = "job not found"
 
 
 class JobCreateIn(BaseModel):
@@ -74,9 +77,11 @@ class JobOut(BaseModel):
     started_at: datetime | None = None
     completed_at: datetime | None = None
     metadata: dict = {}
+    eval_url: str | None = None
 
     @classmethod
     def from_job(cls, job: Job) -> JobOut:
+        base = get_settings().public_base_url.rstrip("/")
         return cls(
             job_id=job.id,
             status=JobStatus(job.status),
@@ -93,6 +98,7 @@ class JobOut(BaseModel):
             started_at=job.started_at,
             completed_at=job.completed_at,
             metadata=job.job_metadata or {},
+            eval_url=f"{base}/jobs/{job.id}/eval",
         )
 
 
@@ -369,8 +375,65 @@ async def get_job(
     job = await session.get(Job, job_id)
     # Admin (principal is None) sees any job; a client sees only its own.
     if job is None or (principal is not None and job.client_app_id != principal.id):
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "job not found")
+        raise HTTPException(status.HTTP_404_NOT_FOUND, _JOB_NOT_FOUND)
     return JobOut.from_job(job)
+
+
+class EvalLinkOut(BaseModel):
+    job_id: UUID
+    eval_url: str
+    eval_token: str
+    expires_at: datetime
+
+
+@router.post("/{job_id}/eval-link")
+async def create_eval_link(
+    job_id: UUID,
+    principal: Annotated[ClientApp | None, Depends(current_client_or_admin)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> EvalLinkOut:
+    """Mint a single-use scoring token for a job (owner or admin). Hand the
+    returned URL + token to a credential-less rater (e.g. a portal link)."""
+    job = await session.get(Job, job_id)
+    if job is None or (principal is not None and job.client_app_id != principal.id):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, _JOB_NOT_FOUND)
+    raw, expires = await mint_eval_token(session, job)
+    base = get_settings().public_base_url.rstrip("/")
+    return EvalLinkOut(
+        job_id=job.id, eval_url=f"{base}/jobs/{job.id}/eval", eval_token=raw, expires_at=expires
+    )
+
+
+class EvalSubmitIn(BaseModel):
+    eval_token: str
+    score: int = Field(ge=1, le=5)
+    note: str | None = Field(default=None, max_length=500)
+
+
+class EvalSubmitOut(BaseModel):
+    job_id: UUID
+    score: int
+    recorded: bool
+
+
+@router.post("/{job_id}/eval")
+async def submit_eval(
+    job_id: UUID,
+    body: EvalSubmitIn,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> EvalSubmitOut:
+    """Submit a 1-5 score for a job using its single-use eval token. No bearer
+    auth — the token in the body is the credential."""
+    job = await session.get(Job, job_id)
+    if job is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, _JOB_NOT_FOUND)
+    try:
+        await redeem_eval_token(
+            session, job, raw_token=body.eval_token, score=body.score, note=body.note
+        )
+    except EvalTokenError as e:
+        raise HTTPException(e.status, e.message) from e
+    return EvalSubmitOut(job_id=job.id, score=body.score, recorded=True)
 
 
 @router.delete("/{job_id}")
@@ -381,7 +444,7 @@ async def cancel_job(
 ) -> JobOut:
     job = await session.get(Job, job_id)
     if job is None or job.client_app_id != client.id:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "job not found")
+        raise HTTPException(status.HTTP_404_NOT_FOUND, _JOB_NOT_FOUND)
     if job.status == JobStatus.RUNNING.value:
         raise HTTPException(status.HTTP_409_CONFLICT, "cannot cancel a running job")
     if job.status == JobStatus.PENDING.value:

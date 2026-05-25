@@ -92,6 +92,45 @@ and the YAML can drift; treat the live DB as source of truth.
   Returns per-model `cost_per_job_usd`, `avg_latency_ms`, `failure_rate`,
   `avg_score`, and counts.
 
+## Client-submitted scores
+
+Beyond operator scoring, clients can submit their own quality scores. All paths
+append to the same `quality_scores` list (so they feed the same rollup), and
+each score is tagged with a `via` provenance field (`admin` / `mcp` / `url`) so
+you can filter operator vs. client-sourced scores later.
+
+**From a Claude connector (MCP).** The `submit_eval` tool scores one of the
+caller's own jobs. The calling Claude session interprets freeform feedback
+("that joke was hilarious") into a 1–5 score *before* invoking the tool — no
+extra round-trip or job:
+
+```
+Human: "that was great"
+Claude → submit_eval(job_id, score=5, note="positive reaction")   # via=mcp
+```
+
+**From a credential-less rater (link).** For a portal/email scorer with no API
+key, the owning client (or admin) mints a single-use token, then hands out the
+link:
+
+```bash
+# 1. owner/admin mints a token
+curl -X POST -H "Authorization: Bearer <key>" "$CONDUCT_BASE_URL/jobs/$JOB/eval-link"
+#    → { "eval_url": ".../jobs/<id>/eval", "eval_token": "cdt_ev_…", "expires_at": ... }
+
+# 2. the rater submits a score with just the token (no bearer auth)
+curl -X POST "$CONDUCT_BASE_URL/jobs/$JOB/eval" \
+  -d '{"eval_token": "cdt_ev_…", "score": 4, "note": "good but verbose"}'   # via=url
+```
+
+The token is single-use, TTL-bound (`EVAL_TOKEN_TTL_DAYS`, default 7),
+job-scoped, and stored hashed. A second submit returns `409`; an expired or
+wrong token returns `401`; a score outside 1–5 returns `422`.
+
+> If Conduct sits behind an auth proxy (e.g. the ngrok `Bearer cdt_` edge
+> guard), add `/jobs/{id}/eval` to the allowlist — the token-submit call comes
+> from a credential-less browser and won't carry that header.
+
 ## Worked example: is a small local model good enough?
 
 Goal: can `llama3.2:3b` replace `llama3.3:70b` for `bio_generation`?

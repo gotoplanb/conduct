@@ -24,6 +24,7 @@ from sqlalchemy import select
 
 from config.settings import get_settings
 from db.session import SessionLocal
+from eval.scoring import apply_score
 from eval.shadow_runner import enqueue_shadows_for_parent
 from models.client import ClientApp
 from models.job import Job
@@ -254,6 +255,32 @@ async def create_job(
         "status": JobStatus.PENDING.value,
         "note": "queued — call get_job(job_id) for the result",
     }
+
+
+@mcp.tool()
+async def submit_eval(job_id: str, score: int, note: str = "") -> dict[str, Any]:
+    """Record a 1-5 quality score for one of your completed jobs. Interpret any
+    freeform human feedback ("that was hilarious", "too generic") into a score
+    yourself before calling: 1=very poor, 2=poor, 3=acceptable, 4=good,
+    5=excellent. `note` is an optional short rationale."""
+    client_app_id = _client_app_id()
+    if not 1 <= score <= 5:
+        raise ValueError("score must be an integer 1-5")
+    try:
+        target = UUID(job_id)
+    except ValueError as e:
+        raise ValueError("job_id is not a valid UUID") from e
+
+    principal = _principal.get() or {}
+    reviewer = principal.get("client_app_name", "mcp")
+    async with SessionLocal() as session:
+        job = await session.get(Job, target)
+        if job is None or job.client_app_id != client_app_id:
+            raise ValueError("no job with that id")
+        await apply_score(
+            session, target, score=score, reviewer=reviewer, note=note or None, via="mcp"
+        )
+    return {"job_id": job_id, "score": score, "recorded": True}
 
 
 # --- OAuth-gated ASGI wrapper ---

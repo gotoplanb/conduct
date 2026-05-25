@@ -20,6 +20,7 @@ from mcp_server import (
     get_job,
     list_jobs,
     list_task_types,
+    submit_eval,
 )
 from models.client import ClientApp
 from models.job import Job
@@ -182,6 +183,36 @@ async def test_create_job_invalid_sensitivity(
 ) -> None:
     with principal(seeded_client[0]), pytest.raises(ValueError, match="invalid sensitivity"):
         await create_job(task_type=task_type, prompt="x", sensitivity="banana")
+
+
+async def test_submit_eval_records_score(
+    db_session, seeded_client, task_type, mcp_sessionmaker
+) -> None:
+    job = await _add_job(db_session, client_id=seeded_client[0].id, task_type=task_type)
+    with principal(seeded_client[0]):
+        out = await submit_eval(str(job.id), 5, "hilarious")
+    assert out["recorded"] is True
+    await db_session.refresh(job)
+    scores = job.job_metadata["quality_scores"]
+    assert scores[-1]["score"] == 5
+    assert scores[-1]["via"] == "mcp"
+
+
+async def test_submit_eval_out_of_range(seeded_client, mcp_sessionmaker) -> None:
+    with principal(seeded_client[0]), pytest.raises(ValueError, match="1-5"):
+        await submit_eval(str(uuid4()), 9)
+
+
+async def test_submit_eval_other_client_hidden(
+    db_session, seeded_client, task_type, mcp_sessionmaker
+) -> None:
+    other = ClientApp(name=f"other-{uuid4().hex[:6]}", api_key_hash=uuid4().hex)
+    db_session.add(other)
+    await db_session.commit()
+    await db_session.refresh(other)
+    job = await _add_job(db_session, client_id=other.id, task_type=task_type)
+    with principal(seeded_client[0]), pytest.raises(ValueError, match="no job"):
+        await submit_eval(str(job.id), 4)
 
 
 @pytest.fixture

@@ -205,3 +205,72 @@ async def test_admin_can_read_any_job(
     assert r.status_code == 200
     assert r.json()["job_id"] == str(job.id)
     assert r.json()["response"] == "ok"
+
+
+async def _mint_eval_link(client, job_id, headers) -> str:
+    r = await client.post(f"/jobs/{job_id}/eval-link", headers=headers)
+    assert r.status_code == 200
+    body = r.json()
+    assert body["eval_token"].startswith("cdt_ev_")
+    return body["eval_token"]
+
+
+async def test_eval_link_and_token_submit(
+    client, db_session, seeded_client, task_type
+) -> None:
+    job = await _seed_job(db_session, client_id=seeded_client[0].id, task_type=task_type)
+    headers = {"Authorization": f"Bearer {seeded_client[1]}"}
+    token = await _mint_eval_link(client, job.id, headers)
+
+    # Submit a score with the token — no bearer auth.
+    r = await client.post(
+        f"/jobs/{job.id}/eval", json={"eval_token": token, "score": 4, "note": "good"}
+    )
+    assert r.status_code == 200
+    assert r.json()["recorded"] is True
+
+    # The score landed in quality_scores, tagged via=url.
+    await db_session.refresh(job)
+    scores = job.job_metadata["quality_scores"]
+    assert scores[-1]["score"] == 4
+    assert scores[-1]["via"] == "url"
+
+
+async def test_eval_token_single_use(client, db_session, seeded_client, task_type) -> None:
+    job = await _seed_job(db_session, client_id=seeded_client[0].id, task_type=task_type)
+    headers = {"Authorization": f"Bearer {seeded_client[1]}"}
+    token = await _mint_eval_link(client, job.id, headers)
+    body = {"eval_token": token, "score": 5}
+    assert (await client.post(f"/jobs/{job.id}/eval", json=body)).status_code == 200
+    second = await client.post(f"/jobs/{job.id}/eval", json=body)
+    assert second.status_code == 409
+
+
+async def test_eval_invalid_token_401(client, db_session, seeded_client, task_type) -> None:
+    job = await _seed_job(db_session, client_id=seeded_client[0].id, task_type=task_type)
+    headers = {"Authorization": f"Bearer {seeded_client[1]}"}
+    await _mint_eval_link(client, job.id, headers)
+    r = await client.post(
+        f"/jobs/{job.id}/eval", json={"eval_token": "cdt_ev_wrong", "score": 3}
+    )
+    assert r.status_code == 401
+
+
+async def test_eval_score_out_of_range_422(client, db_session, seeded_client, task_type) -> None:
+    job = await _seed_job(db_session, client_id=seeded_client[0].id, task_type=task_type)
+    headers = {"Authorization": f"Bearer {seeded_client[1]}"}
+    token = await _mint_eval_link(client, job.id, headers)
+    r = await client.post(f"/jobs/{job.id}/eval", json={"eval_token": token, "score": 9})
+    assert r.status_code == 422
+
+
+async def test_eval_link_owner_only(
+    client, db_session, seeded_client, cloud_client, task_type
+) -> None:
+    # Job belongs to seeded_client; cloud_client must not be able to mint a link.
+    job = await _seed_job(db_session, client_id=seeded_client[0].id, task_type=task_type)
+    r = await client.post(
+        f"/jobs/{job.id}/eval-link",
+        headers={"Authorization": f"Bearer {cloud_client[1]}"},
+    )
+    assert r.status_code == 404
