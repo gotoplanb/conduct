@@ -187,6 +187,10 @@ def cmd_jobs_list(args: argparse.Namespace) -> None:
         params["status"] = args.status
     if args.search:
         params["q"] = args.search
+    if args.min_score is not None:
+        params["min_score"] = str(args.min_score)
+    if args.max_score is not None:
+        params["max_score"] = str(args.max_score)
     with httpx.Client(base_url=_base_url(), headers=_headers(), timeout=30) as c:
         r = c.get("/jobs", params=params)
         r.raise_for_status()
@@ -197,11 +201,27 @@ def cmd_jobs_list(args: argparse.Namespace) -> None:
     for j in rows:
         cost = f"${j['cost_usd']}" if j.get("cost_usd") is not None else "-"
         lat = f"{j['latency_ms']}ms" if j.get("latency_ms") is not None else "-"
+        score = (
+            f"{j['avg_score']:.1f}x{j['score_count']}" if j.get("avg_score") is not None else "-"
+        )
         print(
             f"{j['job_id']}  {j['status']:<9} {j['task_type']:<20} "
-            f"{(j.get('model_used') or '-'):<16} {j['client_app']:<20} {lat:>8} {cost:>8}  "
-            f"{j['created_at']}"
+            f"{(j.get('model_used') or '-'):<16} {j['client_app']:<20} {lat:>8} {cost:>8} "
+            f"{score:>6}  {j['created_at']}"
         )
+
+
+def _print_eval_scores(scores: list[dict]) -> None:
+    if not scores:
+        return
+    vals = [s["score"] for s in scores if isinstance(s.get("score"), int | float)]
+    avg = sum(vals) / len(vals) if vals else 0
+    print(f"\n--- eval ({len(scores)} score(s), avg {avg:.1f}) ---")
+    for s in scores:
+        via = s.get("via") or "?"
+        reviewer = s.get("reviewer") or "?"
+        note = f"  {s['note']!r}" if s.get("note") else ""
+        print(f"  {s['score']}/5  via={via:<5} by {reviewer:<16} {s.get('at', '')}{note}")
 
 
 def cmd_jobs_get(args: argparse.Namespace) -> int:
@@ -219,16 +239,7 @@ def cmd_jobs_get(args: argparse.Namespace) -> int:
         if j.get(k) is not None:
             print(f"{k:<13}: {j[k]}")
 
-    scores = (j.get("metadata") or {}).get("quality_scores", [])
-    if scores:
-        vals = [s["score"] for s in scores if isinstance(s.get("score"), int | float)]
-        avg = sum(vals) / len(vals) if vals else 0
-        print(f"\n--- eval ({len(scores)} score(s), avg {avg:.1f}) ---")
-        for s in scores:
-            via = s.get("via") or "?"
-            reviewer = s.get("reviewer") or "?"
-            note = f"  {s['note']!r}" if s.get("note") else ""
-            print(f"  {s['score']}/5  via={via:<5} by {reviewer:<16} {s.get('at', '')}{note}")
+    _print_eval_scores((j.get("metadata") or {}).get("quality_scores", []))
 
     if j.get("response"):
         print("\n--- response ---")
@@ -298,6 +309,8 @@ def _build_parser() -> argparse.ArgumentParser:
     jlist.add_argument("--task-type", dest="task_type", help="filter by task_type")
     jlist.add_argument("--status", help="filter by status")
     jlist.add_argument("--search", help="prompt substring match")
+    jlist.add_argument("--min-score", dest="min_score", type=float, help="min avg eval score (1-5)")
+    jlist.add_argument("--max-score", dest="max_score", type=float, help="max avg eval score (1-5)")
     jlist.add_argument("--limit", type=int, default=50, help="max rows (default 50)")
     jlist.set_defaults(func=cmd_jobs_list)
 

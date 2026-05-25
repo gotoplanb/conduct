@@ -207,6 +207,27 @@ async def test_admin_can_read_any_job(
     assert r.json()["response"] == "ok"
 
 
+async def test_admin_list_jobs_score_filter(
+    client, db_session, seeded_client, admin_headers, task_type
+) -> None:
+    cid = seeded_client[0].id
+    low = await _seed_job(db_session, client_id=cid, task_type=task_type)
+    high = await _seed_job(db_session, client_id=cid, task_type=task_type)
+    await _seed_job(db_session, client_id=cid, task_type=task_type)  # unscored
+    low.job_metadata = {"quality_scores": [{"score": 2}]}
+    high.job_metadata = {"quality_scores": [{"score": 5}]}
+    await db_session.commit()
+
+    # max_score=3 returns only the scored-low job (unscored excluded).
+    r = await client.get(f"/jobs?task_type={task_type}&max_score=3", headers=admin_headers)
+    assert r.status_code == 200
+    jobs = r.json()["jobs"]
+    assert len(jobs) == 1
+    assert jobs[0]["job_id"] == str(low.id)
+    assert jobs[0]["avg_score"] == 2.0
+    assert jobs[0]["score_count"] == 1
+
+
 async def _mint_eval_link(client, job_id, headers) -> str:
     r = await client.post(f"/jobs/{job_id}/eval-link", headers=headers)
     assert r.status_code == 200

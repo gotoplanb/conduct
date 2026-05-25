@@ -19,7 +19,7 @@ from config.settings import get_settings
 from db.session import get_session
 from deps import get_provider_registry
 from eval.fanout import FanoutValidationError, run_fanout_secondaries, validate_fanout_targets
-from eval.scoring import EvalTokenError, mint_eval_token, redeem_eval_token
+from eval.scoring import EvalTokenError, mint_eval_token, redeem_eval_token, score_state
 from models.client import ClientApp
 from models.job import Job
 from models.routing import RoutingRule
@@ -314,10 +314,18 @@ class JobListItem(BaseModel):
     cost_usd: Decimal | None = None
     latency_ms: int | None = None
     created_at: datetime
+    avg_score: float | None = None
+    score_count: int = 0
 
 
 class JobListOut(BaseModel):
     jobs: list[JobListItem]
+
+
+def _in_score_range(avg: float | None, lo: float | None, hi: float | None) -> bool:
+    if avg is None:
+        return False
+    return (lo is None or avg >= lo) and (hi is None or avg <= hi)
 
 
 @router.get("", dependencies=[Depends(admin_only)])
@@ -326,10 +334,19 @@ async def list_jobs(
     task_type: Annotated[str | None, Query()] = None,
     job_status: Annotated[str | None, Query(alias="status")] = None,
     q: Annotated[str | None, Query()] = None,
+    min_score: Annotated[float | None, Query(ge=1, le=5)] = None,
+    max_score: Annotated[float | None, Query(ge=1, le=5)] = None,
     limit: Annotated[int, Query(ge=1, le=500)] = 50,
 ) -> JobListOut:
-    """Admin: list recent jobs across all clients, newest first."""
-    stmt = select(Job).order_by(Job.created_at.desc()).limit(limit)
+    """Admin: list recent jobs across all clients, newest first. With
+    min_score/max_score, only jobs whose average quality score falls in range
+    are returned (unscored jobs are excluded) — handy for triaging mediocre
+    outputs."""
+    has_score_filter = min_score is not None or max_score is not None
+    # Score is a JSON aggregate, so it's filtered in Python; over-fetch when a
+    # score filter is set so the post-filter result can still fill `limit`.
+    fetch_cap = 500 if has_score_filter else limit
+    stmt = select(Job).order_by(Job.created_at.desc()).limit(fetch_cap)
     if task_type:
         stmt = stmt.where(Job.task_type == task_type)
     if job_status:
@@ -349,8 +366,13 @@ async def list_jobs(
         if client_ids
         else {}
     )
-    return JobListOut(
-        jobs=[
+
+    out: list[JobListItem] = []
+    for j in rows:
+        st = score_state((j.job_metadata or {}).get("quality_scores", []))
+        if has_score_filter and not _in_score_range(st["avg"], min_score, max_score):
+            continue
+        out.append(
             JobListItem(
                 job_id=j.id,
                 task_type=j.task_type,
@@ -360,10 +382,13 @@ async def list_jobs(
                 cost_usd=j.cost_usd,
                 latency_ms=j.latency_ms,
                 created_at=j.created_at,
+                avg_score=st["avg"],
+                score_count=st["count"],
             )
-            for j in rows
-        ]
-    )
+        )
+        if len(out) >= limit:
+            break
+    return JobListOut(jobs=out)
 
 
 @router.get("/{job_id}")
