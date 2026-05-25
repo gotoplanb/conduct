@@ -85,6 +85,7 @@ Setup:
 - **[docs/architecture.md](docs/architecture.md)** — sensitivity tiers, sync vs. async decision, routing engine, failure handling
 - **[docs/deployment.md](docs/deployment.md)** — container build, host-side vs. containerized dev, git SHA provenance, private overlays, ECS / Cloud Run targets, ngrok
 - **[docs/operations.md](docs/operations.md)** — live config, observability, common queries, tests, DoD
+- **[docs/observability.md](docs/observability.md)** — wiring Conduct into the Watchtower LGTM stack (traces, logs, metrics, dashboard)
 - **[docs/tts.md](docs/tts.md)** — text-to-speech (Piper) for audiobook-style workloads
 - **[SPEC.md](SPEC.md)** — original design doc
 

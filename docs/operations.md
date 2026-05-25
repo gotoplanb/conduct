@@ -33,7 +33,7 @@ conduct prompts history bio_generation       # version log
 
 ## Observability
 
-The Watchtower LGTM stack (Tempo / Loki / Mimir / Grafana / Alloy) lives at `~/watchtower` and runs as a separate Docker Compose project. Conduct sends traces to it and exposes Prometheus endpoints for it to scrape.
+The Watchtower LGTM stack (Tempo / Loki / Prometheus / Grafana / Alloy) runs as a separate Docker Compose project. Conduct sends traces **and logs** to it over OTLP and exposes Prometheus endpoints for Alloy to scrape. For the full setup walkthrough — OTLP wiring, the gitignored Alloy scrape override, and pushing the Conduct dashboard — see **[observability.md](observability.md)**.
 
 ### Traces (OpenTelemetry)
 
@@ -51,6 +51,10 @@ The Watchtower LGTM stack (Tempo / Loki / Mimir / Grafana / Alloy) lives at `~/w
 - Worker: `:8001/metrics` (open endpoint, scrape target).
 
 Counters and histograms cover job count, latency, tokens, cost, and queue depth. Both are scraped by Watchtower's Alloy.
+
+### Logs
+
+Python logs are exported over OTLP to Alloy → Loki, stamped with the active `trace_id`/`span_id` so you can pivot from a log line to its trace in Grafana.
 
 ## Failure handling
 
