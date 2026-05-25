@@ -86,6 +86,9 @@ Setup:
 - **[docs/deployment.md](docs/deployment.md)** — container build, host-side vs. containerized dev, git SHA provenance, private overlays, ECS / Cloud Run targets, ngrok
 - **[docs/operations.md](docs/operations.md)** — live config, observability, common queries, tests, DoD
 - **[docs/observability.md](docs/observability.md)** — wiring Conduct into the Watchtower LGTM stack (traces, logs, metrics, dashboard)
+- **[docs/mcp-connector.md](docs/mcp-connector.md)** — the Claude custom connector: OAuth setup, minting a connector, connecting from the Claude apps
+- **[docs/eval.md](docs/eval.md)** — comparing models for a task: shadows, review/scoring, the rollup, picking a model
+- **[docs/prompts.md](docs/prompts.md)** — DB-backed prompts, resolution order, versioning, and the `conduct` CLI
 - **[docs/tts.md](docs/tts.md)** — text-to-speech (Piper) for audiobook-style workloads
 - **[SPEC.md](SPEC.md)** — original design doc
 

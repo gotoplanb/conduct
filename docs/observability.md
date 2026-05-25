@@ -141,11 +141,12 @@ open http://localhost:3000                                     # Grafana
 | `GRAFANA_URL` | `http://localhost:3000` | Target for `make grafana-dashboards` |
 | `GRAFANA_TOKEN` / `GRAFANA_USER` + `GRAFANA_PASSWORD` | — | Auth for the dashboard push |
 
-## Known gap
+## Viewing traces
 
-Traces reach Tempo (Alloy reports them sent with no failures, and Tempo's
-ingest counters increment), but **Tempo search currently returns no results**.
-This is a Watchtower-side Tempo config issue (likely `local_blocks` / search /
-flush settings in `docker/tempo-config.yaml`), not a Conduct instrumentation
-problem — tracked separately.
+In Grafana, open **Explore → Tempo** and search for service `conduct` (or run
+TraceQL like `{ .service.name = "conduct" }`). If a search looks empty, widen
+the time range — Tempo search is time-window scoped, so a narrow recent window
+can miss traces even though they're ingested. (An earlier "no traces in search"
+report turned out to be exactly this, not a pipeline problem.) From the Conduct
+UI, a job's detail page also deep-links straight to its trace.
 ```
