@@ -16,6 +16,7 @@ from redis import Redis
 from rq import Queue, SimpleWorker
 
 from config.settings import get_settings
+from observability.logs import init_logging
 from observability.tracing import init_tracing
 
 QUEUE_NAME = "conduct"
@@ -73,6 +74,11 @@ def main() -> None:
     log = logging.getLogger(__name__)
     settings = get_settings()
     init_tracing(
+        service_name=settings.otel_service_name,
+        otlp_endpoint=settings.otel_endpoint,
+        role="worker",
+    )
+    init_logging(
         service_name=settings.otel_service_name,
         otlp_endpoint=settings.otel_endpoint,
         role="worker",

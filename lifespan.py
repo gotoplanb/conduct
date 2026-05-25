@@ -14,6 +14,7 @@ from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
 
 from config.pricing import get_pricing
 from config.settings import get_settings
+from observability.logs import init_logging
 from observability.tracing import init_tracing
 from providers.anthropic import AnthropicProvider
 from providers.ollama import OllamaProvider
@@ -28,6 +29,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     # Tracing first so subsequent instrumentation captures spans.
     init_tracing(
+        service_name=settings.otel_service_name,
+        otlp_endpoint=settings.otel_endpoint,
+        role="api",
+    )
+    init_logging(
         service_name=settings.otel_service_name,
         otlp_endpoint=settings.otel_endpoint,
         role="api",

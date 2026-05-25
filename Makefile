@@ -1,4 +1,4 @@
-.PHONY: help install run worker migrate revision seed test lint format up up-infra down build logs psql redis-cli tunnel
+.PHONY: help install run worker migrate revision seed test lint format up up-infra down build logs psql redis-cli tunnel grafana-dashboards
 
 help:
 	@echo "Common targets:"
@@ -113,3 +113,8 @@ download-voice:
 	curl -sSL "$$BASE.onnx" -o "voices/$(v).onnx" && \
 	curl -sSL "$$BASE.onnx.json" -o "voices/$(v).onnx.json" && \
 	echo "Done. Voice ready at voices/$(v).onnx"
+
+# Push Conduct's Grafana dashboards (grafana/dashboards/*.json) into Grafana.
+# Reads GRAFANA_URL + GRAFANA_TOKEN or GRAFANA_USER/GRAFANA_PASSWORD from .env.
+grafana-dashboards:
+	@set -a; [ -f .env ] && . ./.env; set +a; uv run python -m scripts.push_dashboards
