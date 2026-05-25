@@ -6,7 +6,7 @@ from decimal import Decimal
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 from rq.exceptions import NoSuchJobError
@@ -14,7 +14,7 @@ from rq.job import Job as RQJob
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from auth import current_client
+from auth import admin_only, current_client, current_client_or_admin
 from config.settings import get_settings
 from db.session import get_session
 from deps import get_provider_registry
@@ -299,14 +299,76 @@ async def submit_job(
     return JobOut.from_job(job)
 
 
+class JobListItem(BaseModel):
+    job_id: UUID
+    task_type: str
+    status: JobStatus
+    client_app: str
+    model_used: str | None = None
+    cost_usd: Decimal | None = None
+    latency_ms: int | None = None
+    created_at: datetime
+
+
+class JobListOut(BaseModel):
+    jobs: list[JobListItem]
+
+
+@router.get("", dependencies=[Depends(admin_only)])
+async def list_jobs(
+    session: Annotated[AsyncSession, Depends(get_session)],
+    task_type: Annotated[str | None, Query()] = None,
+    job_status: Annotated[str | None, Query(alias="status")] = None,
+    q: Annotated[str | None, Query()] = None,
+    limit: Annotated[int, Query(ge=1, le=500)] = 50,
+) -> JobListOut:
+    """Admin: list recent jobs across all clients, newest first."""
+    stmt = select(Job).order_by(Job.created_at.desc()).limit(limit)
+    if task_type:
+        stmt = stmt.where(Job.task_type == task_type)
+    if job_status:
+        stmt = stmt.where(Job.status == job_status)
+    if q:
+        stmt = stmt.where(Job.prompt.ilike(f"%{q}%"))
+    rows = (await session.scalars(stmt)).all()
+
+    client_ids = {j.client_app_id for j in rows}
+    names = (
+        {
+            c.id: c.name
+            for c in (
+                await session.scalars(select(ClientApp).where(ClientApp.id.in_(client_ids)))
+            ).all()
+        }
+        if client_ids
+        else {}
+    )
+    return JobListOut(
+        jobs=[
+            JobListItem(
+                job_id=j.id,
+                task_type=j.task_type,
+                status=JobStatus(j.status),
+                client_app=names.get(j.client_app_id, "?"),
+                model_used=j.model_used or None,
+                cost_usd=j.cost_usd,
+                latency_ms=j.latency_ms,
+                created_at=j.created_at,
+            )
+            for j in rows
+        ]
+    )
+
+
 @router.get("/{job_id}")
 async def get_job(
     job_id: UUID,
-    client: Annotated[ClientApp, Depends(current_client)],
+    principal: Annotated[ClientApp | None, Depends(current_client_or_admin)],
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> JobOut:
     job = await session.get(Job, job_id)
-    if job is None or job.client_app_id != client.id:
+    # Admin (principal is None) sees any job; a client sees only its own.
+    if job is None or (principal is not None and job.client_app_id != principal.id):
         raise HTTPException(status.HTTP_404_NOT_FOUND, "job not found")
     return JobOut.from_job(job)
 

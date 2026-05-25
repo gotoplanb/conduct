@@ -43,7 +43,8 @@ All four services run as containers via `docker-compose.yml`. Ollama stays on th
 | Method  | Path                          | Auth   | Notes |
 |---------|-------------------------------|--------|-------|
 | POST    | `/jobs`                       | client | sync (cloud) or 202+enqueue (local or `"async":true`). Per-client rate limit |
-| GET     | `/jobs/{id}`                  | client | owner-only |
+| GET     | `/jobs`                       | admin  | list across clients; filters: `task_type`, `status`, `q`, `limit` |
+| GET     | `/jobs/{id}`                  | client/admin | owner sees own; admin sees any |
 | DELETE  | `/jobs/{id}`                  | client | cancel pending; 409 if running |
 | POST    | `/clients`                    | admin  | returns raw API key once |
 | GET     | `/clients`                    | admin  | |
@@ -116,7 +117,7 @@ observability/             OTel tracer + Prometheus metric helpers
 routes/                    route modules; one per concern
 prompts/                   seed material — shared/ + clients/{name}/ .md files
 scripts/seed.py            idempotent bootstrap (clients, routing rules, prompts)
-scripts/cli.py             `conduct` admin CLI (prompts list/get/edit/history)
+scripts/cli.py             `conduct` admin CLI (prompts, jobs, routing)
 tests/                     unit tests (pytest)
 alembic/                   migrations
 docs/                      verbose docs (architecture, deployment, operations)

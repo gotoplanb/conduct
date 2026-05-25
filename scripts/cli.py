@@ -178,6 +178,75 @@ def cmd_prompts_history(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_jobs_list(args: argparse.Namespace) -> None:
+    """List recent jobs across all clients (admin), newest first."""
+    params: dict[str, str] = {"limit": str(args.limit)}
+    if args.task_type:
+        params["task_type"] = args.task_type
+    if args.status:
+        params["status"] = args.status
+    if args.search:
+        params["q"] = args.search
+    with httpx.Client(base_url=_base_url(), headers=_headers(), timeout=30) as c:
+        r = c.get("/jobs", params=params)
+        r.raise_for_status()
+        rows = r.json().get("jobs", [])
+    if not rows:
+        print("(no jobs)")
+        return
+    for j in rows:
+        cost = f"${j['cost_usd']}" if j.get("cost_usd") is not None else "-"
+        lat = f"{j['latency_ms']}ms" if j.get("latency_ms") is not None else "-"
+        print(
+            f"{j['job_id']}  {j['status']:<9} {j['task_type']:<20} "
+            f"{(j.get('model_used') or '-'):<16} {j['client_app']:<20} {lat:>8} {cost:>8}  "
+            f"{j['created_at']}"
+        )
+
+
+def cmd_jobs_get(args: argparse.Namespace) -> int:
+    with httpx.Client(base_url=_base_url(), headers=_headers(), timeout=30) as c:
+        r = c.get(f"/jobs/{args.job_id}")
+        if r.status_code == 404:
+            print("job not found", file=sys.stderr)
+            return 1
+        r.raise_for_status()
+        j = r.json()
+    for k in (
+        "job_id", "task_type", "status", "model_used", "tokens_in", "tokens_out",
+        "cost_usd", "latency_ms", "created_at", "completed_at", "error",
+    ):
+        if j.get(k) is not None:
+            print(f"{k:<13}: {j[k]}")
+    if j.get("response"):
+        print("\n--- response ---")
+        print(j["response"])
+    return 0
+
+
+def cmd_routing_list(args: argparse.Namespace) -> None:
+    """List routing rules (admin)."""
+    with httpx.Client(base_url=_base_url(), headers=_headers(), timeout=30) as c:
+        r = c.get("/routing")
+        r.raise_for_status()
+        rules = r.json().get("rules", [])
+    if not rules:
+        print("(no routing rules)")
+        return
+    width = max(len(r["task_type"]) for r in rules)
+    for rule in rules:
+        shadows = ", ".join(
+            f"{s['model']}@{s['rate']}" for s in rule.get("eval_shadow_models", [])
+        )
+        line = (
+            f"{rule['task_type']:<{width}}  {rule['preferred_model']:<16} -> "
+            f"{rule['fallback_model']:<18} [{rule['sensitivity']}]"
+        )
+        if shadows:
+            line += f"  shadows: {shadows}"
+        print(line)
+
+
 # --- argparse wiring ----
 
 
@@ -209,6 +278,25 @@ def _build_parser() -> argparse.ArgumentParser:
     phist.add_argument("--client", help="restrict to this client's override")
     phist.add_argument("--limit", type=int, default=20, help="max rows (default 20)")
     phist.set_defaults(func=cmd_prompts_history)
+
+    jobs = subs.add_parser("jobs", help="inspect jobs across all clients")
+    jsubs = jobs.add_subparsers(dest="action", required=True)
+
+    jlist = jsubs.add_parser("list", help="list recent jobs (newest first)")
+    jlist.add_argument("--task-type", dest="task_type", help="filter by task_type")
+    jlist.add_argument("--status", help="filter by status")
+    jlist.add_argument("--search", help="prompt substring match")
+    jlist.add_argument("--limit", type=int, default=50, help="max rows (default 50)")
+    jlist.set_defaults(func=cmd_jobs_list)
+
+    jget = jsubs.add_parser("get", help="show a job's status + result by id")
+    jget.add_argument("job_id")
+    jget.set_defaults(func=cmd_jobs_get)
+
+    routing = subs.add_parser("routing", help="inspect routing rules")
+    rsubs = routing.add_subparsers(dest="action", required=True)
+    rlist = rsubs.add_parser("list", help="list routing rules")
+    rlist.set_defaults(func=cmd_routing_list)
 
     return p
 

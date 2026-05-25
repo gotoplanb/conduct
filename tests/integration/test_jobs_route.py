@@ -2,11 +2,31 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from uuid import uuid4
 
 import pytest
 
+from models.job import Job
 from models.routing import RoutingRule
+from models.types import JobStatus
+
+
+async def _seed_job(db, *, client_id, task_type, status=JobStatus.COMPLETE.value):
+    job = Job(
+        client_app_id=client_id,
+        task_type=task_type,
+        sensitivity="public",
+        prompt="hi",
+        status=status,
+        model_used="llama3.2:3b",
+        response="ok",
+        completed_at=datetime.now(UTC),
+    )
+    db.add(job)
+    await db.commit()
+    await db.refresh(job)
+    return job
 
 
 @pytest.fixture
@@ -159,3 +179,29 @@ async def test_get_unknown_job_404(client, cloud_client) -> None:
 async def test_jobs_requires_auth(client) -> None:
     r = await client.post("/jobs", json={"task_type": "x", "prompt": "y"})
     assert r.status_code == 403
+
+
+async def test_admin_list_jobs(client, db_session, seeded_client, admin_headers, task_type) -> None:
+    await _seed_job(db_session, client_id=seeded_client[0].id, task_type=task_type)
+    await _seed_job(db_session, client_id=seeded_client[0].id, task_type=task_type)
+    r = await client.get(f"/jobs?task_type={task_type}", headers=admin_headers)
+    assert r.status_code == 200
+    jobs = r.json()["jobs"]
+    assert len(jobs) == 2
+    assert all(j["task_type"] == task_type for j in jobs)
+    assert jobs[0]["client_app"] == seeded_client[0].name
+
+
+async def test_admin_list_jobs_requires_admin(client, seeded_client) -> None:
+    r = await client.get("/jobs", headers={"Authorization": f"Bearer {seeded_client[1]}"})
+    assert r.status_code == 403
+
+
+async def test_admin_can_read_any_job(
+    client, db_session, seeded_client, admin_headers, task_type
+) -> None:
+    job = await _seed_job(db_session, client_id=seeded_client[0].id, task_type=task_type)
+    r = await client.get(f"/jobs/{job.id}", headers=admin_headers)
+    assert r.status_code == 200
+    assert r.json()["job_id"] == str(job.id)
+    assert r.json()["response"] == "ok"

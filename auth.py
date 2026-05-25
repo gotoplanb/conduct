@@ -13,6 +13,7 @@ from models.client import ClientApp
 
 API_KEY_PREFIX = "cdt_"
 _bearer = HTTPBearer(auto_error=False)
+_MISSING_BEARER = "missing bearer token"
 
 
 def generate_api_key() -> str:
@@ -32,7 +33,7 @@ async def current_client(
     session: AsyncSession = Depends(get_session),
 ) -> ClientApp:
     if credentials is None or not credentials.credentials:
-        raise _unauthorized("missing bearer token")
+        raise _unauthorized(_MISSING_BEARER)
     digest = hash_api_key(credentials.credentials)
     client = await session.scalar(select(ClientApp).where(ClientApp.api_key_hash == digest))
     if client is None:
@@ -47,6 +48,26 @@ async def admin_only(
 ) -> None:
     settings = get_settings()
     if credentials is None or not credentials.credentials:
-        raise _unauthorized("missing bearer token")
+        raise _unauthorized(_MISSING_BEARER)
     if not hmac.compare_digest(credentials.credentials, settings.admin_key):
         raise _unauthorized("admin auth required")
+
+
+async def current_client_or_admin(
+    credentials: HTTPAuthorizationCredentials | None = Depends(_bearer),
+    session: AsyncSession = Depends(get_session),
+) -> ClientApp | None:
+    """Resolve a bearer token to its ClientApp, or None if it's the admin key.
+    Lets a route serve both an owning client (scoped to its own rows) and the
+    admin (unscoped). Raises 403 if the token is neither."""
+    if credentials is None or not credentials.credentials:
+        raise _unauthorized(_MISSING_BEARER)
+    if hmac.compare_digest(credentials.credentials, get_settings().admin_key):
+        return None
+    digest = hash_api_key(credentials.credentials)
+    client = await session.scalar(select(ClientApp).where(ClientApp.api_key_hash == digest))
+    if client is None:
+        raise _unauthorized("invalid api key")
+    if not client.is_active:
+        raise _unauthorized("client is inactive")
+    return client
