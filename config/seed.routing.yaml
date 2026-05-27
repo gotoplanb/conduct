@@ -61,7 +61,11 @@ rules:
     fallback_model: llama3.3:70b
     sensitivity: public
     max_tokens: 150
-    notes: "Demo task: one family-friendly dad joke. Shadows 70b to compare small-vs-large humor."
+    notes: "Demo task: one family-friendly dad joke. Shadows 70b + qwen 14b/32b to compare small-vs-large humor."
     eval_shadow_models:
       - model: llama3.3:70b
+        rate: 1.0
+      - model: qwen2.5:14b
+        rate: 1.0
+      - model: qwen2.5:32b
         rate: 1.0
