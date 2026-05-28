@@ -174,13 +174,19 @@ async def get_job(job_id: str) -> dict[str, Any]:
 
 @mcp.tool()
 async def create_job(
-    task_type: str, prompt: str, system_prompt: str = "", sensitivity: str | None = None
+    task_type: str,
+    prompt: str,
+    system_prompt: str = "",
+    sensitivity: str | None = None,
+    force_shadows: bool = False,
 ) -> dict[str, Any]:
     """Create a job. Fast tasks (cloud or resident local models) run inline
     and the result is returned directly; heavier ones return status=pending —
     poll get_job(job_id) for those. `task_type` should be one from
     list_task_types. `sensitivity` (public/internal/confidential) may raise the
-    floor, never lower it."""
+    floor, never lower it. Set `force_shadows=true` to fan out every eligible
+    eval shadow for THIS request regardless of the rule's sampling rate —
+    useful when you specifically want a side-by-side model comparison."""
     client_app_id = _client_app_id()
     settings = get_settings()
     try:
@@ -217,7 +223,7 @@ async def create_job(
             system_prompt=system_prompt,
             model_requested="",
             status=JobStatus.PENDING.value,
-            job_metadata={},
+            job_metadata={"force_shadows": True} if force_shadows else {},
         )
         session.add(job)
         await session.commit()

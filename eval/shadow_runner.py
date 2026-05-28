@@ -78,6 +78,7 @@ async def enqueue_shadows_for_parent(
     from worker.queue import DEFAULT_JOB_TIMEOUT_S, get_shadow_queue
 
     cost_by_model = await today_cost_by_model(session)
+    force_all = bool((parent_job.job_metadata or {}).get("force_shadows", False))
     plans = plan_shadows(
         rule=rule,
         sensitivity=Sensitivity(parent_job.sensitivity),
@@ -85,6 +86,7 @@ async def enqueue_shadows_for_parent(
         primary_model=parent_job.model_used or "",
         today_cost_by_model=cost_by_model,
         rng=random.Random(),
+        force_all=force_all,
     )
     if not plans:
         return []

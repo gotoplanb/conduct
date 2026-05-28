@@ -59,11 +59,14 @@ def plan_shadows(
     primary_model: str,
     today_cost_by_model: dict[str, Decimal],
     rng: random.Random | None = None,
+    force_all: bool = False,
 ) -> list[ShadowPlan]:
     """Return the shadow targets to enqueue for this parent job.
 
     Gates, in order: rule present, target != primary, sensitivity (cloud
-    only), daily cost cap (cloud only), per-target sample rate.
+    only), daily cost cap (cloud only), per-target sample rate. When
+    `force_all` is true the per-target rate is bypassed — useful when the
+    caller explicitly asked to fan out for this specific request.
     """
     if rule is None or not rule.eval_shadow_models:
         return []
@@ -82,7 +85,7 @@ def plan_shadows(
             today_cost_by_model=today_cost_by_model,
         ):
             continue
-        if not _sampled_in(spec, r):
+        if not force_all and not _sampled_in(spec, r):
             continue
         plans.append(ShadowPlan(model=model, provider=provider_for_model(model)))
     return plans

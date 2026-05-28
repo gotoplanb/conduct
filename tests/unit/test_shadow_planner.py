@@ -292,3 +292,39 @@ def test_sample_rate_distribution_with_fixed_seed(seed: int) -> None:
             hits += 1
     # Generous tolerance — we just want to confirm the sampling is roughly fair.
     assert 400 <= hits <= 600
+
+
+def test_force_all_bypasses_rate() -> None:
+    # rate=0 would never sample in normally; force_all should bypass that.
+    rule = FakeRule(eval_shadow_models=[{"model": "qwen2.5:14b", "rate": 0.0}])
+    plans = plan_shadows(
+        rule=rule,
+        sensitivity=Sensitivity.INTERNAL,
+        allow_cloud_for_internal=True,
+        primary_model="llama3.3:70b",
+        today_cost_by_model=_always_zero(),
+        rng=random.Random(0),
+        force_all=True,
+    )
+    assert [p.model for p in plans] == ["qwen2.5:14b"]
+
+
+def test_force_all_still_skips_primary_and_blocked_cloud() -> None:
+    # force_all bypasses RATE; it must not bypass sensitivity or primary-self.
+    rule = FakeRule(
+        eval_shadow_models=[
+            {"model": "llama3.3:70b", "rate": 1.0},  # same as primary → skip
+            {"model": "claude-haiku-4-5", "rate": 1.0},  # cloud + confidential → blocked
+            {"model": "qwen2.5:14b", "rate": 0.0},
+        ]
+    )
+    plans = plan_shadows(
+        rule=rule,
+        sensitivity=Sensitivity.CONFIDENTIAL,
+        allow_cloud_for_internal=False,
+        primary_model="llama3.3:70b",
+        today_cost_by_model=_always_zero(),
+        rng=random.Random(0),
+        force_all=True,
+    )
+    assert [p.model for p in plans] == ["qwen2.5:14b"]

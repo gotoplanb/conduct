@@ -257,6 +257,37 @@ async def test_create_job_runs_sync_for_eligible_model(
     assert shadows[0].model == "llama3.3:70b"
 
 
+async def test_create_job_force_shadows_bypasses_rate(
+    db_session, seeded_client, task_type, mcp_sessionmaker, sync_registry, fake_redis, monkeypatch
+) -> None:
+    # Rate=0 means no shadow would normally fan out — force_shadows=True must
+    # override that.
+    monkeypatch.setattr(mcp_server, "is_resident", lambda m: True)
+    db_session.add(
+        RoutingRule(
+            task_type=task_type,
+            preferred_model="llama3.2:3b",
+            fallback_model="llama3.3:70b",
+            sensitivity="public",
+            eval_shadow_models=[{"model": "llama3.3:70b", "rate": 0.0}],
+        )
+    )
+    db_session.add(Prompt(task_type=task_type, client_id=None, content="x"))
+    await db_session.commit()
+
+    with principal(seeded_client[0]):
+        out = await create_job(task_type=task_type, prompt="p", force_shadows=True)
+    job = await db_session.get(Job, UUID(out["job_id"]))
+    assert (job.job_metadata or {}).get("force_shadows") is True
+    shadows = (
+        await db_session.scalars(
+            select(JobShadow).where(JobShadow.parent_job_id == job.id)
+        )
+    ).all()
+    assert len(shadows) == 1
+    assert shadows[0].model == "llama3.3:70b"
+
+
 async def test_create_job_async_when_not_sync_eligible(
     db_session, seeded_client, task_type, mcp_sessionmaker, sync_registry, fake_queue, monkeypatch
 ) -> None:

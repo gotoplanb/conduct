@@ -56,6 +56,10 @@ class JobCreateIn(BaseModel):
     # worker swaps mid-request). Results land in JobShadow rows attached to
     # the primary's Job; the response body is still just the primary's.
     fanout: list[str] = Field(default_factory=list, max_length=10)
+    # Per-request override of the rule's eval-shadow sampling: if true, every
+    # eligible shadow on the rule fans out for THIS job regardless of `rate`.
+    # Handy for "I want the full comparison for this specific input."
+    force_shadows: bool = False
     metadata: dict = Field(default_factory=dict)
 
 
@@ -285,7 +289,10 @@ async def submit_job(
         system_prompt=body.system_prompt,
         model_requested=body.model or "",
         status=JobStatus.PENDING.value,
-        job_metadata=body.metadata or {},
+        job_metadata={
+            **(body.metadata or {}),
+            **({"force_shadows": True} if body.force_shadows else {}),
+        },
     )
     session.add(job)
     await session.commit()
