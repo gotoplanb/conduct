@@ -35,6 +35,11 @@ class OllamaProvider(BaseProvider):
             "model": model,
             "prompt": prompt,
             "stream": False,
+            # Disable thinking-mode emission for models that support it (qwen3.x,
+            # gemma4, etc.) — otherwise the model's chain-of-thought fills the
+            # `thinking` field and our token budget runs out before any answer
+            # lands in `response`. Older models ignore unknown keys.
+            "think": False,
             "options": {"num_predict": max_tokens},
         }
         if system_prompt:

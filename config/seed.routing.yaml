@@ -4,68 +4,110 @@
 #
 # `sensitivity` here is a floor — clients can request stricter, never looser.
 #
-# `eval_shadow_models` (optional) — candidate models replayed on a sample of
-# real jobs for A/B eval. Each entry: {model, rate (0-1 sampling fraction),
+# `eval_shadow_models` (optional) — candidate models replayed on real jobs for
+# A/B eval. Each entry: {model, rate (0-1 sampling fraction),
 # daily_cost_cap_usd (optional, cloud only)}. Cloud shadows are skipped on
 # internal/confidential jobs unless the client opts in; local models always run.
+#
+# Sizing strategy: each task picks a primary sized for its complexity, with
+# same-class shadows + one step-down + one step-up. That tells us whether the
+# primary is under- or over-sized, not just "which big model is best".
 
 rules:
-  - task_type: bio_generation
-    preferred_model: llama3.3:70b
-    fallback_model: claude-sonnet-4-5
-    sensitivity: internal
-    # Eval: is the small local model good enough for bios vs 70b production?
-    eval_shadow_models:
-      - model: llama3.2:3b
-        rate: 1.0
-
-  - task_type: email_classification
-    preferred_model: llama3.3:70b
-    fallback_model: claude-haiku-4-5
-    sensitivity: internal
-
-  - task_type: email_extraction
-    preferred_model: qwen2.5:72b
-    fallback_model: claude-sonnet-4-5
-    sensitivity: internal
-
-  - task_type: agenda_generation
-    preferred_model: llama3.3:70b
-    fallback_model: claude-sonnet-4-5
-    sensitivity: internal
-
-  - task_type: commission_audit
-    preferred_model: llama3.3:70b
-    fallback_model: llama3.3:70b
-    sensitivity: confidential
-
-  - task_type: ledger_calculation
-    preferred_model: llama3.3:70b
-    fallback_model: llama3.3:70b
-    sensitivity: confidential
-
-  - task_type: code_generation
-    preferred_model: claude-sonnet-4-5
-    fallback_model: claude-opus-4-5
-    sensitivity: public
-
-  - task_type: sre_triage
-    preferred_model: llama3.3:70b
-    fallback_model: claude-sonnet-4-5
-    sensitivity: internal
-
-  # Demo task — exercises the whole stack end to end (MCP create_job →
-  # small-model primary → 70b eval shadow → review/rollup).
+  # Tiny task; testing whether <10B is enough vs a small step-up.
   - task_type: dad_joke
     preferred_model: llama3.2:3b
     fallback_model: llama3.3:70b
     sensitivity: public
     max_tokens: 150
-    notes: "Demo task: one family-friendly dad joke. Shadows 70b + qwen 14b/32b to compare small-vs-large humor."
+    notes: "Demo task; small-class primary, peers + one step-up."
     eval_shadow_models:
-      - model: llama3.3:70b
-        rate: 1.0
-      - model: qwen2.5:14b
-        rate: 1.0
-      - model: qwen2.5:32b
-        rate: 1.0
+      - { model: gemma4:e2b, rate: 1.0 }
+      - { model: qwen3.5:2b, rate: 1.0 }
+      - { model: gemma4:e4b, rate: 1.0 }     # step-up
+
+  # Lightweight classification — small primary, one step-down, one step-up.
+  - task_type: email_classification
+    preferred_model: qwen3.5:4b
+    fallback_model: claude-haiku-4-5
+    sensitivity: internal
+    eval_shadow_models:
+      - { model: gemma4:e4b, rate: 1.0 }
+      - { model: mistral:7b, rate: 1.0 }
+      - { model: llama3.2:3b, rate: 1.0 }    # step-down
+      - { model: qwen3.5:9b, rate: 1.0 }     # step-up
+
+  # Drafting needs more headroom than classify.
+  - task_type: agenda_generation
+    preferred_model: qwen3.5:9b
+    fallback_model: claude-sonnet-4-5
+    sensitivity: internal
+    eval_shadow_models:
+      - { model: gemma4:26b, rate: 1.0 }
+      - { model: llama3.1:8b, rate: 1.0 }
+      - { model: qwen3.5:4b, rate: 1.0 }     # step-down
+      - { model: qwen3.5:27b, rate: 1.0 }    # step-up
+
+  # Structured extraction benefits from a bit more reasoning.
+  - task_type: email_extraction
+    preferred_model: qwen3.5:9b
+    fallback_model: claude-sonnet-4-5
+    sensitivity: internal
+    eval_shadow_models:
+      - { model: mistral-small3.2, rate: 1.0 }
+      - { model: gemma4:26b, rate: 1.0 }
+      - { model: qwen3.5:4b, rate: 1.0 }     # step-down
+      - { model: qwen3.5:27b, rate: 1.0 }    # step-up
+
+  # Keep current 70b primary as the reference; eval whether a smaller mid-class
+  # or a different large-class model produces equally usable bios.
+  - task_type: bio_generation
+    preferred_model: llama3.3:70b
+    fallback_model: claude-sonnet-4-5
+    sensitivity: internal
+    eval_shadow_models:
+      - { model: qwen3.5:35b, rate: 1.0 }
+      - { model: gemma4:31b, rate: 1.0 }
+      - { model: mistral-medium-3.5, rate: 1.0 }
+      - { model: llama4:16x17b, rate: 1.0 }
+      - { model: llama3.2:3b, rate: 1.0 }    # step-down (original Bosshardt eval)
+
+  # Triage needs reasoning; mid-large primary with neighbors + a big step-up.
+  - task_type: sre_triage
+    preferred_model: qwen3.5:27b
+    fallback_model: claude-sonnet-4-5
+    sensitivity: internal
+    eval_shadow_models:
+      - { model: mistral-small3.2, rate: 1.0 }
+      - { model: gemma4:31b, rate: 1.0 }
+      - { model: qwen3.5:9b, rate: 1.0 }     # step-down
+      - { model: llama3.3:70b, rate: 1.0 }   # step-up
+      - { model: llama4:16x17b, rate: 1.0 }  # step-up
+
+  # Confidential — local models only. Keep large primary; eval cheaper locals.
+  - task_type: commission_audit
+    preferred_model: llama3.3:70b
+    fallback_model: llama3.3:70b
+    sensitivity: confidential
+    eval_shadow_models:
+      - { model: qwen3.5:35b, rate: 1.0 }
+      - { model: gemma4:31b, rate: 1.0 }
+      - { model: llama4:16x17b, rate: 1.0 }
+      - { model: qwen3.5:9b, rate: 1.0 }     # step-down
+      - { model: mistral-medium-3.5, rate: 1.0 }  # alternate large
+
+  # Confidential math — local only.
+  - task_type: ledger_calculation
+    preferred_model: llama3.3:70b
+    fallback_model: llama3.3:70b
+    sensitivity: confidential
+    eval_shadow_models:
+      - { model: qwen3.5:35b, rate: 1.0 }
+      - { model: llama4:16x17b, rate: 1.0 }
+      - { model: mistral-small3.2, rate: 1.0 }   # step-down
+
+  - task_type: code_generation
+    preferred_model: claude-sonnet-4-5
+    fallback_model: claude-opus-4-5
+    sensitivity: public
+    # TODO: add cloud shadows once ANTHROPIC_API_KEY is configured.
