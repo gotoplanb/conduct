@@ -91,13 +91,10 @@ async def test_review_unauth_redirects(client) -> None:
 
 
 async def test_review_page_shows_prompt_and_candidates(
-    client, db_session, seeded_client, admin_token, task_type
+    admin_client, db_session, seeded_client, task_type
 ) -> None:
     await _seed_job_with_shadow(db_session, client_id=seeded_client[0].id, task_type=task_type)
-    r = await client.get(
-        f"/ui/eval/review?task_type={task_type}",
-        cookies={"conduct_admin": admin_token},
-    )
+    r = await admin_client.get(f"/ui/eval/review?task_type={task_type}")
     assert r.status_code == 200
     assert "Write a bio for Jane." in r.text
     assert "Jane is a realtor." in r.text  # production response
@@ -107,15 +104,14 @@ async def test_review_page_shows_prompt_and_candidates(
 
 
 async def test_review_score_records_and_returns_partial(
-    client, db_session, seeded_client, admin_token, task_type
+    admin_client, db_session, seeded_client, task_type
 ) -> None:
     _, shadow = await _seed_job_with_shadow(
         db_session, client_id=seeded_client[0].id, task_type=task_type
     )
-    r = await client.post(
+    r = await admin_client.post(
         "/ui/eval/review/score",
         data={"target_id": str(shadow.id), "score": "4", "note": "tone is good"},
-        cookies={"conduct_admin": admin_token},
     )
     assert r.status_code == 200
     assert "scored 1×" in r.text
@@ -123,23 +119,21 @@ async def test_review_score_records_and_returns_partial(
 
 
 async def test_review_score_out_of_range_is_400(
-    client, db_session, seeded_client, admin_token, task_type
+    admin_client, db_session, seeded_client, task_type
 ) -> None:
     job, _ = await _seed_job_with_shadow(
         db_session, client_id=seeded_client[0].id, task_type=task_type
     )
-    r = await client.post(
+    r = await admin_client.post(
         "/ui/eval/review/score",
         data={"target_id": str(job.id), "score": "9"},
-        cookies={"conduct_admin": admin_token},
     )
     assert r.status_code == 400
 
 
-async def test_review_score_unknown_id_404(client, admin_token) -> None:
-    r = await client.post(
+async def test_review_score_unknown_id_404(admin_client) -> None:
+    r = await admin_client.post(
         "/ui/eval/review/score",
         data={"target_id": str(uuid4()), "score": "3"},
-        cookies={"conduct_admin": admin_token},
     )
     assert r.status_code == 404

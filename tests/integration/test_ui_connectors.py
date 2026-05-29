@@ -41,8 +41,8 @@ async def test_connectors_unauth_redirects(client) -> None:
     assert r.headers["location"] == "/ui/login"
 
 
-async def test_connectors_page_lists(client, connector, admin_token) -> None:
-    r = await client.get("/ui/connectors", cookies={"conduct_admin": admin_token})
+async def test_connectors_page_lists(admin_client, connector) -> None:
+    r = await admin_client.get("/ui/connectors")
     assert r.status_code == 200
     assert "dave-ios" in r.text
     assert connector.client_id in r.text
@@ -50,13 +50,12 @@ async def test_connectors_page_lists(client, connector, admin_token) -> None:
 
 
 async def test_connectors_create_reveals_pair_once(
-    client, db_session, seeded_client, admin_token
+    admin_client, db_session, seeded_client
 ) -> None:
     capp, _ = seeded_client
-    r = await client.post(
+    r = await admin_client.post(
         "/ui/connectors",
         data={"name": "claude-web", "client_app_id": str(capp.id), "redirect_uris": REDIRECT},
-        cookies={"conduct_admin": admin_token},
     )
     assert r.status_code == 200
     assert "claude-web" in r.text
@@ -69,68 +68,58 @@ async def test_connectors_create_reveals_pair_once(
     assert row.redirect_uris == [REDIRECT]
 
 
-async def test_connectors_create_blank_name_400(client, seeded_client, admin_token) -> None:
+async def test_connectors_create_blank_name_400(admin_client, seeded_client) -> None:
     capp, _ = seeded_client
-    r = await client.post(
+    r = await admin_client.post(
         "/ui/connectors",
         data={"name": "  ", "client_app_id": str(capp.id)},
-        cookies={"conduct_admin": admin_token},
     )
     assert r.status_code == 400
 
 
-async def test_connectors_create_unknown_client_404(client, admin_token) -> None:
-    r = await client.post(
+async def test_connectors_create_unknown_client_404(admin_client) -> None:
+    r = await admin_client.post(
         "/ui/connectors",
         data={
             "name": "x",
             "client_app_id": "00000000-0000-0000-0000-000000000000",
         },
-        cookies={"conduct_admin": admin_token},
     )
     assert r.status_code == 404
 
 
 async def test_connectors_create_defaults_redirect(
-    client, db_session, seeded_client, admin_token
+    admin_client, db_session, seeded_client
 ) -> None:
     capp, _ = seeded_client
-    await client.post(
+    await admin_client.post(
         "/ui/connectors",
         data={"name": "no-redirect", "client_app_id": str(capp.id), "redirect_uris": ""},
-        cookies={"conduct_admin": admin_token},
     )
     row = await db_session.scalar(select(OAuthClient).where(OAuthClient.name == "no-redirect"))
     assert row.redirect_uris == [REDIRECT]
 
 
 async def test_connectors_rotate_secret_changes_hash(
-    client, db_session, connector, admin_token
+    admin_client, db_session, connector
 ) -> None:
     old_hash = connector.client_secret_hash
-    r = await client.post(
-        f"/ui/connectors/{connector.id}/rotate-secret",
-        cookies={"conduct_admin": admin_token},
-    )
+    r = await admin_client.post(f"/ui/connectors/{connector.id}/rotate-secret")
     assert r.status_code == 200
     assert "rotated" in r.text
     await db_session.refresh(connector)
     assert connector.client_secret_hash != old_hash
 
 
-async def test_connectors_toggle(client, db_session, connector, admin_token) -> None:
-    r = await client.post(
-        f"/ui/connectors/{connector.id}/toggle",
-        cookies={"conduct_admin": admin_token},
-    )
+async def test_connectors_toggle(admin_client, db_session, connector) -> None:
+    r = await admin_client.post(f"/ui/connectors/{connector.id}/toggle")
     assert r.status_code == 200
     assert "now inactive" in r.text
 
 
-async def test_connectors_rotate_missing_404(client, admin_token) -> None:
-    r = await client.post(
-        "/ui/connectors/00000000-0000-0000-0000-000000000000/rotate-secret",
-        cookies={"conduct_admin": admin_token},
+async def test_connectors_rotate_missing_404(admin_client) -> None:
+    r = await admin_client.post(
+        "/ui/connectors/00000000-0000-0000-0000-000000000000/rotate-secret"
     )
     assert r.status_code == 404
 

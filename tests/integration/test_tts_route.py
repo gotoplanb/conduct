@@ -46,10 +46,9 @@ async def test_output_requires_admin(client) -> None:
     assert r.status_code == 403
 
 
-async def test_output_accepts_cookie_auth(client, admin_token) -> None:
+async def test_output_accepts_cookie_auth(admin_client) -> None:
     """Browser-side audio player uses the UI session cookie, not the
     Authorization header. Both auth modes must work on /output."""
-    cookies = {"conduct_admin": admin_token}
-    r = await client.get(f"/output/{uuid4()}.mp3", cookies=cookies)
+    r = await admin_client.get(f"/output/{uuid4()}.mp3")
     # 404 (file doesn't exist) is fine — proves we got past the auth gate
     assert r.status_code == 404

@@ -158,6 +158,20 @@ async def client(app) -> AsyncIterator[AsyncClient]:
         yield ac
 
 
+@pytest_asyncio.fixture
+async def admin_client(app, admin_token: str) -> AsyncIterator[AsyncClient]:
+    """AsyncClient pre-seeded with the admin session cookie. Used by tests that
+    hit cookie-authed routes (`/ui/*`, OAuth consent, etc.) — keeps cookies on
+    the client instance so httpx doesn't warn about per-request cookies."""
+    transport = ASGITransport(app=app)
+    async with AsyncClient(
+        transport=transport,
+        base_url="http://test",
+        cookies={"conduct_admin": admin_token},
+    ) as ac:
+        yield ac
+
+
 # --- Auth helpers ---
 
 

@@ -36,12 +36,8 @@ async def test_ui_root_unauth_redirects_to_login(client) -> None:
     assert r.headers["location"] == "/ui/login"
 
 
-async def test_ui_root_authed_redirects_to_jobs(client, admin_token) -> None:
-    r = await client.get(
-        "/ui",
-        cookies={"conduct_admin": admin_token},
-        follow_redirects=False,
-    )
+async def test_ui_root_authed_redirects_to_jobs(admin_client) -> None:
+    r = await admin_client.get("/ui", follow_redirects=False)
     assert r.status_code == 303
     assert r.headers["location"] == "/ui/jobs"
 
@@ -77,47 +73,35 @@ async def test_ui_login_correct_key_sets_cookie_and_redirects(
     assert "conduct_admin" in r.cookies
 
 
-async def test_ui_jobs_lists_real_jobs(client, db_session, seeded_client, admin_token) -> None:
+async def test_ui_jobs_lists_real_jobs(admin_client, db_session, seeded_client) -> None:
     job = await _seed_job(db_session, client_id=seeded_client[0].id)
-    r = await client.get(
-        "/ui/jobs",
-        cookies={"conduct_admin": admin_token},
-    )
+    r = await admin_client.get("/ui/jobs")
     assert r.status_code == 200
     assert str(job.id) in r.text
     assert "bio_generation" in r.text
 
 
-async def test_ui_job_detail(client, db_session, seeded_client, admin_token) -> None:
+async def test_ui_job_detail(admin_client, db_session, seeded_client) -> None:
     job = await _seed_job(db_session, client_id=seeded_client[0].id)
-    r = await client.get(
-        f"/ui/jobs/{job.id}",
-        cookies={"conduct_admin": admin_token},
-    )
+    r = await admin_client.get(f"/ui/jobs/{job.id}")
     assert r.status_code == 200
     assert "bio_generation" in r.text
     assert "llama3.3:70b" in r.text
 
 
 async def test_ui_jobs_partial_html_fragment(
-    client, db_session, seeded_client, admin_token
+    admin_client, db_session, seeded_client
 ) -> None:
     await _seed_job(db_session, client_id=seeded_client[0].id, task="alpha")
-    r = await client.get(
-        "/ui/jobs/partial?task_type=alpha",
-        cookies={"conduct_admin": admin_token},
-    )
+    r = await admin_client.get("/ui/jobs/partial?task_type=alpha")
     assert r.status_code == 200
     # Partial returns just the table, not a full HTML page
     assert "<table" in r.text
 
 
-async def test_ui_eval_page(client, db_session, seeded_client, admin_token) -> None:
+async def test_ui_eval_page(admin_client, db_session, seeded_client) -> None:
     await _seed_job(db_session, client_id=seeded_client[0].id, task="bio_generation")
-    r = await client.get(
-        "/ui/eval",
-        cookies={"conduct_admin": admin_token},
-    )
+    r = await admin_client.get("/ui/eval")
     assert r.status_code == 200
 
 
@@ -127,17 +111,16 @@ async def test_ui_clients_unauth_redirects(client) -> None:
     assert r.headers["location"] == "/ui/login"
 
 
-async def test_ui_clients_lists_clients(client, seeded_client, admin_token) -> None:
-    r = await client.get("/ui/clients", cookies={"conduct_admin": admin_token})
+async def test_ui_clients_lists_clients(admin_client, seeded_client) -> None:
+    r = await admin_client.get("/ui/clients")
     assert r.status_code == 200
     assert seeded_client[0].name in r.text
 
 
-async def test_ui_clients_create_reveals_key_once(client, admin_token) -> None:
-    r = await client.post(
+async def test_ui_clients_create_reveals_key_once(admin_client) -> None:
+    r = await admin_client.post(
         "/ui/clients",
         data={"name": "ui-created", "notes": "from ui"},
-        cookies={"conduct_admin": admin_token},
     )
     assert r.status_code == 200
     assert "ui-created" in r.text
@@ -146,42 +129,32 @@ async def test_ui_clients_create_reveals_key_once(client, admin_token) -> None:
     assert "shown only once" in r.text
 
 
-async def test_ui_clients_create_blank_name_is_400(client, admin_token) -> None:
-    r = await client.post(
+async def test_ui_clients_create_blank_name_is_400(admin_client) -> None:
+    r = await admin_client.post(
         "/ui/clients",
         data={"name": "   "},
-        cookies={"conduct_admin": admin_token},
     )
     assert r.status_code == 400
     assert "Name is required" in r.text
 
 
-async def test_ui_clients_rotate_shows_new_key(client, seeded_client, admin_token) -> None:
+async def test_ui_clients_rotate_shows_new_key(admin_client, seeded_client) -> None:
     row, _ = seeded_client
-    r = await client.post(
-        f"/ui/clients/{row.id}/rotate",
-        cookies={"conduct_admin": admin_token},
-    )
+    r = await admin_client.post(f"/ui/clients/{row.id}/rotate")
     assert r.status_code == 200
     assert "rotated" in r.text
     assert "cdt_" in r.text
 
 
-async def test_ui_clients_toggle_flips_active(client, seeded_client, admin_token) -> None:
+async def test_ui_clients_toggle_flips_active(admin_client, seeded_client) -> None:
     row, _ = seeded_client
-    r = await client.post(
-        f"/ui/clients/{row.id}/toggle",
-        cookies={"conduct_admin": admin_token},
-    )
+    r = await admin_client.post(f"/ui/clients/{row.id}/toggle")
     assert r.status_code == 200
     assert "now inactive" in r.text
 
 
-async def test_ui_clients_rotate_missing_is_404(client, admin_token) -> None:
-    r = await client.post(
-        "/ui/clients/00000000-0000-0000-0000-000000000000/rotate",
-        cookies={"conduct_admin": admin_token},
-    )
+async def test_ui_clients_rotate_missing_is_404(admin_client) -> None:
+    r = await admin_client.post("/ui/clients/00000000-0000-0000-0000-000000000000/rotate")
     assert r.status_code == 404
 
 
@@ -192,7 +165,7 @@ async def test_ui_tasks_unauth_redirects(client) -> None:
 
 
 async def test_ui_tasks_lists_rule_and_shared_prompt(
-    client, db_session, admin_token
+    admin_client, db_session
 ) -> None:
     db_session.add(
         RoutingRule(
@@ -207,7 +180,7 @@ async def test_ui_tasks_lists_rule_and_shared_prompt(
     )
     await db_session.commit()
 
-    r = await client.get("/ui/tasks", cookies={"conduct_admin": admin_token})
+    r = await admin_client.get("/ui/tasks")
     assert r.status_code == 200
     assert "marketing_blurb" in r.text
     assert "llama3.3:70b" in r.text
@@ -215,7 +188,7 @@ async def test_ui_tasks_lists_rule_and_shared_prompt(
 
 
 async def test_ui_tasks_shows_client_override(
-    client, db_session, seeded_client, admin_token
+    admin_client, db_session, seeded_client
 ) -> None:
     c, _ = seeded_client
     db_session.add(
@@ -223,12 +196,12 @@ async def test_ui_tasks_shows_client_override(
     )
     await db_session.commit()
 
-    r = await client.get("/ui/tasks", cookies={"conduct_admin": admin_token})
+    r = await admin_client.get("/ui/tasks")
     assert r.status_code == 200
     assert c.name in r.text
 
 
-async def test_ui_task_history_partial(client, db_session, admin_token) -> None:
+async def test_ui_task_history_partial(admin_client, db_session) -> None:
     db_session.add(
         PromptVersion(
             task_type="marketing_blurb",
@@ -239,28 +212,18 @@ async def test_ui_task_history_partial(client, db_session, admin_token) -> None:
     )
     await db_session.commit()
 
-    r = await client.get(
-        "/ui/tasks/marketing_blurb/history",
-        cookies={"conduct_admin": admin_token},
-    )
+    r = await admin_client.get("/ui/tasks/marketing_blurb/history")
     assert r.status_code == 200
     assert "seed" in r.text
 
 
-async def test_ui_task_history_empty(client, admin_token) -> None:
-    r = await client.get(
-        "/ui/tasks/does_not_exist/history",
-        cookies={"conduct_admin": admin_token},
-    )
+async def test_ui_task_history_empty(admin_client) -> None:
+    r = await admin_client.get("/ui/tasks/does_not_exist/history")
     assert r.status_code == 200
     assert "no history" in r.text
 
 
-async def test_ui_logout_clears_cookie(client, admin_token) -> None:
-    r = await client.post(
-        "/ui/logout",
-        cookies={"conduct_admin": admin_token},
-        follow_redirects=False,
-    )
+async def test_ui_logout_clears_cookie(admin_client) -> None:
+    r = await admin_client.post("/ui/logout", follow_redirects=False)
     assert r.status_code == 303
     assert r.headers["location"] == "/ui/login"

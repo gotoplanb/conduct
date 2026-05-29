@@ -47,6 +47,11 @@ def init_logging(
         return
 
     set_logger_provider(provider)
+    # Note: `LoggingHandler` emits a DeprecationWarning. We've left it visible
+    # because the recommended replacement (`opentelemetry-instrumentation-
+    # logging`) only injects trace_id into records, not exports them — so
+    # there's no real upgrade path yet. The warning is documentation that this
+    # call site needs to migrate once the SDK gives us somewhere to migrate to.
     handler = LoggingHandler(level=level, logger_provider=provider)
     logging.getLogger().addHandler(handler)
     _initialized = True

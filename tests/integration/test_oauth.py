@@ -52,8 +52,8 @@ async def oauth_client(db_session, seeded_client):
     return client, raw_secret
 
 
-async def _approve_and_get_code(client, oc, admin_token, challenge) -> str:
-    r = await client.post(
+async def _approve_and_get_code(admin_client, oc, challenge) -> str:
+    r = await admin_client.post(
         "/oauth/authorize",
         data={
             "client_id": oc.client_id,
@@ -64,7 +64,6 @@ async def _approve_and_get_code(client, oc, admin_token, challenge) -> str:
             "state": "xyz",
             "decision": "approve",
         },
-        cookies={"conduct_admin": admin_token},
         follow_redirects=False,
     )
     assert r.status_code == 303
@@ -123,10 +122,10 @@ async def test_authorize_without_login_redirects_to_login(client, oauth_client) 
     assert r.headers["location"].startswith("/ui/login?next=")
 
 
-async def test_authorize_shows_consent_when_logged_in(client, oauth_client, admin_token) -> None:
+async def test_authorize_shows_consent_when_logged_in(admin_client, oauth_client) -> None:
     oc, _ = oauth_client
     _, challenge = _pkce()
-    r = await client.get(
+    r = await admin_client.get(
         "/oauth/authorize",
         params={
             "response_type": "code",
@@ -135,16 +134,15 @@ async def test_authorize_shows_consent_when_logged_in(client, oauth_client, admi
             "code_challenge": challenge,
             "code_challenge_method": "S256",
         },
-        cookies={"conduct_admin": admin_token},
     )
     assert r.status_code == 200
     assert "Authorize connection" in r.text
     assert "dave-ios" in r.text
 
 
-async def test_authorize_unknown_client_is_error_page(client, admin_token) -> None:
+async def test_authorize_unknown_client_is_error_page(admin_client) -> None:
     _, challenge = _pkce()
-    r = await client.get(
+    r = await admin_client.get(
         "/oauth/authorize",
         params={
             "response_type": "code",
@@ -152,15 +150,14 @@ async def test_authorize_unknown_client_is_error_page(client, admin_token) -> No
             "redirect_uri": REDIRECT,
             "code_challenge": challenge,
         },
-        cookies={"conduct_admin": admin_token},
     )
     assert r.status_code == 400
 
 
-async def test_authorize_bad_redirect_uri_is_error_page(client, oauth_client, admin_token) -> None:
+async def test_authorize_bad_redirect_uri_is_error_page(admin_client, oauth_client) -> None:
     oc, _ = oauth_client
     _, challenge = _pkce()
-    r = await client.get(
+    r = await admin_client.get(
         "/oauth/authorize",
         params={
             "response_type": "code",
@@ -168,15 +165,14 @@ async def test_authorize_bad_redirect_uri_is_error_page(client, oauth_client, ad
             "redirect_uri": "https://evil.example/cb",
             "code_challenge": challenge,
         },
-        cookies={"conduct_admin": admin_token},
     )
     assert r.status_code == 400
 
 
-async def test_authorize_deny_redirects_with_error(client, oauth_client, admin_token) -> None:
+async def test_authorize_deny_redirects_with_error(admin_client, oauth_client) -> None:
     oc, _ = oauth_client
     _, challenge = _pkce()
-    r = await client.post(
+    r = await admin_client.post(
         "/oauth/authorize",
         data={
             "client_id": oc.client_id,
@@ -185,7 +181,6 @@ async def test_authorize_deny_redirects_with_error(client, oauth_client, admin_t
             "decision": "deny",
             "state": "s1",
         },
-        cookies={"conduct_admin": admin_token},
         follow_redirects=False,
     )
     assert r.status_code == 303
@@ -196,10 +191,10 @@ async def test_authorize_deny_redirects_with_error(client, oauth_client, admin_t
 # --- token ---
 
 
-async def test_full_auth_code_flow(client, oauth_client, admin_token) -> None:
+async def test_full_auth_code_flow(client, admin_client, oauth_client) -> None:
     oc, secret = oauth_client
     verifier, challenge = _pkce()
-    code = await _approve_and_get_code(client, oc, admin_token, challenge)
+    code = await _approve_and_get_code(admin_client, oc, challenge)
 
     r = await client.post(
         "/oauth/token",
@@ -220,10 +215,10 @@ async def test_full_auth_code_flow(client, oauth_client, admin_token) -> None:
     assert body["expires_in"] == 3600
 
 
-async def test_code_is_single_use(client, oauth_client, admin_token) -> None:
+async def test_code_is_single_use(client, admin_client, oauth_client) -> None:
     oc, secret = oauth_client
     verifier, challenge = _pkce()
-    code = await _approve_and_get_code(client, oc, admin_token, challenge)
+    code = await _approve_and_get_code(admin_client, oc, challenge)
     data = {
         "grant_type": "authorization_code",
         "code": code,
@@ -238,10 +233,10 @@ async def test_code_is_single_use(client, oauth_client, admin_token) -> None:
     assert reused.json()["error"] == "invalid_grant"
 
 
-async def test_token_wrong_pkce_verifier_rejected(client, oauth_client, admin_token) -> None:
+async def test_token_wrong_pkce_verifier_rejected(client, admin_client, oauth_client) -> None:
     oc, secret = oauth_client
     _, challenge = _pkce()
-    code = await _approve_and_get_code(client, oc, admin_token, challenge)
+    code = await _approve_and_get_code(admin_client, oc, challenge)
     r = await client.post(
         "/oauth/token",
         data={
@@ -257,10 +252,10 @@ async def test_token_wrong_pkce_verifier_rejected(client, oauth_client, admin_to
     assert r.json()["error"] == "invalid_grant"
 
 
-async def test_token_bad_client_secret_is_401(client, oauth_client, admin_token) -> None:
+async def test_token_bad_client_secret_is_401(client, admin_client, oauth_client) -> None:
     oc, _ = oauth_client
     verifier, challenge = _pkce()
-    code = await _approve_and_get_code(client, oc, admin_token, challenge)
+    code = await _approve_and_get_code(admin_client, oc, challenge)
     r = await client.post(
         "/oauth/token",
         data={
@@ -276,10 +271,10 @@ async def test_token_bad_client_secret_is_401(client, oauth_client, admin_token)
     assert r.json()["error"] == "invalid_client"
 
 
-async def test_refresh_token_grant_rotates(client, oauth_client, admin_token) -> None:
+async def test_refresh_token_grant_rotates(client, admin_client, oauth_client) -> None:
     oc, secret = oauth_client
     verifier, challenge = _pkce()
-    code = await _approve_and_get_code(client, oc, admin_token, challenge)
+    code = await _approve_and_get_code(admin_client, oc, challenge)
     first = (
         await client.post(
             "/oauth/token",
@@ -333,10 +328,10 @@ async def test_unsupported_grant_type(client, oauth_client) -> None:
 # --- resource-server token resolution ---
 
 
-async def test_resolve_access_token(db_session, oauth_client, client, admin_token) -> None:
+async def test_resolve_access_token(db_session, oauth_client, client, admin_client) -> None:
     oc, secret = oauth_client
     verifier, challenge = _pkce()
-    code = await _approve_and_get_code(client, oc, admin_token, challenge)
+    code = await _approve_and_get_code(admin_client, oc, challenge)
     body = (
         await client.post(
             "/oauth/token",
@@ -393,10 +388,10 @@ async def test_resolve_revoked_token_returns_none(db_session, oauth_client) -> N
 
 
 @pytest.mark.usefixtures("oauth_client")
-async def test_token_rows_persisted(db_session, oauth_client, client, admin_token) -> None:
+async def test_token_rows_persisted(db_session, oauth_client, client, admin_client) -> None:
     oc, secret = oauth_client
     verifier, challenge = _pkce()
-    code = await _approve_and_get_code(client, oc, admin_token, challenge)
+    code = await _approve_and_get_code(admin_client, oc, challenge)
     await client.post(
         "/oauth/token",
         data={

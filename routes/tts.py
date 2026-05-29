@@ -74,7 +74,7 @@ async def submit_tts(
     settings = get_settings()
     if len(body.text) > settings.tts_max_chars:
         raise HTTPException(
-            status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            status.HTTP_413_CONTENT_TOO_LARGE,
             f"text exceeds TTS_MAX_CHARS={settings.tts_max_chars}; "
             "split into smaller chunks (caller is responsible for stitching)",
         )
