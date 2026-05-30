@@ -106,8 +106,13 @@
           </td>
           <td class="px-4 py-2.5 text-zinc-500 max-w-xs truncate" title="{{ c.notes }}">{{ c.notes or '—' }}</td>
           <td class="px-4 py-2.5">
-            <div x-data="{ showKey: false }" class="flex items-center justify-end gap-2 flex-wrap">
-              <button @click="showKey = !showKey"
+            <div x-data="{ showKey: false, showEdit: false }" class="flex items-center justify-end gap-2 flex-wrap">
+              <button @click="showEdit = !showEdit; if (showEdit) showKey = false"
+                      class="rounded-md border border-zinc-700 px-2.5 py-1 text-xs text-zinc-300 hover:bg-zinc-800">
+                <span x-show="!showEdit">Edit</span>
+                <span x-show="showEdit" x-cloak>Cancel</span>
+              </button>
+              <button @click="showKey = !showKey; if (showKey) showEdit = false"
                       class="rounded-md border border-zinc-700 px-2.5 py-1 text-xs text-zinc-300 hover:bg-zinc-800">
                 <span x-show="!showKey">{{ 'Update' if c.has_anthropic_key else 'Set' }} Anthropic key</span>
                 <span x-show="showKey" x-cloak>Cancel</span>
@@ -135,6 +140,34 @@
                        placeholder="sk-ant-..." spellcheck="false"
                        class="flex-1 bg-zinc-950 border border-zinc-700 rounded-md px-3 py-1.5 text-xs font-mono">
                 <button class="rounded-md bg-zinc-100 text-zinc-900 px-3 py-1.5 text-xs font-medium hover:bg-white">Save</button>
+              </form>
+              <form method="post" action="/ui/clients/{{ c.id }}/edit" x-show="showEdit" x-cloak
+                    class="basis-full mt-2 grid gap-3 sm:grid-cols-2 text-left">
+                <div>
+                  <label class="block text-[10px] uppercase text-zinc-500 mb-1">Name</label>
+                  <input type="text" name="name" required value="{{ c.name }}"
+                         class="w-full bg-zinc-950 border border-zinc-700 rounded-md px-2 py-1 text-xs">
+                </div>
+                <div>
+                  <label class="block text-[10px] uppercase text-zinc-500 mb-1">Rate limit / min <span class="text-zinc-600">(blank = none)</span></label>
+                  <input type="number" name="rate_limit_per_minute" min="1"
+                         value="{{ c.rate_limit_per_minute if c.rate_limit_per_minute is not none else '' }}"
+                         class="w-full bg-zinc-950 border border-zinc-700 rounded-md px-2 py-1 text-xs">
+                </div>
+                <div class="sm:col-span-2">
+                  <label class="block text-[10px] uppercase text-zinc-500 mb-1">Notes</label>
+                  <input type="text" name="notes" value="{{ c.notes }}"
+                         class="w-full bg-zinc-950 border border-zinc-700 rounded-md px-2 py-1 text-xs">
+                </div>
+                <label class="flex items-center gap-2 text-xs text-zinc-300">
+                  <input type="checkbox" name="allow_cloud_for_internal" value="true"
+                         {% if c.allow_cloud_for_internal %}checked{% endif %}
+                         class="rounded border-zinc-700 bg-zinc-900">
+                  Allow cloud models for internal-sensitivity jobs
+                </label>
+                <div class="sm:col-span-2 flex justify-end">
+                  <button class="rounded-md bg-zinc-100 text-zinc-900 px-3 py-1.5 text-xs font-medium hover:bg-white">Save changes</button>
+                </div>
               </form>
             </div>
           </td>

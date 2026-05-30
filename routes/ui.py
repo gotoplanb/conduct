@@ -41,6 +41,7 @@ ADMIN_COOKIE = "conduct_admin"
 LOGIN_PATH = "/ui/login"
 JOBS_PATH = "/ui/jobs"
 _CLIENT_NOT_FOUND = "Client not found."
+_NAME_REQUIRED = "Name is required."
 templates = Jinja2Templates(directory=str(Path(__file__).resolve().parent.parent / "templates"))
 
 router = APIRouter(prefix="/ui", tags=["ui"], include_in_schema=False)
@@ -363,7 +364,7 @@ async def clients_create(
     name = name.strip()
     if not name:
         return await _render_clients(
-            request, session, error="Name is required.",
+            request, session, error=_NAME_REQUIRED,
             status_code=status.HTTP_400_BAD_REQUEST,
         )
     rate = int(rate_limit_per_minute) if rate_limit_per_minute.strip() else None
@@ -439,6 +440,52 @@ async def clients_toggle(
     await session.commit()
     return await _render_clients(
         request, session, flash=f"{client.name} is now {state}."
+    )
+
+
+@router.post(
+    "/clients/{client_id}/edit",
+    response_class=HTMLResponse,
+    dependencies=[Depends(admin_session)],
+)
+async def clients_edit(
+    request: Request,
+    client_id: UUID,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    name: Annotated[str, Form()],
+    notes: Annotated[str, Form()] = "",
+    rate_limit_per_minute: Annotated[str, Form()] = "",
+    allow_cloud_for_internal: Annotated[bool, Form()] = False,
+) -> HTMLResponse:
+    """Update the editable fields on an existing client. Mirrors the JSON
+    `PATCH /clients/{id}` semantics but driven by an HTML form."""
+    client = await session.get(ClientApp, client_id)
+    if client is None:
+        return await _render_clients(
+            request, session, error=_CLIENT_NOT_FOUND,
+            status_code=status.HTTP_404_NOT_FOUND,
+        )
+    name = name.strip()
+    if not name:
+        return await _render_clients(
+            request, session, error=_NAME_REQUIRED,
+            status_code=status.HTTP_400_BAD_REQUEST,
+        )
+    rate = int(rate_limit_per_minute) if rate_limit_per_minute.strip() else None
+    client.name = name
+    client.notes = notes.strip()
+    client.rate_limit_per_minute = rate
+    client.allow_cloud_for_internal = allow_cloud_for_internal
+    try:
+        await session.commit()
+    except IntegrityError:
+        await session.rollback()
+        return await _render_clients(
+            request, session, error=f"A client named {name!r} already exists.",
+            status_code=status.HTTP_409_CONFLICT,
+        )
+    return await _render_clients(
+        request, session, flash=f"Updated {client.name}."
     )
 
 
@@ -596,7 +643,7 @@ async def connectors_create(
     name = name.strip()
     if not name:
         return await _render_connectors(
-            request, session, error="Name is required.", status_code=status.HTTP_400_BAD_REQUEST
+            request, session, error=_NAME_REQUIRED, status_code=status.HTTP_400_BAD_REQUEST
         )
     try:
         app_uuid = UUID(client_app_id)

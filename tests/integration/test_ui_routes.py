@@ -158,6 +158,63 @@ async def test_ui_clients_rotate_missing_is_404(admin_client) -> None:
     assert r.status_code == 404
 
 
+async def test_ui_edit_updates_all_fields(
+    admin_client, seeded_client, db_session
+) -> None:
+    row, _ = seeded_client
+    r = await admin_client.post(
+        f"/ui/clients/{row.id}/edit",
+        data={
+            "name": "renamed-client",
+            "notes": "edited notes",
+            "rate_limit_per_minute": "60",
+            "allow_cloud_for_internal": "true",
+        },
+    )
+    assert r.status_code == 200
+    assert "Updated renamed-client" in r.text
+    await db_session.refresh(row)
+    assert row.name == "renamed-client"
+    assert row.notes == "edited notes"
+    assert row.rate_limit_per_minute == 60
+    assert row.allow_cloud_for_internal is True
+
+
+async def test_ui_edit_clears_rate_limit_when_blank(
+    admin_client, seeded_client, db_session
+) -> None:
+    row, _ = seeded_client
+    row.rate_limit_per_minute = 30
+    await db_session.commit()
+    r = await admin_client.post(
+        f"/ui/clients/{row.id}/edit",
+        data={"name": row.name, "notes": "", "rate_limit_per_minute": ""},
+    )
+    assert r.status_code == 200
+    await db_session.refresh(row)
+    assert row.rate_limit_per_minute is None
+
+
+async def test_ui_edit_requires_name(
+    admin_client, seeded_client
+) -> None:
+    row, _ = seeded_client
+    r = await admin_client.post(
+        f"/ui/clients/{row.id}/edit",
+        data={"name": "   ", "notes": ""},
+    )
+    assert r.status_code == 400
+    assert "Name is required" in r.text
+
+
+async def test_ui_edit_missing_is_404(admin_client) -> None:
+    r = await admin_client.post(
+        "/ui/clients/00000000-0000-0000-0000-000000000000/edit",
+        data={"name": "x"},
+    )
+    assert r.status_code == 404
+
+
 async def test_ui_set_anthropic_key_flashes_and_persists(
     admin_client, seeded_client, secrets_key, db_session
 ) -> None:
