@@ -27,6 +27,8 @@ from pathlib import Path
 import httpx
 
 DEFAULT_BASE_URL = "http://localhost:8000"
+_CLIENTS_PATH = "/clients"
+_CLIENT_ARG_HELP = "client name or UUID"
 
 
 def _base_url() -> str:
@@ -247,6 +249,108 @@ def cmd_jobs_get(args: argparse.Namespace) -> int:
     return 0
 
 
+def _resolve_client(c: httpx.Client, name_or_id: str) -> dict:
+    """Look up a client by name or UUID via the admin list. The admin API uses
+    UUIDs everywhere, but operators think in names, so the CLI does the
+    translation. Exits with status 1 if not found."""
+    r = c.get(_CLIENTS_PATH)
+    r.raise_for_status()
+    for row in r.json():
+        if row["name"] == name_or_id or row["id"] == name_or_id:
+            return row
+    print(f"client {name_or_id!r} not found", file=sys.stderr)
+    sys.exit(1)
+
+
+def cmd_clients_list(args: argparse.Namespace) -> None:
+    """List client apps."""
+    with httpx.Client(base_url=_base_url(), headers=_headers(), timeout=30) as c:
+        r = c.get(_CLIENTS_PATH)
+        r.raise_for_status()
+        rows = r.json()
+    if not rows:
+        print("(no clients)")
+        return
+    width = max(len(r["name"]) for r in rows)
+    for r in rows:
+        flags = []
+        if not r["is_active"]:
+            flags.append("inactive")
+        if r["allow_cloud_for_internal"]:
+            flags.append("cloud-for-internal")
+        if r.get("rate_limit_per_minute") is not None:
+            flags.append(f"rate:{r['rate_limit_per_minute']}/min")
+        suffix = "  " + " ".join(f"[{f}]" for f in flags) if flags else ""
+        print(f"  {r['name']:<{width}}  {r['id']}  key={r.get('key_created_at', '?')}{suffix}")
+
+
+def _print_reveal_once(name: str, raw_key: str, action: str = "created") -> None:
+    print(f"{action} client {name}")
+    print(f"  api_key: {raw_key}")
+    print("  (this is the only time the raw key will be shown — save it now)")
+
+
+def cmd_clients_create(args: argparse.Namespace) -> None:
+    body: dict = {"name": args.name, "notes": args.notes or ""}
+    if args.rate_limit is not None:
+        body["rate_limit_per_minute"] = args.rate_limit
+    if args.allow_cloud_for_internal:
+        body["allow_cloud_for_internal"] = True
+    with httpx.Client(base_url=_base_url(), headers=_headers(), timeout=30) as c:
+        r = c.post(_CLIENTS_PATH, json=body)
+        r.raise_for_status()
+        out = r.json()
+    _print_reveal_once(out["name"], out["api_key"], "created")
+    print(f"  id: {out['id']}")
+
+
+def cmd_clients_rotate_key(args: argparse.Namespace) -> int:
+    with httpx.Client(base_url=_base_url(), headers=_headers(), timeout=30) as c:
+        client = _resolve_client(c, args.client)
+        if not args.yes:
+            answer = input(
+                f"Rotate API key for {client['name']}? "
+                "Old key stops working immediately. [y/N] "
+            ).strip().lower()
+            if answer != "y":
+                print("aborted", file=sys.stderr)
+                return 1
+        r = c.post(f"/clients/{client['id']}/rotate-key")
+        r.raise_for_status()
+        out = r.json()
+    _print_reveal_once(out["name"], out["api_key"], "rotated key for")
+    return 0
+
+
+def cmd_clients_toggle(args: argparse.Namespace) -> None:
+    with httpx.Client(base_url=_base_url(), headers=_headers(), timeout=30) as c:
+        client = _resolve_client(c, args.client)
+        new_state = not client["is_active"]
+        r = c.patch(f"/clients/{client['id']}", json={"is_active": new_state})
+        r.raise_for_status()
+    print(f"{client['name']} is now {'active' if new_state else 'inactive'}")
+
+
+def cmd_clients_usage(args: argparse.Namespace) -> None:
+    with httpx.Client(base_url=_base_url(), headers=_headers(), timeout=30) as c:
+        client = _resolve_client(c, args.client)
+        r = c.get(f"/clients/{client['id']}/usage", params={"days": str(args.days)})
+        r.raise_for_status()
+        out = r.json()
+    print(f"{client['name']} usage over last {out['period_days']} days:")
+    print(f"  jobs       : {out['job_count']}")
+    print(f"  tokens_in  : {out['tokens_in']}")
+    print(f"  tokens_out : {out['tokens_out']}")
+    print(f"  cost_usd   : ${out['cost_usd']}")
+    if out["by_day"]:
+        print("  daily:")
+        for d in out["by_day"]:
+            print(
+                f"    {d['date']}  jobs={d['job_count']:<4}"
+                f"  in={d['tokens_in']:<6} out={d['tokens_out']:<6}  cost=${d['cost_usd']}"
+            )
+
+
 def cmd_routing_list(args: argparse.Namespace) -> None:
     """List routing rules (admin)."""
     with httpx.Client(base_url=_base_url(), headers=_headers(), timeout=30) as c:
@@ -322,6 +426,42 @@ def _build_parser() -> argparse.ArgumentParser:
     rsubs = routing.add_subparsers(dest="action", required=True)
     rlist = rsubs.add_parser("list", help="list routing rules")
     rlist.set_defaults(func=cmd_routing_list)
+
+    clients = subs.add_parser("clients", help="manage client apps")
+    csubs = clients.add_subparsers(dest="action", required=True)
+
+    clist = csubs.add_parser("list", help="list client apps")
+    clist.set_defaults(func=cmd_clients_list)
+
+    ccreate = csubs.add_parser("create", help="create a client (raw key shown once)")
+    ccreate.add_argument("name")
+    ccreate.add_argument("--notes", default="", help="optional free-text notes")
+    ccreate.add_argument(
+        "--rate-limit", dest="rate_limit", type=int, help="requests per minute"
+    )
+    ccreate.add_argument(
+        "--allow-cloud-for-internal",
+        dest="allow_cloud_for_internal",
+        action="store_true",
+        help="permit cloud models on internal-sensitivity jobs",
+    )
+    ccreate.set_defaults(func=cmd_clients_create)
+
+    crotate = csubs.add_parser(
+        "rotate-key", help="mint a new API key for a client (old stops working)"
+    )
+    crotate.add_argument("client", help=_CLIENT_ARG_HELP)
+    crotate.add_argument("-y", "--yes", action="store_true", help="skip confirmation")
+    crotate.set_defaults(func=cmd_clients_rotate_key)
+
+    ctoggle = csubs.add_parser("toggle", help="flip a client's active flag")
+    ctoggle.add_argument("client", help=_CLIENT_ARG_HELP)
+    ctoggle.set_defaults(func=cmd_clients_toggle)
+
+    cusage = csubs.add_parser("usage", help="show usage stats for a client")
+    cusage.add_argument("client", help=_CLIENT_ARG_HELP)
+    cusage.add_argument("--days", type=int, default=30, help="lookback (default 30)")
+    cusage.set_defaults(func=cmd_clients_usage)
 
     return p
 
