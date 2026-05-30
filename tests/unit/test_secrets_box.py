@@ -26,7 +26,10 @@ def test_round_trip(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_missing_key_raises(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("CONDUCT_SECRETS_KEY", raising=False)
+    # Empty string overrides any value in .env (pydantic-settings reads .env
+    # directly, so `delenv` alone wouldn't simulate "unset" on machines where
+    # the operator has CONDUCT_SECRETS_KEY in .env).
+    monkeypatch.setenv("CONDUCT_SECRETS_KEY", "")
     with pytest.raises(secrets_box.SecretsKeyMissing):
         secrets_box.encrypt("anything")
 

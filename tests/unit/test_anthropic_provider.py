@@ -22,7 +22,7 @@ async def test_complete_uses_pricing_registry(tmp_path, monkeypatch) -> None:
     pricing_file.write_text(
         """
 anthropic:
-  claude-sonnet-4-5:
+  claude-sonnet-4-6:
     input_per_1m_usd: 3.00
     output_per_1m_usd: 15.00
 """
@@ -37,7 +37,7 @@ anthropic:
     fake = _fake_message("hello", in_tokens=1000, out_tokens=500)
     with patch.object(provider._client.messages, "create", AsyncMock(return_value=fake)):
         result = await provider.complete(
-            prompt="hi", model="claude-sonnet-4-5", system_prompt="be brief"
+            prompt="hi", model="claude-sonnet-4-6", system_prompt="be brief"
         )
 
     assert result.response == "hello"

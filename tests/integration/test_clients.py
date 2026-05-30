@@ -228,7 +228,10 @@ async def test_set_anthropic_key_no_master_key_is_503(
     pretend to store the key — operator needs to set the env var first."""
     import secrets_box
 
-    monkeypatch.delenv("CONDUCT_SECRETS_KEY", raising=False)
+    # Empty string overrides .env (pydantic-settings reads .env directly,
+    # so plain `delenv` wouldn't simulate "unset" on a dev box that has the
+    # key configured).
+    monkeypatch.setenv("CONDUCT_SECRETS_KEY", "")
     get_settings.cache_clear()
     secrets_box._fernet.cache_clear()
     row, _ = seeded_client

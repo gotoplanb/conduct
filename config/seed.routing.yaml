@@ -40,7 +40,7 @@ rules:
   # Drafting needs more headroom than classify.
   - task_type: agenda_generation
     preferred_model: qwen3.5:9b
-    fallback_model: claude-sonnet-4-5
+    fallback_model: claude-sonnet-4-6
     sensitivity: internal
     eval_shadow_models:
       - { model: gemma4:26b, rate: 1.0 }
@@ -51,7 +51,7 @@ rules:
   # Structured extraction benefits from a bit more reasoning.
   - task_type: email_extraction
     preferred_model: qwen3.5:9b
-    fallback_model: claude-sonnet-4-5
+    fallback_model: claude-sonnet-4-6
     sensitivity: internal
     eval_shadow_models:
       - { model: mistral-small3.2, rate: 1.0 }
@@ -63,7 +63,7 @@ rules:
   # or a different large-class model produces equally usable bios.
   - task_type: bio_generation
     preferred_model: llama3.3:70b
-    fallback_model: claude-sonnet-4-5
+    fallback_model: claude-sonnet-4-6
     sensitivity: internal
     eval_shadow_models:
       - { model: qwen3.5:35b, rate: 1.0 }
@@ -75,7 +75,7 @@ rules:
   # Triage needs reasoning; mid-large primary with neighbors + a big step-up.
   - task_type: sre_triage
     preferred_model: qwen3.5:27b
-    fallback_model: claude-sonnet-4-5
+    fallback_model: claude-sonnet-4-6
     sensitivity: internal
     eval_shadow_models:
       - { model: mistral-small3.2, rate: 1.0 }
@@ -107,7 +107,7 @@ rules:
       - { model: mistral-small3.2, rate: 1.0 }   # step-down
 
   - task_type: code_generation
-    preferred_model: claude-sonnet-4-5
+    preferred_model: claude-sonnet-4-6
     fallback_model: claude-opus-4-5
     sensitivity: public
     # TODO: add cloud shadows once ANTHROPIC_API_KEY is configured.

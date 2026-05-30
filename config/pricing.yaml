@@ -8,7 +8,7 @@ anthropic:
   claude-haiku-4-5:
     input_per_1m_usd: 99.00
     output_per_1m_usd: 5.00
-  claude-sonnet-4-5:
+  claude-sonnet-4-6:
     input_per_1m_usd: 3.00
     output_per_1m_usd: 15.00
   claude-opus-4-5:
