@@ -430,6 +430,78 @@ def cmd_connectors_toggle(args: argparse.Namespace) -> None:
     print(f"{conn['name']} is now {'active' if new_state else 'inactive'}")
 
 
+def cmd_eval_compare(args: argparse.Namespace) -> None:
+    """Per-model rollup for a task_type (jobs ∪ shadows over N days)."""
+    params = {"task_type": args.task_type, "days": str(args.days)}
+    with httpx.Client(base_url=_base_url(), headers=_headers(), timeout=30) as c:
+        r = c.get("/eval/compare", params=params)
+        r.raise_for_status()
+        out = r.json()
+    rows = out.get("models", [])
+    if not rows:
+        print(f"(no eval data for task_type={args.task_type!r} in last {args.days}d)")
+        return
+    print(f"task_type={args.task_type}  window={args.days}d")
+    print(
+        f"  {'model':<22} {'jobs':>5} {'fails':>5} {'fail%':>6} "
+        f"{'p50_lat_ms':>10} {'avg_tok_out':>11} {'cost/job':>10} {'avg_score':>10}"
+    )
+    for m in rows:
+        score = (
+            f"{m['avg_score']:.2f}/{m['score_count']}"
+            if m.get("avg_score") is not None
+            else "-"
+        )
+        lat = f"{int(m['avg_latency_ms'])}" if m.get("avg_latency_ms") is not None else "-"
+        tok = f"{int(m['avg_tokens_out'])}" if m.get("avg_tokens_out") is not None else "-"
+        print(
+            f"  {m['model']:<22} {m['job_count']:>5} {m['failure_count']:>5} "
+            f"{m['failure_rate']*100:>5.1f}% {lat:>10} {tok:>11} "
+            f"${m['cost_per_job_usd']:>9.4f} {score:>10}"
+        )
+
+
+def cmd_eval_review(args: argparse.Namespace) -> None:
+    """List completed shadows that haven't been scored yet."""
+    params: dict[str, str] = {"limit": str(args.limit)}
+    if args.task_type:
+        params["task_type"] = args.task_type
+    with httpx.Client(base_url=_base_url(), headers=_headers(), timeout=30) as c:
+        r = c.get("/eval/review", params=params)
+        r.raise_for_status()
+        out = r.json()
+    items = out.get("items", [])
+    if not items:
+        print("(no unscored shadows)")
+        return
+    for it in items:
+        print(f"  shadow_id={it['shadow_id']}")
+        print(
+            f"    parent={it['parent_job_id']}  task={it['task_type']}  "
+            f"model={it['model']}  at={it['created_at']}"
+        )
+        print(f"    prompt:   {it['prompt'][:120]!r}")
+        print(f"    response: {it['response'][:200]!r}")
+        print()
+
+
+def cmd_eval_score(args: argparse.Namespace) -> int:
+    body: dict = {"score": args.score}
+    if args.note:
+        body["note"] = args.note
+    if args.reviewer:
+        body["reviewer"] = args.reviewer
+    with httpx.Client(base_url=_base_url(), headers=_headers(), timeout=30) as c:
+        r = c.post(f"/eval/jobs/{args.target_id}/score", json=body)
+        if r.status_code == 404:
+            print("no job or shadow with that id", file=sys.stderr)
+            return 1
+        r.raise_for_status()
+        out = r.json()
+    print(f"scored {out['kind']} {out['id']} -> total scores: {len(out['scores'])}")
+    return 0
+
+
 def cmd_routing_list(args: argparse.Namespace) -> None:
     """List routing rules (admin)."""
     with httpx.Client(base_url=_base_url(), headers=_headers(), timeout=30) as c:
@@ -570,6 +642,26 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     ntoggle.add_argument("connector", help=_CONNECTOR_ARG_HELP)
     ntoggle.set_defaults(func=cmd_connectors_toggle)
+
+    ev = subs.add_parser("eval", help="model comparison + scoring")
+    esubs = ev.add_subparsers(dest="action", required=True)
+
+    ecmp = esubs.add_parser("compare", help="per-model rollup for a task_type")
+    ecmp.add_argument("task_type")
+    ecmp.add_argument("--days", type=int, default=30, help="lookback (default 30)")
+    ecmp.set_defaults(func=cmd_eval_compare)
+
+    erev = esubs.add_parser("review", help="list shadows that haven't been scored")
+    erev.add_argument("--task-type", dest="task_type", help="filter by task_type")
+    erev.add_argument("--limit", type=int, default=10, help="max items (default 10)")
+    erev.set_defaults(func=cmd_eval_review)
+
+    escore = esubs.add_parser("score", help="record a 1-5 quality score for a job or shadow")
+    escore.add_argument("target_id", help="job_id or shadow_id (UUID)")
+    escore.add_argument("score", type=int, choices=[1, 2, 3, 4, 5])
+    escore.add_argument("--note", help="short rationale")
+    escore.add_argument("--reviewer", help="reviewer label (defaults to '')")
+    escore.set_defaults(func=cmd_eval_score)
 
     return p
 
