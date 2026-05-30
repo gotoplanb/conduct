@@ -56,12 +56,25 @@ async def list_routing(
     return RoutingListOut(rules=[RoutingRuleOut.model_validate(r) for r in rows])
 
 
-@router.put("/{task_type}", response_model=RoutingRuleOut)
+@router.get("/{task_type}")
+async def get_routing(
+    task_type: str,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> RoutingRuleOut:
+    rule = await session.get(RoutingRule, task_type)
+    if rule is None:
+        raise HTTPException(
+            status.HTTP_404_NOT_FOUND, f"no routing rule for {task_type!r}"
+        )
+    return RoutingRuleOut.model_validate(rule)
+
+
+@router.put("/{task_type}")
 async def upsert_routing(
     task_type: str,
     body: RoutingRuleIn,
     session: Annotated[AsyncSession, Depends(get_session)],
-) -> RoutingRule:
+) -> RoutingRuleOut:
     if not task_type or len(task_type) > 100:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "task_type must be 1-100 chars")
     shadow_specs = [s.model_dump() for s in body.eval_shadow_models]
@@ -86,4 +99,4 @@ async def upsert_routing(
         rule.eval_shadow_models = shadow_specs
     await session.commit()
     await session.refresh(rule)
-    return rule
+    return RoutingRuleOut.model_validate(rule)

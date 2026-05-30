@@ -64,3 +64,32 @@ async def test_upsert_rejects_oversized_task_type(client, admin_headers) -> None
 async def test_routing_requires_admin(client) -> None:
     r = await client.get("/routing")
     assert r.status_code == 403
+
+
+async def test_get_single_rule_returns_full_shape(client, admin_headers) -> None:
+    body = {
+        "preferred_model": "llama3.3:70b",
+        "fallback_model": "claude-haiku-4-5",
+        "sensitivity": "internal",
+        "max_tokens": 1500,
+        "notes": "fetched",
+        "eval_shadow_models": [{"model": "qwen3.5:9b", "rate": 0.2}],
+    }
+    await client.put("/routing/single_rule_task", json=body, headers=admin_headers)
+    r = await client.get("/routing/single_rule_task", headers=admin_headers)
+    assert r.status_code == 200
+    out = r.json()
+    assert out["task_type"] == "single_rule_task"
+    assert out["preferred_model"] == "llama3.3:70b"
+    assert out["max_tokens"] == 1500
+    assert out["eval_shadow_models"][0]["model"] == "qwen3.5:9b"
+
+
+async def test_get_single_rule_missing_is_404(client, admin_headers) -> None:
+    r = await client.get("/routing/nope_does_not_exist", headers=admin_headers)
+    assert r.status_code == 404
+
+
+async def test_get_single_rule_requires_admin(client) -> None:
+    r = await client.get("/routing/whatever")
+    assert r.status_code == 403

@@ -32,6 +32,7 @@ _CONNECTORS_PATH = "/connectors"
 _CLIENT_ARG_HELP = "client name or UUID"
 _CONNECTOR_ARG_HELP = "connector name or UUID"
 _SKIP_CONFIRM_HELP = "skip confirmation"
+_NOT_FOUND_FALLBACK = "not found"
 
 
 def _base_url() -> str:
@@ -113,7 +114,7 @@ def cmd_prompts_get(args: argparse.Namespace) -> int:
     with httpx.Client(base_url=_base_url(), headers=_headers(), timeout=30) as c:
         r = c.get(f"/prompts/{args.task_type}", params=_client_params(args.client))
         if r.status_code == 404:
-            print(r.json().get("detail", "not found"), file=sys.stderr)
+            print(r.json().get("detail", _NOT_FOUND_FALLBACK), file=sys.stderr)
             return 1
         r.raise_for_status()
         data = r.json()
@@ -169,7 +170,7 @@ def cmd_prompts_history(args: argparse.Namespace) -> int:
             params={**_client_params(args.client), "limit": str(args.limit)},
         )
         if r.status_code == 404:
-            print(r.json().get("detail", "not found"), file=sys.stderr)
+            print(r.json().get("detail", _NOT_FOUND_FALLBACK), file=sys.stderr)
             return 1
         r.raise_for_status()
         data = r.json()
@@ -554,6 +555,34 @@ def cmd_eval_score(args: argparse.Namespace) -> int:
     return 0
 
 
+_ROUTING_EDITABLE_FIELDS = (
+    "preferred_model",
+    "fallback_model",
+    "sensitivity",
+    "max_tokens",
+    "notes",
+    "eval_shadow_models",
+)
+
+
+def _rule_to_yaml(rule: dict) -> str:
+    """Serialize the editable subset of a routing rule to YAML. `task_type` is
+    excluded (it's the URL path), as are server-side fields like updated_at."""
+    import yaml  # noqa: PLC0415
+
+    editable = {k: rule.get(k) for k in _ROUTING_EDITABLE_FIELDS if k in rule}
+    return yaml.safe_dump(editable, sort_keys=False, default_flow_style=False)
+
+
+def _yaml_to_rule_body(text: str) -> dict:
+    import yaml  # noqa: PLC0415
+
+    data = yaml.safe_load(text) or {}
+    if not isinstance(data, dict):
+        raise ValueError("routing rule YAML must be a mapping")
+    return {k: data[k] for k in _ROUTING_EDITABLE_FIELDS if k in data}
+
+
 def cmd_routing_list(args: argparse.Namespace) -> None:
     """List routing rules (admin)."""
     with httpx.Client(base_url=_base_url(), headers=_headers(), timeout=30) as c:
@@ -575,6 +604,73 @@ def cmd_routing_list(args: argparse.Namespace) -> None:
         if shadows:
             line += f"  shadows: {shadows}"
         print(line)
+
+
+def cmd_routing_get(args: argparse.Namespace) -> int:
+    """Print a single routing rule as YAML (the same shape `routing edit`
+    operates on)."""
+    with httpx.Client(base_url=_base_url(), headers=_headers(), timeout=30) as c:
+        r = c.get(f"/routing/{args.task_type}")
+        if r.status_code == 404:
+            print(r.json().get("detail", _NOT_FOUND_FALLBACK), file=sys.stderr)
+            return 1
+        r.raise_for_status()
+        rule = r.json()
+    sys.stdout.write(_rule_to_yaml(rule))
+    return 0
+
+
+_ROUTING_NEW_TEMPLATE = """\
+# New routing rule. Edit the values below and save to create.
+# task_type is taken from the CLI argument and is not editable here.
+preferred_model: llama3.3:70b
+fallback_model: claude-haiku-4-5
+sensitivity: internal
+max_tokens: 1000
+notes: ""
+eval_shadow_models: []
+"""
+
+
+def cmd_routing_edit(args: argparse.Namespace) -> int:
+    """Open $EDITOR on the rule's YAML; PUT the parsed result on save. A 404
+    on GET starts from a template (so this command also creates rules).
+    Empty / unchanged buffers abort with no DB write."""
+    with httpx.Client(base_url=_base_url(), headers=_headers(), timeout=30) as c:
+        r = c.get(f"/routing/{args.task_type}")
+        if r.status_code == 404:
+            initial = _ROUTING_NEW_TEMPLATE
+            print(
+                f"note: no existing rule for task_type={args.task_type!r} — "
+                "editing a new one",
+                file=sys.stderr,
+            )
+        else:
+            r.raise_for_status()
+            initial = _rule_to_yaml(r.json())
+
+        new_content = _open_in_editor(initial, suffix=".yaml")
+        if new_content is None:
+            return 1
+
+        import yaml  # noqa: PLC0415
+
+        try:
+            body = _yaml_to_rule_body(new_content)
+        except (yaml.YAMLError, ValueError) as e:
+            print(f"invalid YAML: {e}", file=sys.stderr)
+            return 1
+
+        put = c.put(f"/routing/{args.task_type}", json=body)
+        if put.status_code >= 400:
+            print(f"server rejected the rule: {put.text}", file=sys.stderr)
+            return 1
+        out = put.json()
+    print(
+        f"saved routing/{args.task_type} — "
+        f"{out['preferred_model']} -> {out['fallback_model']} [{out['sensitivity']}]"
+    )
+    return 0
 
 
 # --- argparse wiring ----
@@ -625,10 +721,18 @@ def _build_parser() -> argparse.ArgumentParser:
     jget.add_argument("job_id")
     jget.set_defaults(func=cmd_jobs_get)
 
-    routing = subs.add_parser("routing", help="inspect routing rules")
+    routing = subs.add_parser("routing", help="inspect & edit routing rules")
     rsubs = routing.add_subparsers(dest="action", required=True)
     rlist = rsubs.add_parser("list", help="list routing rules")
     rlist.set_defaults(func=cmd_routing_list)
+
+    rget = rsubs.add_parser("get", help="print a routing rule as YAML")
+    rget.add_argument("task_type")
+    rget.set_defaults(func=cmd_routing_get)
+
+    redit = rsubs.add_parser("edit", help="edit a routing rule in $EDITOR (creates if missing)")
+    redit.add_argument("task_type")
+    redit.set_defaults(func=cmd_routing_edit)
 
     clients = subs.add_parser("clients", help="manage client apps")
     csubs = clients.add_subparsers(dest="action", required=True)
