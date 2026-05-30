@@ -31,6 +31,7 @@ _CLIENTS_PATH = "/clients"
 _CONNECTORS_PATH = "/connectors"
 _CLIENT_ARG_HELP = "client name or UUID"
 _CONNECTOR_ARG_HELP = "connector name or UUID"
+_SKIP_CONFIRM_HELP = "skip confirmation"
 
 
 def _base_url() -> str:
@@ -353,6 +354,57 @@ def cmd_clients_usage(args: argparse.Namespace) -> None:
             )
 
 
+_ANTHROPIC_KEY_TEMPLATE = (
+    "# Paste the Anthropic API key below this line and save to upload it.\n"
+    "# Lines starting with # are ignored. Save empty to abort.\n"
+)
+
+
+def _strip_comments(text: str) -> str:
+    return "\n".join(
+        line for line in text.splitlines() if not line.lstrip().startswith("#")
+    ).strip()
+
+
+def cmd_clients_set_anthropic_key(args: argparse.Namespace) -> int:
+    """Open $EDITOR with an empty buffer; on save, PUT the contents as the
+    client's Anthropic API key. The key is encrypted at rest with
+    CONDUCT_SECRETS_KEY. We never echo it back."""
+    with httpx.Client(base_url=_base_url(), headers=_headers(), timeout=30) as c:
+        client = _resolve_client(c, args.client)
+        edited = _open_in_editor(_ANTHROPIC_KEY_TEMPLATE, suffix=".txt")
+        if edited is None:
+            return 1
+        api_key = _strip_comments(edited)
+        if not api_key:
+            print("aborting: no key supplied", file=sys.stderr)
+            return 1
+        r = c.put(
+            f"/clients/{client['id']}/anthropic-key", json={"api_key": api_key}
+        )
+        r.raise_for_status()
+        out = r.json()
+    print(f"set anthropic key for {out['name']} at {out['anthropic_api_key_set_at']}")
+    return 0
+
+
+def cmd_clients_clear_anthropic_key(args: argparse.Namespace) -> int:
+    with httpx.Client(base_url=_base_url(), headers=_headers(), timeout=30) as c:
+        client = _resolve_client(c, args.client)
+        if not args.yes:
+            answer = input(
+                f"Clear Anthropic key for {client['name']}? "
+                "This client will fall back to local-only routing. [y/N] "
+            ).strip().lower()
+            if answer != "y":
+                print("aborted", file=sys.stderr)
+                return 1
+        r = c.delete(f"/clients/{client['id']}/anthropic-key")
+        r.raise_for_status()
+    print(f"cleared anthropic key for {client['name']}")
+    return 0
+
+
 def _resolve_connector(c: httpx.Client, name_or_id: str) -> dict:
     r = c.get(_CONNECTORS_PATH)
     r.raise_for_status()
@@ -602,7 +654,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "rotate-key", help="mint a new API key for a client (old stops working)"
     )
     crotate.add_argument("client", help=_CLIENT_ARG_HELP)
-    crotate.add_argument("-y", "--yes", action="store_true", help="skip confirmation")
+    crotate.add_argument("-y", "--yes", action="store_true", help=_SKIP_CONFIRM_HELP)
     crotate.set_defaults(func=cmd_clients_rotate_key)
 
     ctoggle = csubs.add_parser("toggle", help="flip a client's active flag")
@@ -613,6 +665,20 @@ def _build_parser() -> argparse.ArgumentParser:
     cusage.add_argument("client", help=_CLIENT_ARG_HELP)
     cusage.add_argument("--days", type=int, default=30, help="lookback (default 30)")
     cusage.set_defaults(func=cmd_clients_usage)
+
+    cset_ak = csubs.add_parser(
+        "set-anthropic-key",
+        help="paste a per-client Anthropic API key in $EDITOR ($EDITOR opens empty)",
+    )
+    cset_ak.add_argument("client", help=_CLIENT_ARG_HELP)
+    cset_ak.set_defaults(func=cmd_clients_set_anthropic_key)
+
+    cclr_ak = csubs.add_parser(
+        "clear-anthropic-key", help="forget a client's Anthropic key (local-only)"
+    )
+    cclr_ak.add_argument("client", help=_CLIENT_ARG_HELP)
+    cclr_ak.add_argument("-y", "--yes", action="store_true", help=_SKIP_CONFIRM_HELP)
+    cclr_ak.set_defaults(func=cmd_clients_clear_anthropic_key)
 
     conns = subs.add_parser("connectors", help="manage MCP OAuth connectors")
     nsubs = conns.add_subparsers(dest="action", required=True)
@@ -634,7 +700,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     nrotate = nsubs.add_parser("rotate-secret", help="mint a new client secret")
     nrotate.add_argument("connector", help=_CONNECTOR_ARG_HELP)
-    nrotate.add_argument("-y", "--yes", action="store_true", help="skip confirmation")
+    nrotate.add_argument("-y", "--yes", action="store_true", help=_SKIP_CONFIRM_HELP)
     nrotate.set_defaults(func=cmd_connectors_rotate_secret)
 
     ntoggle = nsubs.add_parser(

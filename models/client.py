@@ -42,6 +42,15 @@ class ClientApp(Base):
     key_created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC)
     )
+    # Per-client Anthropic API key, encrypted at rest via Fernet (see
+    # secrets_box.py). When set, cloud calls for this client use this key
+    # instead of the global ANTHROPIC_API_KEY; when null, cloud is disallowed
+    # for this client entirely (no global fallback by design — each client's
+    # cost lives on their own Anthropic key).
+    anthropic_api_key_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
+    anthropic_api_key_set_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
 
 class ClientAppUsage(Base):

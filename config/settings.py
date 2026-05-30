@@ -15,6 +15,13 @@ class Settings(BaseSettings):
 
     admin_key: str = Field(alias="CONDUCT_ADMIN_KEY")
 
+    # Master key (Fernet) for encrypting per-client secrets at rest. Generate
+    # once with `python -c "from cryptography.fernet import Fernet;
+    # print(Fernet.generate_key().decode())"`. Required to set or use any
+    # per-client API key (e.g. a client's own Anthropic key); without it the
+    # secrets layer raises on encrypt/decrypt.
+    secrets_key: str | None = Field(default=None, alias="CONDUCT_SECRETS_KEY")
+
     # Public HTTPS origin Conduct is reachable at (the tunnel / reverse proxy).
     # Used as the OAuth issuer and to build the authorize/token URLs that go
     # into a Claude custom connector. Must match what external clients hit, so

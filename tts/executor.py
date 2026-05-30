@@ -17,6 +17,7 @@ from opentelemetry.trace import Status, StatusCode
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config.settings import get_settings
+from models.client import ClientApp
 from models.job import Job
 from models.types import JobStatus
 from observability.metrics import record_job_completion
@@ -30,11 +31,12 @@ _tracer = get_tracer(__name__)
 async def execute_tts(
     *,
     job: Job,
-    client_name: str,
+    client: ClientApp,
     session: AsyncSession,
 ) -> Job:
     """Run a TTS job to completion and persist the result on the Job row."""
     settings = get_settings()
+    client_name = client.name
     voice = job.model_requested or settings.tts_default_voice
     voices_dir = Path(settings.tts_voices_dir).resolve()
     output_dir = Path(settings.tts_output_dir).resolve()

@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from auth import admin_only, generate_api_key, hash_api_key
 from db.session import get_session
 from models.client import ClientApp, ClientAppUsage
+from secrets_box import SecretsKeyMissing, encrypt
 
 router = APIRouter(prefix="/clients", tags=["clients"], dependencies=[Depends(admin_only)])
 
@@ -44,6 +45,7 @@ class ClientOut(BaseModel):
     notes: str
     created_at: datetime
     key_created_at: datetime
+    anthropic_api_key_set_at: datetime | None = None
 
 
 class RotateKeyOut(BaseModel):
@@ -149,6 +151,63 @@ async def rotate_key(
         name=client.name,
         api_key=raw_key,
         key_created_at=client.key_created_at,
+    )
+
+
+class AnthropicKeyIn(BaseModel):
+    api_key: str = Field(min_length=1)
+
+
+class AnthropicKeyOut(BaseModel):
+    id: UUID
+    name: str
+    anthropic_api_key_set_at: datetime | None
+
+
+@router.put("/{client_id}/anthropic-key")
+async def set_anthropic_key(
+    client_id: UUID,
+    body: AnthropicKeyIn,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> AnthropicKeyOut:
+    """Store a per-client Anthropic API key, encrypted with CONDUCT_SECRETS_KEY.
+    The plaintext is never persisted or echoed back — only the set timestamp."""
+    client = await session.get(ClientApp, client_id)
+    if client is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, _CLIENT_NOT_FOUND)
+    try:
+        client.anthropic_api_key_encrypted = encrypt(body.api_key.strip())
+    except SecretsKeyMissing as e:
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "CONDUCT_SECRETS_KEY is not configured on the server",
+        ) from e
+    client.anthropic_api_key_set_at = datetime.now(UTC)
+    await session.commit()
+    await session.refresh(client)
+    return AnthropicKeyOut(
+        id=client.id,
+        name=client.name,
+        anthropic_api_key_set_at=client.anthropic_api_key_set_at,
+    )
+
+
+@router.delete("/{client_id}/anthropic-key")
+async def clear_anthropic_key(
+    client_id: UUID, session: Annotated[AsyncSession, Depends(get_session)]
+) -> AnthropicKeyOut:
+    """Forget this client's Anthropic key — they fall back to local-only routing."""
+    client = await session.get(ClientApp, client_id)
+    if client is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, _CLIENT_NOT_FOUND)
+    client.anthropic_api_key_encrypted = None
+    client.anthropic_api_key_set_at = None
+    await session.commit()
+    await session.refresh(client)
+    return AnthropicKeyOut(
+        id=client.id,
+        name=client.name,
+        anthropic_api_key_set_at=None,
     )
 
 

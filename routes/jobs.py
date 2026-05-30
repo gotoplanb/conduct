@@ -122,7 +122,10 @@ def _should_enqueue(body: JobCreateIn, decision: RoutingDecision) -> bool:
 
 
 def _resolve_decision(
-    body: JobCreateIn, client: ClientApp, rule: RoutingRule | None
+    body: JobCreateIn,
+    client: ClientApp,
+    rule: RoutingRule | None,
+    providers: ProviderRegistry,
 ) -> RoutingDecision:
     """Run the routing engine, mapping SensitivityViolation to a 400."""
     settings = get_settings()
@@ -137,6 +140,7 @@ def _resolve_decision(
             rule=rule,
             default_model=settings.default_model,
             default_sensitive_model=settings.default_sensitive_model,
+            cloud_available=providers.has_for_client(client, "anthropic"),
         )
     except SensitivityViolation as e:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e)) from e
@@ -228,7 +232,7 @@ async def _execute_sync(
         primary = execute_job(
             job=job,
             decision=decision,
-            client_name=client.name,
+            client=client,
             providers=providers,
             session=session,
         )
@@ -236,7 +240,7 @@ async def _execute_sync(
             secondaries = run_fanout_secondaries(
                 parent=job,
                 secondary_models=body.fanout,
-                client_name=client.name,
+                client=client,
                 max_tokens=decision.max_tokens,
                 providers=providers,
                 session=session,
@@ -269,7 +273,7 @@ async def submit_job(
     providers: Annotated[ProviderRegistry, Depends(get_provider_registry)],
 ) -> JSONResponse | JobOut:
     rule = await session.scalar(select(RoutingRule).where(RoutingRule.task_type == body.task_type))
-    decision = _resolve_decision(body, client, rule)
+    decision = _resolve_decision(body, client, rule, providers)
     _validate_fanout(body, decision, client)
 
     if not providers.has(decision.provider) and not _should_enqueue(body, decision):

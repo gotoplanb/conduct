@@ -114,7 +114,7 @@ async def test_execute_shadow_records_version_id(
     result = await execute_shadow(
         shadow=shadow,
         parent=job,
-        client_name=c.name,
+        client=c,
         max_tokens=100,
         providers=stub_providers,
         session=db_session,
@@ -152,7 +152,7 @@ async def test_execute_shadow_uses_system_prompt_override(
     result = await execute_shadow(
         shadow=shadow,
         parent=job,
-        client_name=c.name,
+        client=c,
         max_tokens=100,
         providers=stub_providers,
         session=db_session,
@@ -186,7 +186,7 @@ async def test_execute_shadow_records_provider_failure(
     result = await execute_shadow(
         shadow=shadow,
         parent=job,
-        client_name=c.name,
+        client=c,
         max_tokens=100,
         providers=failing,
         session=db_session,
@@ -207,7 +207,7 @@ async def test_run_fanout_secondaries_single_target(
     results = await run_fanout_secondaries(
         parent=job,
         secondary_models=["claude-haiku-4-5"],
-        client_name=c.name,
+        client=c,
         max_tokens=100,
         providers=stub_providers,
         session=db_session,
@@ -229,7 +229,7 @@ async def test_run_fanout_secondaries_empty_targets_noop(
     out = await run_fanout_secondaries(
         parent=job,
         secondary_models=[],
-        client_name=c.name,
+        client=c,
         max_tokens=100,
         providers=stub_providers,
         session=db_session,

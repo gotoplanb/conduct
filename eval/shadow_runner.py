@@ -175,7 +175,7 @@ async def _run_async(shadow_id: UUID) -> None:
             await execute_shadow(
                 shadow=shadow,
                 parent=parent,
-                client_name=client.name,
+                client=client,
                 max_tokens=max_tokens,
                 providers=providers,
                 session=session,

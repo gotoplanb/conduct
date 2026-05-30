@@ -35,6 +35,7 @@ from models.routing import RoutingRule
 from models.shadow import JobShadow
 from models.types import JobStatus
 from oauth_provider import hash_secret, new_client_id, new_client_secret
+from secrets_box import SecretsKeyMissing, encrypt
 
 ADMIN_COOKIE = "conduct_admin"
 LOGIN_PATH = "/ui/login"
@@ -318,6 +319,8 @@ async def _load_clients(session: AsyncSession) -> list[dict]:
             "created_at": c.created_at,
             "key_created_at": c.key_created_at,
             "key_created_rel": _humanize_age(c.key_created_at),
+            "anthropic_api_key_set_at": c.anthropic_api_key_set_at,
+            "has_anthropic_key": c.anthropic_api_key_encrypted is not None,
         }
         for c in rows
     ]
@@ -436,6 +439,69 @@ async def clients_toggle(
     await session.commit()
     return await _render_clients(
         request, session, flash=f"{client.name} is now {state}."
+    )
+
+
+@router.post(
+    "/clients/{client_id}/anthropic-key",
+    response_class=HTMLResponse,
+    dependencies=[Depends(admin_session)],
+)
+async def clients_set_anthropic_key(
+    request: Request,
+    client_id: UUID,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    api_key: Annotated[str, Form()],
+) -> HTMLResponse:
+    client = await session.get(ClientApp, client_id)
+    if client is None:
+        return await _render_clients(
+            request, session, error=_CLIENT_NOT_FOUND,
+            status_code=status.HTTP_404_NOT_FOUND,
+        )
+    key = api_key.strip()
+    if not key:
+        return await _render_clients(
+            request, session, error="API key is required.",
+            status_code=status.HTTP_400_BAD_REQUEST,
+        )
+    try:
+        client.anthropic_api_key_encrypted = encrypt(key)
+    except SecretsKeyMissing:
+        return await _render_clients(
+            request,
+            session,
+            error="CONDUCT_SECRETS_KEY is not configured — cannot store the key.",
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        )
+    client.anthropic_api_key_set_at = datetime.now(UTC)
+    await session.commit()
+    return await _render_clients(
+        request, session, flash=f"Anthropic key set for {client.name}."
+    )
+
+
+@router.post(
+    "/clients/{client_id}/anthropic-key/clear",
+    response_class=HTMLResponse,
+    dependencies=[Depends(admin_session)],
+)
+async def clients_clear_anthropic_key(
+    request: Request,
+    client_id: UUID,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> HTMLResponse:
+    client = await session.get(ClientApp, client_id)
+    if client is None:
+        return await _render_clients(
+            request, session, error=_CLIENT_NOT_FOUND,
+            status_code=status.HTTP_404_NOT_FOUND,
+        )
+    client.anthropic_api_key_encrypted = None
+    client.anthropic_api_key_set_at = None
+    await session.commit()
+    return await _render_clients(
+        request, session, flash=f"Anthropic key cleared for {client.name}."
     )
 
 

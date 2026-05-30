@@ -196,3 +196,46 @@ def test_max_tokens_default_when_no_rule() -> None:
         default_sensitive_model="llama3.3:70b",
     )
     assert d.max_tokens == 1000
+
+
+def test_no_anthropic_key_falls_back_to_local() -> None:
+    """When the client has no Anthropic key (cloud_available=False), a cloud
+    preferred model with a local fallback should promote the fallback."""
+    d = decide(
+        sensitivity=Sensitivity.PUBLIC,
+        model_requested=None,
+        allow_cloud_for_internal=True,
+        rule=_rule(preferred="claude-sonnet-4-5", fallback="llama3.3:70b"),
+        default_model="llama3.3:70b",
+        default_sensitive_model="llama3.3:70b",
+        cloud_available=False,
+    )
+    assert d.model == "llama3.3:70b"
+    assert d.provider == "ollama"
+    assert "sensitivity-promoted-fallback" in d.reason
+
+
+def test_no_anthropic_key_blocks_explicit_cloud_override() -> None:
+    with pytest.raises(SensitivityViolation):
+        decide(
+            sensitivity=Sensitivity.PUBLIC,
+            model_requested="claude-haiku-4-5",
+            allow_cloud_for_internal=True,
+            rule=_rule(sensitivity=Sensitivity.PUBLIC),
+            default_model="llama3.3:70b",
+            default_sensitive_model="llama3.3:70b",
+            cloud_available=False,
+        )
+
+
+def test_no_anthropic_key_and_no_local_fallback_raises() -> None:
+    with pytest.raises(SensitivityViolation):
+        decide(
+            sensitivity=Sensitivity.PUBLIC,
+            model_requested=None,
+            allow_cloud_for_internal=True,
+            rule=_rule(preferred="claude-sonnet-4-5", fallback=None),
+            default_model="llama3.3:70b",
+            default_sensitive_model="llama3.3:70b",
+            cloud_available=False,
+        )

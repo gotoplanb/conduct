@@ -158,6 +158,36 @@ async def test_ui_clients_rotate_missing_is_404(admin_client) -> None:
     assert r.status_code == 404
 
 
+async def test_ui_set_anthropic_key_flashes_and_persists(
+    admin_client, seeded_client, secrets_key, db_session
+) -> None:
+    row, _ = seeded_client
+    r = await admin_client.post(
+        f"/ui/clients/{row.id}/anthropic-key",
+        data={"api_key": "sk-ant-ui-test"},
+    )
+    assert r.status_code == 200
+    assert f"Anthropic key set for {row.name}" in r.text
+    # Plaintext must not appear in the page response
+    assert "sk-ant-ui-test" not in r.text
+    await db_session.refresh(row)
+    assert row.anthropic_api_key_encrypted is not None
+
+
+async def test_ui_clear_anthropic_key_nulls_columns(
+    admin_client, seeded_client, secrets_key, db_session
+) -> None:
+    row, _ = seeded_client
+    await admin_client.post(
+        f"/ui/clients/{row.id}/anthropic-key", data={"api_key": "sk-ant-x"}
+    )
+    r = await admin_client.post(f"/ui/clients/{row.id}/anthropic-key/clear")
+    assert r.status_code == 200
+    assert f"Anthropic key cleared for {row.name}" in r.text
+    await db_session.refresh(row)
+    assert row.anthropic_api_key_encrypted is None
+
+
 async def test_ui_tasks_unauth_redirects(client) -> None:
     r = await client.get("/ui/tasks", follow_redirects=False)
     assert r.status_code == 303

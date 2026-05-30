@@ -19,7 +19,7 @@ from opentelemetry.trace import Status, StatusCode
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from models.client import ClientAppUsage
+from models.client import ClientApp, ClientAppUsage
 from models.job import Job
 from models.types import JobStatus
 from observability.metrics import record_fallback, record_job_completion
@@ -96,6 +96,7 @@ async def _try_fallback(
     primary_err: ProviderError,
     handler: FailureHandler,
     providers: ProviderRegistry,
+    client: ClientApp,
     system_prompt: str,
     job_span,
 ) -> tuple[ProviderResponse | None, bool, str]:
@@ -128,7 +129,7 @@ async def _try_fallback(
     job.model_used = fb_model
     try:
         response = await _call_provider(
-            providers.get(fb_provider_name),
+            providers.get_for_client(client, fb_provider_name),
             prompt=job.prompt,
             model=fb_model,
             system_prompt=system_prompt,
@@ -148,12 +149,13 @@ async def execute_job(
     *,
     job: Job,
     decision: RoutingDecision,
-    client_name: str,
+    client: ClientApp,
     providers: ProviderRegistry,
     session: AsyncSession,
     failure_handler: FailureHandler | None = None,
 ) -> Job:
     handler = failure_handler or _default_failure_handler
+    client_name = client.name
     with _tracer.start_as_current_span("conduct.job") as job_span:
         job_span.set_attribute("job.id", str(job.id))
         job_span.set_attribute("job.task_type", job.task_type)
@@ -180,7 +182,7 @@ async def execute_job(
 
         try:
             response = await _call_provider(
-                providers.get(decision.provider),
+                providers.get_for_client(client, decision.provider),
                 prompt=job.prompt,
                 model=decision.model,
                 system_prompt=system_prompt,
@@ -198,6 +200,7 @@ async def execute_job(
                 primary_err=primary_err,
                 handler=handler,
                 providers=providers,
+                client=client,
                 system_prompt=system_prompt,
                 job_span=job_span,
             )

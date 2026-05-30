@@ -19,6 +19,25 @@ class ProviderRegistry:
     def has(self, name: str) -> bool:
         return name in self._providers
 
+    def get_for_client(self, client_app, name: str) -> BaseProvider:
+        """Provider lookup that honors per-client secrets. For Anthropic, if
+        the client has its own encrypted key set, builds a provider with that
+        key (so each client's cost lives on their own Anthropic account); else
+        falls through to the globally-registered provider (used by tests with
+        stub registries, or when a deployment opts into a global fallback by
+        setting ANTHROPIC_API_KEY). Raises if neither is available."""
+        if name == "anthropic" and getattr(client_app, "anthropic_api_key_encrypted", None):
+            from providers.anthropic import AnthropicProvider  # noqa: PLC0415
+            from secrets_box import decrypt  # noqa: PLC0415
+
+            return AnthropicProvider(api_key=decrypt(client_app.anthropic_api_key_encrypted))
+        return self.get(name)
+
+    def has_for_client(self, client_app, name: str) -> bool:
+        if name == "anthropic" and getattr(client_app, "anthropic_api_key_encrypted", None):
+            return True
+        return self.has(name)
+
     def for_model(self, model: str) -> BaseProvider:
         return self.get(provider_for_model(model))
 

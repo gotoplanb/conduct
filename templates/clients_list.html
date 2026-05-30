@@ -77,6 +77,7 @@
           <th class="text-left font-medium px-4 py-2.5">Key created</th>
           <th class="text-left font-medium px-4 py-2.5">Rate limit</th>
           <th class="text-left font-medium px-4 py-2.5">Cloud</th>
+          <th class="text-left font-medium px-4 py-2.5">Anthropic key</th>
           <th class="text-left font-medium px-4 py-2.5">Notes</th>
           <th class="text-right font-medium px-4 py-2.5">Actions</th>
         </tr>
@@ -95,9 +96,28 @@
           <td class="px-4 py-2.5 text-zinc-400" title="{{ c.key_created_at.strftime('%Y-%m-%d %H:%M UTC') }}">{{ c.key_created_rel }}</td>
           <td class="px-4 py-2.5 text-zinc-400">{{ c.rate_limit_per_minute if c.rate_limit_per_minute is not none else '—' }}</td>
           <td class="px-4 py-2.5 text-zinc-400">{{ 'yes' if c.allow_cloud_for_internal else '—' }}</td>
+          <td class="px-4 py-2.5 text-zinc-400"
+              title="{{ c.anthropic_api_key_set_at.strftime('%Y-%m-%d %H:%M UTC') if c.anthropic_api_key_set_at else 'no key set' }}">
+            {% if c.has_anthropic_key %}
+            <span class="inline-flex items-center rounded-full bg-emerald-900/40 text-emerald-300 px-2 py-0.5 text-xs">set</span>
+            {% else %}
+            <span class="text-zinc-500">—</span>
+            {% endif %}
+          </td>
           <td class="px-4 py-2.5 text-zinc-500 max-w-xs truncate" title="{{ c.notes }}">{{ c.notes or '—' }}</td>
           <td class="px-4 py-2.5">
-            <div class="flex items-center justify-end gap-2">
+            <div x-data="{ showKey: false }" class="flex items-center justify-end gap-2 flex-wrap">
+              <button @click="showKey = !showKey"
+                      class="rounded-md border border-zinc-700 px-2.5 py-1 text-xs text-zinc-300 hover:bg-zinc-800">
+                <span x-show="!showKey">{{ 'Update' if c.has_anthropic_key else 'Set' }} Anthropic key</span>
+                <span x-show="showKey" x-cloak>Cancel</span>
+              </button>
+              {% if c.has_anthropic_key %}
+              <form method="post" action="/ui/clients/{{ c.id }}/anthropic-key/clear"
+                    onsubmit="return confirm('Clear Anthropic key for {{ c.name }}? They will fall back to local-only routing.')">
+                <button class="rounded-md border border-zinc-700 px-2.5 py-1 text-xs text-amber-300 hover:bg-zinc-800">Clear key</button>
+              </form>
+              {% endif %}
               <form method="post" action="/ui/clients/{{ c.id }}/rotate"
                     onsubmit="return confirm('Rotate the key for {{ c.name }}? The current key stops working immediately.')">
                 <button class="rounded-md border border-zinc-700 px-2.5 py-1 text-xs text-zinc-300 hover:bg-zinc-800">Rotate key</button>
@@ -109,11 +129,18 @@
                 <button class="rounded-md border border-zinc-700 px-2.5 py-1 text-xs text-emerald-300 hover:bg-zinc-800">Activate</button>
                 {% endif %}
               </form>
+              <form method="post" action="/ui/clients/{{ c.id }}/anthropic-key" x-show="showKey" x-cloak
+                    class="basis-full mt-2 flex items-center gap-2">
+                <input type="password" name="api_key" required autocomplete="off"
+                       placeholder="sk-ant-..." spellcheck="false"
+                       class="flex-1 bg-zinc-950 border border-zinc-700 rounded-md px-3 py-1.5 text-xs font-mono">
+                <button class="rounded-md bg-zinc-100 text-zinc-900 px-3 py-1.5 text-xs font-medium hover:bg-white">Save</button>
+              </form>
             </div>
           </td>
         </tr>
         {% else %}
-        <tr><td colspan="7" class="px-4 py-6 text-center text-zinc-500">No clients yet.</td></tr>
+        <tr><td colspan="8" class="px-4 py-6 text-center text-zinc-500">No clients yet.</td></tr>
         {% endfor %}
       </tbody>
     </table>

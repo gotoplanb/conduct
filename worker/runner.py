@@ -179,7 +179,7 @@ async def _run_async(job_id: UUID) -> None:
             if job.task_type == "tts":
                 from tts.executor import execute_tts  # noqa: PLC0415
 
-                await execute_tts(job=job, client_name=client.name, session=session)
+                await execute_tts(job=job, client=client, session=session)
                 dispatch_span.set_attribute(_DISPATCH_OUTCOME, "tts_executed")
                 return
 
@@ -203,7 +203,7 @@ async def _run_async(job_id: UUID) -> None:
             await execute_job(
                 job=job,
                 decision=decision,
-                client_name=client.name,
+                client=client,
                 providers=providers,
                 session=session,
             )

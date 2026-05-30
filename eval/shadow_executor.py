@@ -17,6 +17,7 @@ from time import perf_counter
 from opentelemetry.trace import Status, StatusCode
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from models.client import ClientApp
 from models.job import Job
 from models.shadow import JobShadow
 from models.types import JobStatus
@@ -32,13 +33,14 @@ async def execute_shadow(
     *,
     shadow: JobShadow,
     parent: Job,
-    client_name: str,
+    client: ClientApp,
     max_tokens: int,
     providers: ProviderRegistry,
     session: AsyncSession,
 ) -> JobShadow:
     """Run a shadow job to completion, persist the result, return the row."""
 
+    client_name = client.name
     with _tracer.start_as_current_span("conduct.shadow") as span:
         span.set_attribute("shadow.id", str(shadow.id))
         span.set_attribute("shadow.parent_job_id", str(parent.id))
@@ -58,7 +60,7 @@ async def execute_shadow(
         shadow.started_at = datetime.now(UTC)
         await session.commit()
 
-        provider = providers.get(shadow.provider)
+        provider = providers.get_for_client(client, shadow.provider)
         started = perf_counter()
         try:
             response = await provider.complete(

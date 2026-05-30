@@ -17,6 +17,7 @@ from time import perf_counter
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from eval.shadow_executor import execute_shadow
+from models.client import ClientApp
 from models.job import Job
 from models.shadow import JobShadow
 from models.types import JobStatus
@@ -50,7 +51,7 @@ async def run_fanout_secondaries(
     *,
     parent: Job,
     secondary_models: list[str],
-    client_name: str,
+    client: ClientApp,
     max_tokens: int,
     providers: ProviderRegistry,
     session: AsyncSession,
@@ -79,7 +80,7 @@ async def run_fanout_secondaries(
         return await execute_shadow(
             shadow=s,
             parent=parent,
-            client_name=client_name,
+            client=client,
             max_tokens=max_tokens,
             providers=providers,
             session=session,

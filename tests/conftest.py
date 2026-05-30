@@ -57,6 +57,26 @@ async def db_session(db_conn: AsyncConnection) -> AsyncIterator[AsyncSession]:
         yield session
 
 
+# --- Per-client secrets master key ---
+
+
+@pytest.fixture
+def secrets_key(monkeypatch: pytest.MonkeyPatch) -> str:
+    """Provision CONDUCT_SECRETS_KEY for tests that exercise per-client
+    encrypted secrets. Clears the Fernet + settings caches around the test."""
+    from cryptography.fernet import Fernet
+
+    import secrets_box
+
+    key = Fernet.generate_key().decode("ascii")
+    monkeypatch.setenv("CONDUCT_SECRETS_KEY", key)
+    get_settings.cache_clear()
+    secrets_box._fernet.cache_clear()
+    yield key
+    secrets_box._fernet.cache_clear()
+    get_settings.cache_clear()
+
+
 # --- Test doubles: redis + provider registry ---
 
 

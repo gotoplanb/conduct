@@ -210,6 +210,10 @@ async def create_job(
                 rule=rule,
                 default_model=settings.default_model,
                 default_sensitive_model=settings.default_sensitive_model,
+                cloud_available=(
+                    _provider_registry is not None
+                    and _provider_registry.has_for_client(client, "anthropic")
+                ),
             )
         except SensitivityViolation as e:
             raise ValueError(str(e)) from e
@@ -238,7 +242,7 @@ async def create_job(
                 await execute_job(
                     job=job,
                     decision=decision,
-                    client_name=client.name,
+                    client=client,
                     providers=registry,
                     session=session,
                 )
