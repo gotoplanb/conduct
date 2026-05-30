@@ -25,8 +25,11 @@ class ModelPrice:
 
 
 class PricingRegistry:
-    def __init__(self, path: Path = DEFAULT_PRICING_PATH) -> None:
-        self.path = path
+    def __init__(self, path: Path | None = None) -> None:
+        # Resolve at call time, not def time, so tests can
+        # `monkeypatch.setattr(pricing_mod, "DEFAULT_PRICING_PATH", ...)`
+        # to point at a temp fixture.
+        self.path = path if path is not None else DEFAULT_PRICING_PATH
         self._lock = threading.Lock()
         self._prices: dict[tuple[str, str], ModelPrice] = {}
         self.reload()
