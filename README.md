@@ -19,6 +19,8 @@ After `make seed`, save the printed client keys — they're hashed in the DB and
 
 For fast-iteration dev (uvicorn `--reload`), use `make up-infra` (postgres + redis only) followed by `make run` and `make worker` in separate terminals. See [docs/deployment.md](docs/deployment.md) for the trade-offs.
 
+**Want to drive Conduct from your phone?** [docs/quickstart-ios-eval.md](docs/quickstart-ios-eval.md) walks through firing a dad joke from the Claude iOS app, pulling every model's attempt side-by-side, and scoring the best one — without leaving the chat.
+
 ## What runs where
 
 ```

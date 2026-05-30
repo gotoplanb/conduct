@@ -6,17 +6,20 @@ connector**. It's an OAuth-protected Streamable-HTTP endpoint at `/mcp`.
 
 ## What it exposes
 
-Four tools, all scoped to the connector's bound client app:
+Six tools, all scoped to the connector's bound client app:
 
 | Tool | Purpose |
 |---|---|
 | `list_task_types` | The task types this instance runs, with the model each routes to and its sensitivity floor |
 | `list_jobs` | Your recent jobs (newest first), optionally filtered by status |
 | `get_job` | A single job's status and result (response, tokens, cost) |
-| `create_job` | Create a job — runs **asynchronously**; poll `get_job` for the result |
+| `create_job` | Create a job — fast tasks run inline, heavier ones return pending; poll `get_job` for those |
+| `list_shadows` | The side-by-side responses from eval shadows on a parent job — for in-app A/B compare before scoring |
+| `submit_eval` | Record a 1-5 quality score (+ optional note) on one of your completed jobs |
 
-`create_job` always enqueues async (the natural pattern for a phone: create,
-then ask Claude to fetch the result with `get_job`).
+For a guided walkthrough that uses every one of these tools in a single iOS
+chat (request a dad joke → see all model attempts → score the best one), see
+[quickstart-ios-eval.md](quickstart-ios-eval.md).
 
 ## How auth works
 
