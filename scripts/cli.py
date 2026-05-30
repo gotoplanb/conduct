@@ -28,7 +28,9 @@ import httpx
 
 DEFAULT_BASE_URL = "http://localhost:8000"
 _CLIENTS_PATH = "/clients"
+_CONNECTORS_PATH = "/connectors"
 _CLIENT_ARG_HELP = "client name or UUID"
+_CONNECTOR_ARG_HELP = "connector name or UUID"
 
 
 def _base_url() -> str:
@@ -351,6 +353,83 @@ def cmd_clients_usage(args: argparse.Namespace) -> None:
             )
 
 
+def _resolve_connector(c: httpx.Client, name_or_id: str) -> dict:
+    r = c.get(_CONNECTORS_PATH)
+    r.raise_for_status()
+    for row in r.json():
+        if row["name"] == name_or_id or row["id"] == name_or_id:
+            return row
+    print(f"connector {name_or_id!r} not found", file=sys.stderr)
+    sys.exit(1)
+
+
+def cmd_connectors_list(args: argparse.Namespace) -> None:
+    """List OAuth connectors (MCP clients)."""
+    with httpx.Client(base_url=_base_url(), headers=_headers(), timeout=30) as c:
+        r = c.get(_CONNECTORS_PATH)
+        r.raise_for_status()
+        rows = r.json()
+        # Build a client_app_id → name map for display.
+        rc = c.get(_CLIENTS_PATH)
+        rc.raise_for_status()
+        client_names = {a["id"]: a["name"] for a in rc.json()}
+    if not rows:
+        print("(no connectors)")
+        return
+    width = max(len(r["name"]) for r in rows)
+    for r in rows:
+        flags = [] if r["is_active"] else ["inactive"]
+        suffix = "  " + " ".join(f"[{f}]" for f in flags) if flags else ""
+        bound = client_names.get(r["client_app_id"], r["client_app_id"])
+        print(f"  {r['name']:<{width}}  {r['client_id']}  client={bound}{suffix}")
+
+
+def _reveal_secret(name: str, client_id: str, client_secret: str, action: str) -> None:
+    print(f"{action} connector {name}")
+    print(f"  client_id    : {client_id}")
+    print(f"  client_secret: {client_secret}")
+    print("  (this is the only time the secret will be shown — save it now)")
+
+
+def cmd_connectors_create(args: argparse.Namespace) -> None:
+    with httpx.Client(base_url=_base_url(), headers=_headers(), timeout=30) as c:
+        client = _resolve_client(c, args.client)
+        body: dict = {"name": args.name, "client_app_id": client["id"]}
+        if args.redirect_uri:
+            body["redirect_uris"] = list(args.redirect_uri)
+        r = c.post(_CONNECTORS_PATH, json=body)
+        r.raise_for_status()
+        out = r.json()
+    _reveal_secret(out["name"], out["client_id"], out["client_secret"], "created")
+
+
+def cmd_connectors_rotate_secret(args: argparse.Namespace) -> int:
+    with httpx.Client(base_url=_base_url(), headers=_headers(), timeout=30) as c:
+        conn = _resolve_connector(c, args.connector)
+        if not args.yes:
+            answer = input(
+                f"Rotate secret for connector {conn['name']}? "
+                "Existing tokens keep working but the old secret stops minting new ones. [y/N] "
+            ).strip().lower()
+            if answer != "y":
+                print("aborted", file=sys.stderr)
+                return 1
+        r = c.post(f"{_CONNECTORS_PATH}/{conn['id']}/rotate-secret")
+        r.raise_for_status()
+        out = r.json()
+    _reveal_secret(out["name"], out["client_id"], out["client_secret"], "rotated secret for")
+    return 0
+
+
+def cmd_connectors_toggle(args: argparse.Namespace) -> None:
+    with httpx.Client(base_url=_base_url(), headers=_headers(), timeout=30) as c:
+        conn = _resolve_connector(c, args.connector)
+        new_state = not conn["is_active"]
+        r = c.patch(f"{_CONNECTORS_PATH}/{conn['id']}", json={"is_active": new_state})
+        r.raise_for_status()
+    print(f"{conn['name']} is now {'active' if new_state else 'inactive'}")
+
+
 def cmd_routing_list(args: argparse.Namespace) -> None:
     """List routing rules (admin)."""
     with httpx.Client(base_url=_base_url(), headers=_headers(), timeout=30) as c:
@@ -462,6 +541,35 @@ def _build_parser() -> argparse.ArgumentParser:
     cusage.add_argument("client", help=_CLIENT_ARG_HELP)
     cusage.add_argument("--days", type=int, default=30, help="lookback (default 30)")
     cusage.set_defaults(func=cmd_clients_usage)
+
+    conns = subs.add_parser("connectors", help="manage MCP OAuth connectors")
+    nsubs = conns.add_subparsers(dest="action", required=True)
+
+    nlist = nsubs.add_parser("list", help="list OAuth connectors")
+    nlist.set_defaults(func=cmd_connectors_list)
+
+    ncreate = nsubs.add_parser(
+        "create", help="create a connector (client_id + secret shown once)"
+    )
+    ncreate.add_argument("name", help="connector name (e.g. dave-ios)")
+    ncreate.add_argument("--client", required=True, help=_CLIENT_ARG_HELP)
+    ncreate.add_argument(
+        "--redirect-uri",
+        action="append",
+        help="allowed redirect URI (repeatable; defaults to Claude's callback)",
+    )
+    ncreate.set_defaults(func=cmd_connectors_create)
+
+    nrotate = nsubs.add_parser("rotate-secret", help="mint a new client secret")
+    nrotate.add_argument("connector", help=_CONNECTOR_ARG_HELP)
+    nrotate.add_argument("-y", "--yes", action="store_true", help="skip confirmation")
+    nrotate.set_defaults(func=cmd_connectors_rotate_secret)
+
+    ntoggle = nsubs.add_parser(
+        "toggle", help="flip a connector's active flag (revokes its tokens if disabled)"
+    )
+    ntoggle.add_argument("connector", help=_CONNECTOR_ARG_HELP)
+    ntoggle.set_defaults(func=cmd_connectors_toggle)
 
     return p
 

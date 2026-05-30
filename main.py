@@ -6,7 +6,18 @@ from fastapi.staticfiles import StaticFiles
 
 from lifespan import lifespan
 from mcp_server import build_mcp_app
-from routes import clients, health, jobs, metrics_json, metrics_prom, oauth, prompts, tts, ui
+from routes import (
+    clients,
+    connectors,
+    health,
+    jobs,
+    metrics_json,
+    metrics_prom,
+    oauth,
+    prompts,
+    tts,
+    ui,
+)
 from routes import eval as eval_route
 from routes import models as models_route
 from routes import routing as routing_route
@@ -24,6 +35,7 @@ app.mount("/static", StaticFiles(directory=str(_static_dir)), name="static")
 
 app.include_router(health.router)
 app.include_router(clients.router)
+app.include_router(connectors.router)
 app.include_router(jobs.router)
 app.include_router(models_route.router)
 app.include_router(routing_route.router)
