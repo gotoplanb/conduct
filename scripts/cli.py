@@ -253,6 +253,34 @@ def cmd_jobs_get(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_jobs_shadows(args: argparse.Namespace) -> int:
+    """Print the eval shadows for a parent job — side-by-side responses with
+    per-shadow latency and cost. Useful for A/B comparing models on a task."""
+    import textwrap  # noqa: PLC0415
+
+    with httpx.Client(base_url=_base_url(), headers=_headers(), timeout=30) as c:
+        r = c.get(f"/jobs/{args.job_id}/shadows")
+        if r.status_code == 404:
+            print("job not found", file=sys.stderr)
+            return 1
+        r.raise_for_status()
+        data = r.json()
+    rows = data.get("shadows", [])
+    print(f"parent: {data['parent_job_id']}  shadows: {len(rows)}")
+    if not rows:
+        return 0
+    for s in rows:
+        cost = f"${s['cost_usd']}" if s.get("cost_usd") else "$0"
+        lat = f"{s['latency_ms']}ms" if s.get("latency_ms") is not None else "—"
+        print(f"\n--- {s['model']:<22} [{s['status']:<8}] {lat:<8} {cost}")
+        if s.get("error"):
+            print(f"    ERROR: {s['error']}")
+        elif s.get("response"):
+            print(textwrap.fill(s["response"].strip(), width=78,
+                                initial_indent="    ", subsequent_indent="    "))
+    return 0
+
+
 def _resolve_client(c: httpx.Client, name_or_id: str) -> dict:
     """Look up a client by name or UUID via the admin list. The admin API uses
     UUIDs everywhere, but operators think in names, so the CLI does the
@@ -720,6 +748,12 @@ def _build_parser() -> argparse.ArgumentParser:
     jget = jsubs.add_parser("get", help="show a job's status + result by id")
     jget.add_argument("job_id")
     jget.set_defaults(func=cmd_jobs_get)
+
+    jshadows = jsubs.add_parser(
+        "shadows", help="show a job's eval shadows side-by-side"
+    )
+    jshadows.add_argument("job_id")
+    jshadows.set_defaults(func=cmd_jobs_shadows)
 
     routing = subs.add_parser("routing", help="inspect & edit routing rules")
     rsubs = routing.add_subparsers(dest="action", required=True)

@@ -23,6 +23,7 @@ from eval.scoring import EvalTokenError, mint_eval_token, redeem_eval_token, sco
 from models.client import ClientApp
 from models.job import Job
 from models.routing import RoutingRule
+from models.shadow import JobShadow
 from models.types import JobStatus, Sensitivity
 from prompt_loader import PromptNotFoundError
 from providers.base import ProviderError
@@ -413,6 +414,53 @@ async def get_job(
     if job is None or (principal is not None and job.client_app_id != principal.id):
         raise HTTPException(status.HTTP_404_NOT_FOUND, _JOB_NOT_FOUND)
     return JobOut.from_job(job)
+
+
+class ShadowOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    model: str
+    provider: str
+    status: str
+    response: str | None
+    error: str | None
+    tokens_in: int | None
+    tokens_out: int | None
+    cost_usd: Decimal | None
+    latency_ms: int | None
+    created_at: datetime
+    started_at: datetime | None
+    completed_at: datetime | None
+
+
+class ShadowsOut(BaseModel):
+    parent_job_id: UUID
+    shadows: list[ShadowOut]
+
+
+@router.get("/{job_id}/shadows")
+async def list_job_shadows(
+    job_id: UUID,
+    principal: Annotated[ClientApp | None, Depends(current_client_or_admin)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> ShadowsOut:
+    """List the eval shadows fanned out for a parent job. Admin sees any
+    parent's shadows; a client sees only its own."""
+    job = await session.get(Job, job_id)
+    if job is None or (principal is not None and job.client_app_id != principal.id):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, _JOB_NOT_FOUND)
+    rows = (
+        await session.scalars(
+            select(JobShadow)
+            .where(JobShadow.parent_job_id == job.id)
+            .order_by(JobShadow.created_at.asc())
+        )
+    ).all()
+    return ShadowsOut(
+        parent_job_id=job.id,
+        shadows=[ShadowOut.model_validate(s) for s in rows],
+    )
 
 
 class EvalLinkOut(BaseModel):

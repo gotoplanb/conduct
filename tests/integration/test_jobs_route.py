@@ -295,3 +295,76 @@ async def test_eval_link_owner_only(
         headers={"Authorization": f"Bearer {cloud_client[1]}"},
     )
     assert r.status_code == 404
+
+
+async def _seed_shadow(
+    db, *, parent_job_id, model, provider,
+    response="r", status=JobStatus.COMPLETE.value,
+):
+    from datetime import UTC, datetime
+    from decimal import Decimal
+
+    from models.shadow import JobShadow
+
+    s = JobShadow(
+        parent_job_id=parent_job_id,
+        model=model,
+        provider=provider,
+        status=status,
+        response=response,
+        tokens_in=10,
+        tokens_out=5,
+        cost_usd=Decimal("0.001"),
+        latency_ms=100,
+        completed_at=datetime.now(UTC),
+    )
+    db.add(s)
+    await db.commit()
+    await db.refresh(s)
+    return s
+
+
+async def test_list_shadows_returns_all_for_owner(
+    client, db_session, seeded_client, task_type
+) -> None:
+    job = await _seed_job(db_session, client_id=seeded_client[0].id, task_type=task_type)
+    await _seed_shadow(db_session, parent_job_id=job.id, model="gemma4:e4b", provider="ollama")
+    await _seed_shadow(
+        db_session, parent_job_id=job.id, model="claude-haiku-4-5", provider="anthropic"
+    )
+    r = await client.get(
+        f"/jobs/{job.id}/shadows",
+        headers={"Authorization": f"Bearer {seeded_client[1]}"},
+    )
+    assert r.status_code == 200
+    out = r.json()
+    assert out["parent_job_id"] == str(job.id)
+    models = sorted(s["model"] for s in out["shadows"])
+    assert models == ["claude-haiku-4-5", "gemma4:e4b"]
+
+
+async def test_list_shadows_non_owner_is_404(
+    client, db_session, seeded_client, cloud_client, task_type
+) -> None:
+    job = await _seed_job(db_session, client_id=seeded_client[0].id, task_type=task_type)
+    await _seed_shadow(db_session, parent_job_id=job.id, model="x", provider="ollama")
+    r = await client.get(
+        f"/jobs/{job.id}/shadows",
+        headers={"Authorization": f"Bearer {cloud_client[1]}"},
+    )
+    assert r.status_code == 404
+
+
+async def test_list_shadows_admin_sees_any_job(
+    client, admin_headers, db_session, seeded_client, task_type
+) -> None:
+    job = await _seed_job(db_session, client_id=seeded_client[0].id, task_type=task_type)
+    await _seed_shadow(db_session, parent_job_id=job.id, model="x", provider="ollama")
+    r = await client.get(f"/jobs/{job.id}/shadows", headers=admin_headers)
+    assert r.status_code == 200
+    assert len(r.json()["shadows"]) == 1
+
+
+async def test_list_shadows_unknown_job_is_404(client, admin_headers) -> None:
+    r = await client.get(f"/jobs/{uuid4()}/shadows", headers=admin_headers)
+    assert r.status_code == 404
