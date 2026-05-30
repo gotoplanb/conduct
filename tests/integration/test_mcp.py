@@ -19,6 +19,7 @@ from mcp_server import (
     create_job,
     get_job,
     list_jobs,
+    list_shadows,
     list_task_types,
     submit_eval,
 )
@@ -152,6 +153,65 @@ async def test_get_job_other_client_is_hidden(
 async def test_get_job_bad_uuid(seeded_client, mcp_sessionmaker) -> None:
     with principal(seeded_client[0]), pytest.raises(ValueError, match="UUID"):
         await get_job("not-a-uuid")
+
+
+async def _add_shadow(db, *, parent_job_id, model, provider="ollama") -> JobShadow:
+    from decimal import Decimal as _Decimal
+
+    s = JobShadow(
+        parent_job_id=parent_job_id,
+        model=model,
+        provider=provider,
+        status=JobStatus.COMPLETE.value,
+        response=f"resp-{model}",
+        tokens_in=10,
+        tokens_out=5,
+        cost_usd=_Decimal("0.001"),
+        latency_ms=100,
+        completed_at=datetime.now(UTC),
+    )
+    db.add(s)
+    await db.commit()
+    await db.refresh(s)
+    return s
+
+
+async def test_list_shadows_returns_all_for_owner(
+    db_session, seeded_client, task_type, mcp_sessionmaker
+) -> None:
+    job = await _add_job(db_session, client_id=seeded_client[0].id, task_type=task_type)
+    await _add_shadow(db_session, parent_job_id=job.id, model="gemma4:e4b")
+    await _add_shadow(
+        db_session, parent_job_id=job.id, model="claude-haiku-4-5", provider="anthropic"
+    )
+    with principal(seeded_client[0]):
+        out = await list_shadows(str(job.id))
+    assert out["parent_job_id"] == str(job.id)
+    models = sorted(s["model"] for s in out["shadows"])
+    assert models == ["claude-haiku-4-5", "gemma4:e4b"]
+    haiku = next(s for s in out["shadows"] if s["model"] == "claude-haiku-4-5")
+    assert haiku["provider"] == "anthropic"
+    assert haiku["response"] == "resp-claude-haiku-4-5"
+    assert haiku["cost_usd"] == 0.001
+
+
+async def test_list_shadows_other_client_hidden(
+    db_session, seeded_client, task_type, mcp_sessionmaker
+) -> None:
+    other = ClientApp(name=f"other-{uuid4().hex[:6]}", api_key_hash=uuid4().hex)
+    db_session.add(other)
+    await db_session.commit()
+    await db_session.refresh(other)
+    job = await _add_job(db_session, client_id=other.id, task_type=task_type)
+    await _add_shadow(db_session, parent_job_id=job.id, model="gemma4:e4b")
+
+    with principal(seeded_client[0]), pytest.raises(ValueError, match="no job"):
+        await list_shadows(str(job.id))
+
+
+async def test_list_shadows_bad_uuid(seeded_client, mcp_sessionmaker) -> None:
+    with principal(seeded_client[0]), pytest.raises(ValueError, match="UUID"):
+        await list_shadows("not-a-uuid")
 
 
 async def test_create_job_enqueues(

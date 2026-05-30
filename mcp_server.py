@@ -29,6 +29,7 @@ from eval.shadow_runner import enqueue_shadows_for_parent
 from models.client import ClientApp
 from models.job import Job
 from models.routing import RoutingRule
+from models.shadow import JobShadow
 from models.types import JobStatus, Sensitivity
 from oauth_provider import resolve_access_token
 from prompt_loader import PromptNotFoundError
@@ -48,6 +49,9 @@ _principal: contextvars.ContextVar[dict | None] = contextvars.ContextVar(
 # eligible jobs run inline in this process. None until the lifespan sets it
 # (and in tests unless explicitly provided).
 _provider_registry: ProviderRegistry | None = None
+
+_BAD_JOB_UUID = "job_id is not a valid UUID"
+_NO_JOB_FOR_ID = "no job with that id"
 
 
 def set_provider_registry(registry: ProviderRegistry) -> None:
@@ -164,12 +168,58 @@ async def get_job(job_id: str) -> dict[str, Any]:
     try:
         target = UUID(job_id)
     except ValueError as e:
-        raise ValueError("job_id is not a valid UUID") from e
+        raise ValueError(_BAD_JOB_UUID) from e
     async with SessionLocal() as session:
         job = await session.get(Job, target)
         if job is None or job.client_app_id != client_app_id:
-            raise ValueError("no job with that id")
+            raise ValueError(_NO_JOB_FOR_ID)
         return _job_detail(job)
+
+
+@mcp.tool()
+async def list_shadows(job_id: str) -> dict[str, Any]:
+    """Get the eval shadows for one of your jobs — the side-by-side responses
+    from candidate models the routing rule sampled in parallel with the
+    primary. Each shadow has its own `model`, `response`, `latency_ms`,
+    `cost_usd`, and `status`. Useful for comparing models on the same input
+    before calling submit_eval on the parent job."""
+    client_app_id = _client_app_id()
+    try:
+        target = UUID(job_id)
+    except ValueError as e:
+        raise ValueError(_BAD_JOB_UUID) from e
+    async with SessionLocal() as session:
+        job = await session.get(Job, target)
+        if job is None or job.client_app_id != client_app_id:
+            raise ValueError(_NO_JOB_FOR_ID)
+        rows = (
+            await session.scalars(
+                select(JobShadow)
+                .where(JobShadow.parent_job_id == job.id)
+                .order_by(JobShadow.created_at.asc())
+            )
+        ).all()
+        return {
+            "parent_job_id": str(job.id),
+            "shadows": [
+                {
+                    "shadow_id": str(s.id),
+                    "model": s.model,
+                    "provider": s.provider,
+                    "status": s.status,
+                    "response": s.response or None,
+                    "error": s.error or None,
+                    "tokens_in": s.tokens_in,
+                    "tokens_out": s.tokens_out,
+                    "cost_usd": (
+                        float(s.cost_usd) if isinstance(s.cost_usd, Decimal) else s.cost_usd
+                    ),
+                    "latency_ms": s.latency_ms,
+                    "completed_at": s.completed_at.isoformat() if s.completed_at else None,
+                }
+                for s in rows
+            ],
+        }
 
 
 @mcp.tool()
@@ -279,14 +329,14 @@ async def submit_eval(job_id: str, score: int, note: str = "") -> dict[str, Any]
     try:
         target = UUID(job_id)
     except ValueError as e:
-        raise ValueError("job_id is not a valid UUID") from e
+        raise ValueError(_BAD_JOB_UUID) from e
 
     principal = _principal.get() or {}
     reviewer = principal.get("client_app_name", "mcp")
     async with SessionLocal() as session:
         job = await session.get(Job, target)
         if job is None or job.client_app_id != client_app_id:
-            raise ValueError("no job with that id")
+            raise ValueError(_NO_JOB_FOR_ID)
         await apply_score(
             session, target, score=score, reviewer=reviewer, note=note or None, via="mcp"
         )
