@@ -178,6 +178,17 @@ prompts in order — Claude will pick the right tool on its own:
    funniest")`. The score lands on the parent Job and rolls up into the
    per-task quality stats at `/ui/tasks/dad_joke`.
 
+5. **Score the individual shadows** *(optional but where the real eval value
+   lives).*
+   > "Give Sonnet a 5, Haiku a 4, and both gemma4 attempts a 2 — Sonnet's
+   > punchline was the only one I actually laughed at."
+
+   Claude calls `submit_eval` once per shadow, passing each shadow's
+   `shadow_id` (from step 3) as the `job_id` argument. The server figures
+   out that those UUIDs are shadows and stores the scores on the shadow
+   rows, scoped to your client. Per-model averages then show up at
+   `/ui/tasks/dad_joke` for the model-comparison view.
+
 That's it — full A/B + scoring loop from the phone, with cloud costs
 attributed to a single per-client Anthropic key you can budget independently
 of any other tenant.

@@ -319,10 +319,20 @@ async def create_job(
 
 @mcp.tool()
 async def submit_eval(job_id: str, score: int, note: str = "") -> dict[str, Any]:
-    """Record a 1-5 quality score for one of your completed jobs. Interpret any
-    freeform human feedback ("that was hilarious", "too generic") into a score
-    yourself before calling: 1=very poor, 2=poor, 3=acceptable, 4=good,
-    5=excellent. `note` is an optional short rationale."""
+    """Record a 1-5 quality score for one of your jobs OR one of its eval
+    shadows. `job_id` accepts either a parent job UUID (from `create_job` /
+    `list_jobs`) or a shadow UUID (from `list_shadows[*].shadow_id`) — the
+    server figures out which one it is and you don't need to disambiguate.
+
+    Interpret any freeform human feedback ("that was hilarious", "too
+    generic") into a score yourself before calling: 1=very poor, 2=poor,
+    3=acceptable, 4=good, 5=excellent. `note` is an optional short
+    rationale.
+
+    Authorization for shadow scores follows the parent job's ownership —
+    same model as `list_shadows`. The response's `kind` field tells you
+    whether you scored a `job` or a `shadow`, so iOS clients can confirm
+    the right target landed."""
     client_app_id = _client_app_id()
     if not 1 <= score <= 5:
         raise ValueError("score must be an integer 1-5")
@@ -334,13 +344,26 @@ async def submit_eval(job_id: str, score: int, note: str = "") -> dict[str, Any]
     principal = _principal.get() or {}
     reviewer = principal.get("client_app_name", "mcp")
     async with SessionLocal() as session:
+        # UUIDs don't collide across the two tables, so we can probe in
+        # order — Job first (the common case), then JobShadow.
         job = await session.get(Job, target)
-        if job is None or job.client_app_id != client_app_id:
-            raise ValueError(_NO_JOB_FOR_ID)
+        if job is not None:
+            if job.client_app_id != client_app_id:
+                raise ValueError(_NO_JOB_FOR_ID)
+            kind = "job"
+        else:
+            shadow = await session.get(JobShadow, target)
+            if shadow is None:
+                raise ValueError(_NO_JOB_FOR_ID)
+            parent = await session.get(Job, shadow.parent_job_id)
+            if parent is None or parent.client_app_id != client_app_id:
+                raise ValueError(_NO_JOB_FOR_ID)
+            kind = "shadow"
+
         await apply_score(
             session, target, score=score, reviewer=reviewer, note=note or None, via="mcp"
         )
-    return {"job_id": job_id, "score": score, "recorded": True}
+    return {"job_id": job_id, "kind": kind, "score": score, "recorded": True}
 
 
 # --- OAuth-gated ASGI wrapper ---

@@ -252,6 +252,7 @@ async def test_submit_eval_records_score(
     with principal(seeded_client[0]):
         out = await submit_eval(str(job.id), 5, "hilarious")
     assert out["recorded"] is True
+    assert out["kind"] == "job"
     await db_session.refresh(job)
     scores = job.job_metadata["quality_scores"]
     assert scores[-1]["score"] == 5
@@ -273,6 +274,48 @@ async def test_submit_eval_other_client_hidden(
     job = await _add_job(db_session, client_id=other.id, task_type=task_type)
     with principal(seeded_client[0]), pytest.raises(ValueError, match="no job"):
         await submit_eval(str(job.id), 4)
+
+
+async def test_submit_eval_on_shadow_records_score(
+    db_session, seeded_client, task_type, mcp_sessionmaker
+) -> None:
+    """Owner can score one of their own job's shadows by shadow_id."""
+    job = await _add_job(db_session, client_id=seeded_client[0].id, task_type=task_type)
+    shadow = await _add_shadow(
+        db_session, parent_job_id=job.id, model="claude-sonnet-4-6", provider="anthropic"
+    )
+    with principal(seeded_client[0]):
+        out = await submit_eval(str(shadow.id), 4, "sonnet was the funniest")
+    assert out["kind"] == "shadow"
+    assert out["recorded"] is True
+    await db_session.refresh(shadow)
+    scores = shadow.shadow_metadata["quality_scores"]
+    assert scores[-1]["score"] == 4
+    assert scores[-1]["note"] == "sonnet was the funniest"
+    assert scores[-1]["via"] == "mcp"
+
+
+async def test_submit_eval_on_shadow_of_other_clients_job_hidden(
+    db_session, seeded_client, task_type, mcp_sessionmaker
+) -> None:
+    """A shadow's auth piggybacks on its parent: scoring someone else's
+    shadow looks just like an unknown UUID."""
+    other = ClientApp(name=f"other-{uuid4().hex[:6]}", api_key_hash=uuid4().hex)
+    db_session.add(other)
+    await db_session.commit()
+    await db_session.refresh(other)
+    other_job = await _add_job(db_session, client_id=other.id, task_type=task_type)
+    other_shadow = await _add_shadow(
+        db_session, parent_job_id=other_job.id, model="gemma4:e4b"
+    )
+    with principal(seeded_client[0]), pytest.raises(ValueError, match="no job"):
+        await submit_eval(str(other_shadow.id), 5)
+
+
+async def test_submit_eval_unknown_uuid(seeded_client, mcp_sessionmaker) -> None:
+    """A UUID that matches neither a job nor a shadow → no job error."""
+    with principal(seeded_client[0]), pytest.raises(ValueError, match="no job"):
+        await submit_eval(str(uuid4()), 3)
 
 
 @pytest.fixture

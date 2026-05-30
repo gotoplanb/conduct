@@ -15,7 +15,7 @@ Six tools, all scoped to the connector's bound client app:
 | `get_job` | A single job's status and result (response, tokens, cost) |
 | `create_job` | Create a job — fast tasks run inline, heavier ones return pending; poll `get_job` for those |
 | `list_shadows` | The side-by-side responses from eval shadows on a parent job — for in-app A/B compare before scoring |
-| `submit_eval` | Record a 1-5 quality score (+ optional note) on one of your completed jobs |
+| `submit_eval` | Record a 1-5 quality score (+ optional note) on a parent job **or** an individual shadow — accepts either UUID |
 
 For a guided walkthrough that uses every one of these tools in a single iOS
 chat (request a dad joke → see all model attempts → score the best one), see
