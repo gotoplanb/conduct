@@ -6,14 +6,14 @@
 
 anthropic:
   claude-haiku-4-5:
-    input_per_1m_usd: 99.00
+    input_per_1m_usd: 1.00
     output_per_1m_usd: 5.00
   claude-sonnet-4-6:
     input_per_1m_usd: 3.00
     output_per_1m_usd: 15.00
   claude-opus-4-5:
-    input_per_1m_usd: 15.00
-    output_per_1m_usd: 75.00
+    input_per_1m_usd: 5.00
+    output_per_1m_usd: 25.00
 
 # AWS Bedrock — Claude 4.5/4.6 IDs. Verified against
 # https://platform.claude.com/docs/en/about-claude/pricing on 2026-06-02.
