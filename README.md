@@ -21,6 +21,8 @@ For fast-iteration dev (uvicorn `--reload`), use `make up-infra` (postgres + red
 
 **Want to drive Conduct from your phone?** [docs/quickstart-ios-eval.md](docs/quickstart-ios-eval.md) walks through firing a dad joke from the Claude iOS app, pulling every model's attempt side-by-side, and scoring the best one — without leaving the chat.
 
+**Wiring up cloud providers?** [docs/mcp-connector.md](docs/mcp-connector.md) covers the OAuth + tool surface. Per-client Anthropic API keys are described in the iOS quickstart above; AWS Bedrock setup (IAM, model IDs, pricing) lives in [docs/bedrock.md](docs/bedrock.md).
+
 ## What runs where
 
 ```

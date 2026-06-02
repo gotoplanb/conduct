@@ -107,6 +107,18 @@ class JobOut(BaseModel):
         )
 
 
+#: Cloud providers Conduct knows how to route to. Each one is gated per-client
+#: through the registry; the routing engine consults the resulting set when
+#: deciding whether a cloud model is reachable for the requesting client.
+_CLOUD_PROVIDERS = ("anthropic", "bedrock")
+
+
+def _cloud_providers_for(client: ClientApp, providers: ProviderRegistry) -> frozenset[str]:
+    return frozenset(
+        name for name in _CLOUD_PROVIDERS if providers.has_for_client(client, name)
+    )
+
+
 def _should_enqueue(body: JobCreateIn, decision: RoutingDecision) -> bool:
     """Async path is taken when the client asked for it OR when the target is
     local non-resident. The worker is the sole owner of Ollama inference for
@@ -141,7 +153,7 @@ def _resolve_decision(
             rule=rule,
             default_model=settings.default_model,
             default_sensitive_model=settings.default_sensitive_model,
-            cloud_available=providers.has_for_client(client, "anthropic"),
+            available_cloud_providers=_cloud_providers_for(client, providers),
         )
     except SensitivityViolation as e:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e)) from e

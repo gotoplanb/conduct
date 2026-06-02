@@ -53,6 +53,20 @@ _provider_registry: ProviderRegistry | None = None
 _BAD_JOB_UUID = "job_id is not a valid UUID"
 _NO_JOB_FOR_ID = "no job with that id"
 
+#: Same list as routes/jobs._CLOUD_PROVIDERS — duplicated here to keep mcp_server
+#: importable without pulling in the FastAPI route module.
+_CLOUD_PROVIDERS = ("anthropic", "bedrock")
+
+
+def _cloud_providers_for_principal(client: ClientApp) -> frozenset[str]:
+    if _provider_registry is None:
+        return frozenset()
+    return frozenset(
+        name
+        for name in _CLOUD_PROVIDERS
+        if _provider_registry.has_for_client(client, name)
+    )
+
 
 def set_provider_registry(registry: ProviderRegistry) -> None:
     global _provider_registry
@@ -260,10 +274,7 @@ async def create_job(
                 rule=rule,
                 default_model=settings.default_model,
                 default_sensitive_model=settings.default_sensitive_model,
-                cloud_available=(
-                    _provider_registry is not None
-                    and _provider_registry.has_for_client(client, "anthropic")
-                ),
+                available_cloud_providers=_cloud_providers_for_principal(client),
             )
         except SensitivityViolation as e:
             raise ValueError(str(e)) from e

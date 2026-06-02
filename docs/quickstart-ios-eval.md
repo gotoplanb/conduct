@@ -85,6 +85,15 @@ Verify with `conduct clients list` — the row should show a recent
 > treats a client without an Anthropic key as "cloud unavailable" and falls
 > back to local only.
 
+> **AWS Bedrock variant.** Same flow with one swap: instead of (or in
+> addition to) a direct-API Anthropic key, set per-client AWS creds and
+> route to a Bedrock model id (`anthropic.claude-3-5-sonnet-20241022-v2:0`
+> or the regional inference profile form like `us.anthropic.claude-...`).
+> See [bedrock.md](bedrock.md) for the IAM policy, model-access flow, and
+> pricing config. Routing supports mixing direct-API and Bedrock-hosted
+> Anthropic in the same `eval_shadow_models` list, so you can A/B them
+> head-to-head on the same dad joke.
+
 ## Step 4 — Confirm the dad_joke rule includes cloud shadows
 
 `make seed` ships a `dad_joke` rule with a small-class local primary plus

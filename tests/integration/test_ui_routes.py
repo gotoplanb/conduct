@@ -314,3 +314,58 @@ async def test_ui_logout_clears_cookie(admin_client) -> None:
     r = await admin_client.post("/ui/logout", follow_redirects=False)
     assert r.status_code == 303
     assert r.headers["location"] == "/ui/login"
+
+
+async def test_ui_set_bedrock_creds_flashes_and_persists(
+    admin_client, seeded_client, secrets_key, db_session
+) -> None:
+    import json
+
+    from secrets_box import decrypt
+
+    row, _ = seeded_client
+    r = await admin_client.post(
+        f"/ui/clients/{row.id}/bedrock-creds",
+        data={
+            "access_key_id": "AKIA-ui",
+            "secret_access_key": "shh",
+            "region": "us-east-1",
+        },
+    )
+    assert r.status_code == 200
+    assert f"Bedrock creds set for {row.name}" in r.text
+    # No plaintext in the page
+    assert "shh" not in r.text
+    assert "AKIA-ui" not in r.text
+    await db_session.refresh(row)
+    assert row.bedrock_creds_encrypted is not None
+    creds = json.loads(decrypt(row.bedrock_creds_encrypted))
+    assert creds["access_key_id"] == "AKIA-ui"
+    assert creds["region"] == "us-east-1"
+
+
+async def test_ui_set_bedrock_creds_missing_field_is_400(
+    admin_client, seeded_client, secrets_key
+) -> None:
+    row, _ = seeded_client
+    r = await admin_client.post(
+        f"/ui/clients/{row.id}/bedrock-creds",
+        data={"access_key_id": "x", "secret_access_key": "y", "region": "   "},
+    )
+    assert r.status_code == 400
+    assert "required" in r.text.lower()
+
+
+async def test_ui_clear_bedrock_creds_nulls_columns(
+    admin_client, seeded_client, secrets_key, db_session
+) -> None:
+    row, _ = seeded_client
+    await admin_client.post(
+        f"/ui/clients/{row.id}/bedrock-creds",
+        data={"access_key_id": "x", "secret_access_key": "y", "region": "us-east-1"},
+    )
+    r = await admin_client.post(f"/ui/clients/{row.id}/bedrock-creds/clear")
+    assert r.status_code == 200
+    assert f"Bedrock creds cleared for {row.name}" in r.text
+    await db_session.refresh(row)
+    assert row.bedrock_creds_encrypted is None

@@ -255,3 +255,109 @@ async def test_list_clients_includes_anthropic_key_set_at(
     r = await client.get("/clients", headers=admin_headers)
     me = next(c for c in r.json() if c["id"] == str(row.id))
     assert me["anthropic_api_key_set_at"] is not None
+
+
+async def test_set_bedrock_creds_persists_encrypted(
+    client, admin_headers, seeded_client, secrets_key, db_session: AsyncSession
+) -> None:
+    import json
+
+    from secrets_box import decrypt
+
+    row, _ = seeded_client
+    r = await client.put(
+        f"/clients/{row.id}/bedrock-creds",
+        json={
+            "access_key_id": "AKIA-test",
+            "secret_access_key": "sekrit",
+            "region": "us-west-2",
+        },
+        headers=admin_headers,
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["bedrock_creds_set_at"] is not None
+    # Plaintext never echoed
+    assert "secret_access_key" not in r.text
+    assert "sekrit" not in r.text
+
+    await db_session.refresh(row)
+    assert row.bedrock_creds_encrypted is not None
+    creds = json.loads(decrypt(row.bedrock_creds_encrypted))
+    assert creds == {
+        "access_key_id": "AKIA-test",
+        "secret_access_key": "sekrit",
+        "region": "us-west-2",
+    }
+
+
+async def test_clear_bedrock_creds_nulls_columns(
+    client, admin_headers, seeded_client, secrets_key, db_session: AsyncSession
+) -> None:
+    row, _ = seeded_client
+    await client.put(
+        f"/clients/{row.id}/bedrock-creds",
+        json={"access_key_id": "x", "secret_access_key": "y", "region": "us-east-1"},
+        headers=admin_headers,
+    )
+    r = await client.delete(
+        f"/clients/{row.id}/bedrock-creds", headers=admin_headers
+    )
+    assert r.status_code == 200
+    assert r.json()["bedrock_creds_set_at"] is None
+    await db_session.refresh(row)
+    assert row.bedrock_creds_encrypted is None
+    assert row.bedrock_creds_set_at is None
+
+
+async def test_set_bedrock_creds_no_master_key_is_503(
+    client, admin_headers, seeded_client, monkeypatch
+) -> None:
+    import secrets_box
+
+    monkeypatch.setenv("CONDUCT_SECRETS_KEY", "")
+    get_settings.cache_clear()
+    secrets_box._fernet.cache_clear()
+    row, _ = seeded_client
+    r = await client.put(
+        f"/clients/{row.id}/bedrock-creds",
+        json={"access_key_id": "x", "secret_access_key": "y", "region": "us-east-1"},
+        headers=admin_headers,
+    )
+    assert r.status_code == 503
+
+
+async def test_set_bedrock_creds_unauthenticated_is_403(
+    client, seeded_client
+) -> None:
+    row, _ = seeded_client
+    r = await client.put(
+        f"/clients/{row.id}/bedrock-creds",
+        json={"access_key_id": "x", "secret_access_key": "y", "region": "us-east-1"},
+    )
+    assert r.status_code == 403
+
+
+async def test_set_bedrock_creds_nonexistent_client_is_404(
+    client, admin_headers, secrets_key
+) -> None:
+    r = await client.put(
+        "/clients/00000000-0000-0000-0000-000000000000/bedrock-creds",
+        json={"access_key_id": "x", "secret_access_key": "y", "region": "us-east-1"},
+        headers=admin_headers,
+    )
+    assert r.status_code == 404
+
+
+async def test_list_clients_includes_bedrock_creds_set_at(
+    client, admin_headers, seeded_client, secrets_key
+) -> None:
+    row, _ = seeded_client
+    await client.put(
+        f"/clients/{row.id}/bedrock-creds",
+        json={"access_key_id": "x", "secret_access_key": "y", "region": "us-east-1"},
+        headers=admin_headers,
+    )
+    r = await client.get("/clients", headers=admin_headers)
+    me = next(c for c in r.json() if c["id"] == str(row.id))
+    assert me["bedrock_creds_set_at"] is not None

@@ -199,8 +199,9 @@ def test_max_tokens_default_when_no_rule() -> None:
 
 
 def test_no_anthropic_key_falls_back_to_local() -> None:
-    """When the client has no Anthropic key (cloud_available=False), a cloud
-    preferred model with a local fallback should promote the fallback."""
+    """When the client has no Anthropic key (available_cloud_providers is
+    empty), a cloud preferred model with a local fallback should promote
+    the fallback."""
     d = decide(
         sensitivity=Sensitivity.PUBLIC,
         model_requested=None,
@@ -208,7 +209,7 @@ def test_no_anthropic_key_falls_back_to_local() -> None:
         rule=_rule(preferred="claude-sonnet-4-5", fallback="llama3.3:70b"),
         default_model="llama3.3:70b",
         default_sensitive_model="llama3.3:70b",
-        cloud_available=False,
+        available_cloud_providers=frozenset(),
     )
     assert d.model == "llama3.3:70b"
     assert d.provider == "ollama"
@@ -224,7 +225,7 @@ def test_no_anthropic_key_blocks_explicit_cloud_override() -> None:
             rule=_rule(sensitivity=Sensitivity.PUBLIC),
             default_model="llama3.3:70b",
             default_sensitive_model="llama3.3:70b",
-            cloud_available=False,
+            available_cloud_providers=frozenset(),
         )
 
 
@@ -237,5 +238,54 @@ def test_no_anthropic_key_and_no_local_fallback_raises() -> None:
             rule=_rule(preferred="claude-sonnet-4-5", fallback=None),
             default_model="llama3.3:70b",
             default_sensitive_model="llama3.3:70b",
-            cloud_available=False,
+            available_cloud_providers=frozenset(),
         )
+
+
+def test_anthropic_available_does_not_imply_bedrock() -> None:
+    """A Bedrock model must NOT be routed-to just because the client has an
+    Anthropic key. Each cloud provider is gated independently."""
+    with pytest.raises(SensitivityViolation):
+        decide(
+            sensitivity=Sensitivity.PUBLIC,
+            model_requested="anthropic.claude-3-5-sonnet-20241022-v2:0",
+            allow_cloud_for_internal=True,
+            rule=_rule(sensitivity=Sensitivity.PUBLIC),
+            default_model="llama3.3:70b",
+            default_sensitive_model="llama3.3:70b",
+            available_cloud_providers=frozenset({"anthropic"}),
+        )
+
+
+def test_bedrock_available_routes_to_bedrock_model() -> None:
+    d = decide(
+        sensitivity=Sensitivity.PUBLIC,
+        model_requested="anthropic.claude-3-5-sonnet-20241022-v2:0",
+        allow_cloud_for_internal=True,
+        rule=_rule(sensitivity=Sensitivity.PUBLIC),
+        default_model="llama3.3:70b",
+        default_sensitive_model="llama3.3:70b",
+        available_cloud_providers=frozenset({"bedrock"}),
+    )
+    assert d.model == "anthropic.claude-3-5-sonnet-20241022-v2:0"
+    assert d.provider == "bedrock"
+
+
+def test_no_bedrock_creds_promotes_local_fallback() -> None:
+    """Bedrock primary + local fallback + no Bedrock available → promote
+    fallback. Same shape as the Anthropic-key equivalent."""
+    d = decide(
+        sensitivity=Sensitivity.PUBLIC,
+        model_requested=None,
+        allow_cloud_for_internal=True,
+        rule=_rule(
+            preferred="anthropic.claude-3-haiku-20240307-v1:0",
+            fallback="llama3.3:70b",
+        ),
+        default_model="llama3.3:70b",
+        default_sensitive_model="llama3.3:70b",
+        available_cloud_providers=frozenset({"anthropic"}),
+    )
+    assert d.model == "llama3.3:70b"
+    assert d.provider == "ollama"
+    assert "sensitivity-promoted-fallback" in d.reason

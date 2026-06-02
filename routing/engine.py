@@ -31,13 +31,14 @@ def _is_allowed(
     model: str,
     sensitivity: Sensitivity,
     allow_cloud_for_internal: bool,
-    cloud_available: bool = True,
+    available_cloud_providers: frozenset[str],
 ) -> bool:
     if not is_cloud(model):
         return True
-    if not cloud_available:
-        # Client has no Anthropic key (and no global fallback registered);
-        # treat cloud as unavailable for routing decisions.
+    if provider_for_model(model) not in available_cloud_providers:
+        # Client has no credentials for this cloud provider (e.g. Bedrock
+        # creds missing, or no Anthropic API key and no global fallback);
+        # treat the model as unavailable for routing decisions.
         return False
     if sensitivity == Sensitivity.CONFIDENTIAL:
         return False
@@ -51,11 +52,13 @@ def _explicit_override(
     effective: Sensitivity,
     allow_cloud_for_internal: bool,
     max_tokens: int,
-    cloud_available: bool = True,
+    available_cloud_providers: frozenset[str],
 ) -> RoutingDecision:
     """Build the decision when the caller specified a model directly. Raises
     SensitivityViolation if the requested model isn't allowed."""
-    if not _is_allowed(model_requested, effective, allow_cloud_for_internal, cloud_available):
+    if not _is_allowed(
+        model_requested, effective, allow_cloud_for_internal, available_cloud_providers
+    ):
         raise SensitivityViolation(
             f"model {model_requested} disallowed for sensitivity={effective.value}"
         )
@@ -93,7 +96,7 @@ def decide(
     rule: RoutingRule | None,
     default_model: str,
     default_sensitive_model: str,
-    cloud_available: bool = True,
+    available_cloud_providers: frozenset[str] = frozenset({"anthropic", "bedrock"}),
 ) -> RoutingDecision:
     # Rule sensitivity acts as a floor; clients can request stricter but not looser.
     rule_sensitivity = Sensitivity(rule.sensitivity) if rule else Sensitivity.INTERNAL
@@ -102,15 +105,18 @@ def decide(
 
     if model_requested:
         return _explicit_override(
-            model_requested, effective, allow_cloud_for_internal, max_tokens, cloud_available
+            model_requested, effective, allow_cloud_for_internal,
+            max_tokens, available_cloud_providers,
         )
 
     preferred, fallback, reason = _rule_preferred_and_fallback(
         rule, effective, default_model, default_sensitive_model
     )
-    preferred_ok = _is_allowed(preferred, effective, allow_cloud_for_internal, cloud_available)
+    preferred_ok = _is_allowed(
+        preferred, effective, allow_cloud_for_internal, available_cloud_providers
+    )
     fallback_ok = fallback is not None and _is_allowed(
-        fallback, effective, allow_cloud_for_internal, cloud_available
+        fallback, effective, allow_cloud_for_internal, available_cloud_providers
     )
 
     if not preferred_ok and not fallback_ok:

@@ -434,6 +434,70 @@ def cmd_clients_clear_anthropic_key(args: argparse.Namespace) -> int:
     return 0
 
 
+_BEDROCK_CREDS_TEMPLATE = (
+    "# Paste this client's AWS Bedrock credentials below. Save to upload them.\n"
+    "# Lines starting with # are ignored. Leaving any field blank aborts.\n"
+    "# All three values are required.\n"
+    "access_key_id: \n"
+    "secret_access_key: \n"
+    "region: \n"
+)
+
+
+def cmd_clients_set_bedrock_creds(args: argparse.Namespace) -> int:
+    """Open $EDITOR with a YAML template; on save, PUT the parsed contents as
+    the client's Bedrock creds (access key id + secret + region). The blob is
+    encrypted at rest with CONDUCT_SECRETS_KEY; nothing is echoed back."""
+    import yaml  # noqa: PLC0415
+
+    with httpx.Client(base_url=_base_url(), headers=_headers(), timeout=30) as c:
+        client = _resolve_client(c, args.client)
+        edited = _open_in_editor(_BEDROCK_CREDS_TEMPLATE, suffix=".yaml")
+        if edited is None:
+            return 1
+        body_text = "\n".join(
+            line for line in edited.splitlines() if not line.lstrip().startswith("#")
+        )
+        try:
+            parsed = yaml.safe_load(body_text) or {}
+        except yaml.YAMLError as e:
+            print(f"invalid YAML: {e}", file=sys.stderr)
+            return 1
+        if not isinstance(parsed, dict):
+            print("expected a mapping with access_key_id, secret_access_key, region",
+                  file=sys.stderr)
+            return 1
+        required = ("access_key_id", "secret_access_key", "region")
+        body = {k: (parsed.get(k) or "").strip() for k in required}
+        if not all(body.values()):
+            missing = [k for k in required if not body[k]]
+            print(f"aborting: missing required field(s): {', '.join(missing)}",
+                  file=sys.stderr)
+            return 1
+        r = c.put(f"/clients/{client['id']}/bedrock-creds", json=body)
+        r.raise_for_status()
+        out = r.json()
+    print(f"set bedrock creds for {out['name']} at {out['bedrock_creds_set_at']}")
+    return 0
+
+
+def cmd_clients_clear_bedrock_creds(args: argparse.Namespace) -> int:
+    with httpx.Client(base_url=_base_url(), headers=_headers(), timeout=30) as c:
+        client = _resolve_client(c, args.client)
+        if not args.yes:
+            answer = input(
+                f"Clear Bedrock creds for {client['name']}? "
+                "This client will lose access to all Bedrock models. [y/N] "
+            ).strip().lower()
+            if answer != "y":
+                print("aborted", file=sys.stderr)
+                return 1
+        r = c.delete(f"/clients/{client['id']}/bedrock-creds")
+        r.raise_for_status()
+    print(f"cleared bedrock creds for {client['name']}")
+    return 0
+
+
 def _resolve_connector(c: httpx.Client, name_or_id: str) -> dict:
     r = c.get(_CONNECTORS_PATH)
     r.raise_for_status()
@@ -817,6 +881,20 @@ def _build_parser() -> argparse.ArgumentParser:
     cclr_ak.add_argument("client", help=_CLIENT_ARG_HELP)
     cclr_ak.add_argument("-y", "--yes", action="store_true", help=_SKIP_CONFIRM_HELP)
     cclr_ak.set_defaults(func=cmd_clients_clear_anthropic_key)
+
+    cset_br = csubs.add_parser(
+        "set-bedrock-creds",
+        help="paste per-client AWS Bedrock creds via $EDITOR (YAML template)",
+    )
+    cset_br.add_argument("client", help=_CLIENT_ARG_HELP)
+    cset_br.set_defaults(func=cmd_clients_set_bedrock_creds)
+
+    cclr_br = csubs.add_parser(
+        "clear-bedrock-creds", help="forget a client's Bedrock creds"
+    )
+    cclr_br.add_argument("client", help=_CLIENT_ARG_HELP)
+    cclr_br.add_argument("-y", "--yes", action="store_true", help=_SKIP_CONFIRM_HELP)
+    cclr_br.set_defaults(func=cmd_clients_clear_bedrock_creds)
 
     conns = subs.add_parser("connectors", help="manage MCP OAuth connectors")
     nsubs = conns.add_subparsers(dest="action", required=True)

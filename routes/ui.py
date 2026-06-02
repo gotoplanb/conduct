@@ -322,6 +322,8 @@ async def _load_clients(session: AsyncSession) -> list[dict]:
             "key_created_rel": _humanize_age(c.key_created_at),
             "anthropic_api_key_set_at": c.anthropic_api_key_set_at,
             "has_anthropic_key": c.anthropic_api_key_encrypted is not None,
+            "bedrock_creds_set_at": c.bedrock_creds_set_at,
+            "has_bedrock_creds": c.bedrock_creds_encrypted is not None,
         }
         for c in rows
     ]
@@ -549,6 +551,83 @@ async def clients_clear_anthropic_key(
     await session.commit()
     return await _render_clients(
         request, session, flash=f"Anthropic key cleared for {client.name}."
+    )
+
+
+@router.post(
+    "/clients/{client_id}/bedrock-creds",
+    response_class=HTMLResponse,
+    dependencies=[Depends(admin_session)],
+)
+async def clients_set_bedrock_creds(
+    request: Request,
+    client_id: UUID,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    access_key_id: Annotated[str, Form()],
+    secret_access_key: Annotated[str, Form()],
+    region: Annotated[str, Form()],
+) -> HTMLResponse:
+    import json as _json  # noqa: PLC0415
+
+    client = await session.get(ClientApp, client_id)
+    if client is None:
+        return await _render_clients(
+            request, session, error=_CLIENT_NOT_FOUND,
+            status_code=status.HTTP_404_NOT_FOUND,
+        )
+    access_key_id = access_key_id.strip()
+    secret_access_key = secret_access_key.strip()
+    region = region.strip()
+    if not (access_key_id and secret_access_key and region):
+        return await _render_clients(
+            request, session,
+            error="Access key id, secret access key, and region are all required.",
+            status_code=status.HTTP_400_BAD_REQUEST,
+        )
+    blob = _json.dumps(
+        {
+            "access_key_id": access_key_id,
+            "secret_access_key": secret_access_key,
+            "region": region,
+        }
+    )
+    try:
+        client.bedrock_creds_encrypted = encrypt(blob)
+    except SecretsKeyMissing:
+        return await _render_clients(
+            request,
+            session,
+            error="CONDUCT_SECRETS_KEY is not configured — cannot store the creds.",
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        )
+    client.bedrock_creds_set_at = datetime.now(UTC)
+    await session.commit()
+    return await _render_clients(
+        request, session, flash=f"Bedrock creds set for {client.name}."
+    )
+
+
+@router.post(
+    "/clients/{client_id}/bedrock-creds/clear",
+    response_class=HTMLResponse,
+    dependencies=[Depends(admin_session)],
+)
+async def clients_clear_bedrock_creds(
+    request: Request,
+    client_id: UUID,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> HTMLResponse:
+    client = await session.get(ClientApp, client_id)
+    if client is None:
+        return await _render_clients(
+            request, session, error=_CLIENT_NOT_FOUND,
+            status_code=status.HTTP_404_NOT_FOUND,
+        )
+    client.bedrock_creds_encrypted = None
+    client.bedrock_creds_set_at = None
+    await session.commit()
+    return await _render_clients(
+        request, session, flash=f"Bedrock creds cleared for {client.name}."
     )
 
 

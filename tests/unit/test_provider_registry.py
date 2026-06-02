@@ -23,6 +23,7 @@ class _NullProvider(BaseProvider):
 @dataclass
 class _StubClient:
     anthropic_api_key_encrypted: str | None = None
+    bedrock_creds_encrypted: str | None = None
 
 
 @pytest.fixture
@@ -92,3 +93,44 @@ def test_get_for_client_falls_through_for_non_anthropic_provider() -> None:
     client = _StubClient(anthropic_api_key_encrypted="ignored-for-ollama")
     provider = reg.get_for_client(client, "ollama")
     assert isinstance(provider, _Ollama)
+
+
+def test_get_for_client_bedrock_uses_per_client_creds(secrets_key) -> None:
+    """When the client has encrypted Bedrock creds, the registry should
+    build a BedrockProvider with the decrypted access-key / secret / region."""
+    import json
+
+    reg = ProviderRegistry()
+    blob = secrets_box.encrypt(
+        json.dumps(
+            {
+                "access_key_id": "AKIA-test",
+                "secret_access_key": "sekrit",
+                "region": "us-west-2",
+            }
+        )
+    )
+    client = _StubClient(bedrock_creds_encrypted=blob)
+    provider = reg.get_for_client(client, "bedrock")
+
+    from providers.bedrock import BedrockProvider
+
+    assert isinstance(provider, BedrockProvider)
+    assert provider._access_key_id == "AKIA-test"
+    assert provider._secret_access_key == "sekrit"
+    assert provider._region == "us-west-2"
+
+
+def test_get_for_client_bedrock_raises_when_no_creds() -> None:
+    """No per-client Bedrock creds → KeyError. By design there is no host
+    fallback for Bedrock (strict tenant isolation)."""
+    reg = ProviderRegistry()
+    client = _StubClient(bedrock_creds_encrypted=None)
+    with pytest.raises(KeyError, match="Bedrock credentials"):
+        reg.get_for_client(client, "bedrock")
+
+
+def test_has_for_client_bedrock_true_only_with_creds() -> None:
+    reg = ProviderRegistry()
+    assert reg.has_for_client(_StubClient(bedrock_creds_encrypted=None), "bedrock") is False
+    assert reg.has_for_client(_StubClient(bedrock_creds_encrypted="blob"), "bedrock") is True

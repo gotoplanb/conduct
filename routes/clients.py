@@ -1,3 +1,4 @@
+import json
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from typing import Annotated
@@ -46,6 +47,7 @@ class ClientOut(BaseModel):
     created_at: datetime
     key_created_at: datetime
     anthropic_api_key_set_at: datetime | None = None
+    bedrock_creds_set_at: datetime | None = None
 
 
 class RotateKeyOut(BaseModel):
@@ -208,6 +210,74 @@ async def clear_anthropic_key(
         id=client.id,
         name=client.name,
         anthropic_api_key_set_at=None,
+    )
+
+
+class BedrockCredsIn(BaseModel):
+    access_key_id: str = Field(min_length=1)
+    secret_access_key: str = Field(min_length=1)
+    region: str = Field(min_length=1, max_length=40)
+
+
+class BedrockCredsOut(BaseModel):
+    id: UUID
+    name: str
+    bedrock_creds_set_at: datetime | None
+
+
+@router.put("/{client_id}/bedrock-creds")
+async def set_bedrock_creds(
+    client_id: UUID,
+    body: BedrockCredsIn,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> BedrockCredsOut:
+    """Store a per-client AWS Bedrock credential set, encrypted as a single
+    Fernet blob ({access_key_id, secret_access_key, region}). Plaintext is
+    never persisted or echoed back — only the set timestamp."""
+    client = await session.get(ClientApp, client_id)
+    if client is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, _CLIENT_NOT_FOUND)
+    blob = json.dumps(
+        {
+            "access_key_id": body.access_key_id.strip(),
+            "secret_access_key": body.secret_access_key.strip(),
+            "region": body.region.strip(),
+        }
+    )
+    try:
+        client.bedrock_creds_encrypted = encrypt(blob)
+    except SecretsKeyMissing as e:
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "CONDUCT_SECRETS_KEY is not configured on the server",
+        ) from e
+    client.bedrock_creds_set_at = datetime.now(UTC)
+    await session.commit()
+    await session.refresh(client)
+    return BedrockCredsOut(
+        id=client.id,
+        name=client.name,
+        bedrock_creds_set_at=client.bedrock_creds_set_at,
+    )
+
+
+@router.delete("/{client_id}/bedrock-creds")
+async def clear_bedrock_creds(
+    client_id: UUID, session: Annotated[AsyncSession, Depends(get_session)]
+) -> BedrockCredsOut:
+    """Forget this client's Bedrock creds — they lose access to any Bedrock
+    model in the routing matrix until creds are re-added."""
+    client = await session.get(ClientApp, client_id)
+    if client is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, _CLIENT_NOT_FOUND)
+    client.bedrock_creds_encrypted = None
+    client.bedrock_creds_set_at = None
+    await session.commit()
+    await session.refresh(client)
+    return BedrockCredsOut(
+        id=client.id,
+        name=client.name,
+        bedrock_creds_set_at=None,
     )
 
 

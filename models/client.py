@@ -52,6 +52,15 @@ class ClientApp(Base):
         DateTime(timezone=True), nullable=True
     )
 
+    # Per-client AWS Bedrock credentials, encrypted at rest as a single Fernet
+    # JSON blob {"access_key_id", "secret_access_key", "region"}. Stored as one
+    # column so rotation is atomic. Same isolation rule as Anthropic: when
+    # null, Bedrock is disallowed for this client (no host fallback).
+    bedrock_creds_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
+    bedrock_creds_set_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
 
 class ClientAppUsage(Base):
     __tablename__ = "client_app_usage"

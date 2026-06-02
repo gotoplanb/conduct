@@ -29,6 +29,7 @@ dependencies = [
     "python-multipart>=0.0.20",
     "mcp>=1.2",
     "cryptography>=42.0",
+    "aioboto3>=13.0",
 ]
 
 [project.scripts]
