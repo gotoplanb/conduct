@@ -14,17 +14,23 @@
 # primary is under- or over-sized, not just "which big model is best".
 
 rules:
-  # Tiny task; testing whether <10B is enough vs a small step-up.
+  # Tiny task; testing whether <10B is enough vs a small step-up, plus a
+  # cloud A/B across direct-API and Bedrock-hosted Anthropic so we can see
+  # whether the same model picks up latency/quality drift via AWS.
   - task_type: dad_joke
     preferred_model: llama3.2:3b
     fallback_model: llama3.3:70b
     sensitivity: public
     max_tokens: 150
-    notes: "Demo task; small-class primary, peers + one step-up."
+    notes: "Demo task; small-class primary, peers + step-up + cloud A/B across direct-API and Bedrock-hosted Anthropic."
     eval_shadow_models:
       - { model: gemma4:e2b, rate: 1.0 }
       - { model: qwen3.5:2b, rate: 1.0 }
-      - { model: gemma4:e4b, rate: 1.0 }     # step-up
+      - { model: gemma4:e4b, rate: 1.0 }                                # step-up
+      - { model: claude-haiku-4-5, rate: 1.0 }                          # direct API
+      - { model: claude-sonnet-4-6, rate: 1.0 }                         # direct API
+      - { model: us.anthropic.claude-haiku-4-5-20251001-v1:0, rate: 1.0 }   # Bedrock geo
+      - { model: us.anthropic.claude-sonnet-4-6, rate: 1.0 }                # Bedrock geo
 
   # Lightweight classification — small primary, one step-down, one step-up.
   - task_type: email_classification
