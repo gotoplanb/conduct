@@ -14,3 +14,25 @@ anthropic:
   claude-opus-4-5:
     input_per_1m_usd: 15.00
     output_per_1m_usd: 75.00
+
+# AWS Bedrock — Claude 4.5/4.6 IDs. Verified against
+# https://platform.claude.com/docs/en/about-claude/pricing on 2026-06-02.
+# Bedrock's pricing structure for 4.5+ models: global endpoints (`global.…`)
+# match direct-API rates; regional/geo endpoints (in-region flat ids + `us.`,
+# `eu.`, `au.`, `jp.` profiles) carry a 10% premium. Each id Conduct routes
+# to needs its own entry — there's no per-family glob in the registry.
+bedrock:
+  # Geo profiles — 10% premium over global / direct-API rates.
+  us.anthropic.claude-sonnet-4-6:
+    input_per_1m_usd: 3.30
+    output_per_1m_usd: 16.50
+  us.anthropic.claude-haiku-4-5-20251001-v1:0:
+    input_per_1m_usd: 1.10
+    output_per_1m_usd: 5.50
+  # Global profiles — base rate, matches direct API.
+  global.anthropic.claude-sonnet-4-6:
+    input_per_1m_usd: 3.00
+    output_per_1m_usd: 15.00
+  global.anthropic.claude-haiku-4-5-20251001-v1:0:
+    input_per_1m_usd: 1.00
+    output_per_1m_usd: 5.00
