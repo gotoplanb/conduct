@@ -22,11 +22,20 @@ from providers.registry import is_cloud, provider_for_model
         ("cohere.command-r-v1:0", "bedrock"),
         ("amazon.nova-lite-v1:0", "bedrock"),
         ("ai21.j2-ultra-v1", "bedrock"),
-        # Bedrock inference profiles (cross-region)
+        # Bedrock inference profiles (cross-region) — covering every prefix
+        # Anthropic models currently expose, plus the historical ones.
         ("us.anthropic.claude-3-5-sonnet-20241022-v2:0", "bedrock"),
         ("eu.anthropic.claude-3-haiku-20240307-v1:0", "bedrock"),
+        ("au.anthropic.claude-haiku-4-5-20251001-v1:0", "bedrock"),
+        ("jp.anthropic.claude-sonnet-4-6", "bedrock"),
+        ("global.anthropic.claude-sonnet-4-6", "bedrock"),
         ("apac.anthropic.claude-3-5-sonnet-20241022-v2:0", "bedrock"),
         ("us-gov.anthropic.claude-3-5-sonnet-20241022-v2:0", "bedrock"),
+        # The exact IDs verified live against the AWS docs on 2026-06-02
+        ("anthropic.claude-sonnet-4-6", "bedrock"),
+        ("anthropic.claude-haiku-4-5-20251001-v1:0", "bedrock"),
+        ("us.anthropic.claude-sonnet-4-6", "bedrock"),
+        ("us.anthropic.claude-haiku-4-5-20251001-v1:0", "bedrock"),
         # Ollama — none of these should be misclassified as Bedrock
         ("llama3.3:70b", "ollama"),
         ("llama3.2:3b", "ollama"),

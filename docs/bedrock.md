@@ -75,24 +75,48 @@ granted in the same region as the credentials.
 - it starts with one of the namespace prefixes:
   `anthropic.`, `amazon.`, `meta.`, `mistral.`, `cohere.`, `ai21.`,
   `deepseek.`, `stability.`
-- or it starts with a cross-region inference profile prefix (`us.`, `eu.`,
-  `apac.`, `us-gov.`) followed by one of the namespaces above
-  (`us.anthropic.claude-3-5-sonnet-20241022-v2:0`).
+- or it starts with a cross-region inference profile prefix
+  (`us.`, `eu.`, `au.`, `jp.`, `apac.`, `us-gov.`, `global.`) followed by
+  one of the namespaces above (`us.anthropic.claude-sonnet-4-6`,
+  `global.anthropic.claude-haiku-4-5-20251001-v1:0`).
 
 Direct Anthropic API IDs (`claude-haiku-4-5`, `claude-sonnet-4-6`) still
 route to the direct-API `AnthropicProvider`, **not** Bedrock. The dotted
 namespace is how Conduct disambiguates "same model family, different
 hosting" — and they have different per-client credential requirements.
 
-Common production IDs (current as of 2026-06):
+### Claude 4.x on Bedrock (verified 2026-06-02)
 
-| Family | Direct API | Bedrock (flat) | Bedrock (cross-region) |
-|---|---|---|---|
-| Claude Haiku | `claude-haiku-4-5` | `anthropic.claude-3-5-haiku-20241022-v1:0` | `us.anthropic.claude-3-5-haiku-20241022-v1:0` |
-| Claude Sonnet | `claude-sonnet-4-6` | `anthropic.claude-3-5-sonnet-20241022-v2:0` | `us.anthropic.claude-3-5-sonnet-20241022-v2:0` |
+| Family | Direct-API ID | Bedrock flat ID | Bedrock geo IDs | Bedrock global ID |
+|---|---|---|---|---|
+| Claude Sonnet 4.6 | `claude-sonnet-4-6` | `anthropic.claude-sonnet-4-6` | `us.anthropic.claude-sonnet-4-6`<br>`eu.anthropic.claude-sonnet-4-6`<br>`au.anthropic.claude-sonnet-4-6`<br>`jp.anthropic.claude-sonnet-4-6` | `global.anthropic.claude-sonnet-4-6` |
+| Claude Haiku 4.5 | `claude-haiku-4-5` | `anthropic.claude-haiku-4-5-20251001-v1:0` | `us.anthropic.claude-haiku-4-5-20251001-v1:0`<br>`eu.anthropic.claude-haiku-4-5-20251001-v1:0`<br>`au.anthropic.claude-haiku-4-5-20251001-v1:0`<br>`jp.anthropic.claude-haiku-4-5-20251001-v1:0` | `global.anthropic.claude-haiku-4-5-20251001-v1:0` |
 
-> Verify with `aws bedrock list-foundation-models --region us-west-2` before
-> wiring routing rules — Bedrock model IDs change frequently.
+Two non-obvious wrinkles AWS hits you with:
+
+1. **Sonnet 4.6 uses naked IDs; Haiku 4.5 is date-stamped.** This is just
+   how AWS chose to namespace them — there's no pattern to predict, so
+   verify before pasting into a routing rule.
+2. **In-region availability is narrower than you'd expect.** Sonnet 4.6 is
+   *only* directly callable in `eu-west-2 (London)`; everywhere else you
+   need a geo or global inference profile id. Haiku 4.5 is directly
+   callable in `us-east-1`, `eu-north-1`, `eu-west-1`, `ap-northeast-1`,
+   `ap-southeast-4`. The geo IDs (`us.…`, `eu.…`) work from a much wider
+   set of regions — see the AWS docs model card for the source-region
+   matrix.
+
+**Recommendation for US-region AWS accounts:** use the geo IDs
+(`us.anthropic.claude-sonnet-4-6` and
+`us.anthropic.claude-haiku-4-5-20251001-v1:0`). They work from any of
+`us-east-1`, `us-east-2`, `us-west-1`, `us-west-2`, `ca-central-1`,
+`ca-west-1`, and let Bedrock distribute load across the underlying
+regions — better latency variance and quota headroom than pinning to a
+single in-region flat ID.
+
+> Source of truth: the model cards under
+> `https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-anthropic-claude-*.html`.
+> Verify with `aws bedrock list-foundation-models --region us-east-1`
+> before wiring routing rules — IDs change as new versions ship.
 
 ## Setup
 

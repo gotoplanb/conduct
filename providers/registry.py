@@ -9,7 +9,14 @@ from providers.base import BaseProvider
 _BEDROCK_NAMESPACES = frozenset(
     {"anthropic", "amazon", "meta", "mistral", "cohere", "ai21", "deepseek", "stability"}
 )
-_INFERENCE_PROFILE_PREFIXES = frozenset({"us", "eu", "apac", "us-gov"})
+# Cross-region inference profile prefixes Bedrock advertises (see
+# `aws bedrock list-inference-profiles` / the AWS docs model cards). The
+# `apac` and `us-gov` entries are historical / GovCloud and still match real
+# profile ids on other models; `au`/`jp`/`global` are the current shape for
+# Anthropic-on-Bedrock profiles as of 2026-06.
+_INFERENCE_PROFILE_PREFIXES = frozenset(
+    {"us", "eu", "au", "jp", "apac", "us-gov", "global"}
+)
 
 
 class ProviderRegistry:
