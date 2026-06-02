@@ -436,18 +436,29 @@ def cmd_clients_clear_anthropic_key(args: argparse.Namespace) -> int:
 
 _BEDROCK_CREDS_TEMPLATE = (
     "# Paste this client's AWS Bedrock credentials below. Save to upload them.\n"
-    "# Lines starting with # are ignored. Leaving any field blank aborts.\n"
-    "# All three values are required.\n"
+    "# Lines starting with # are ignored. Leave blanks to abort.\n"
+    "#\n"
+    "# Pick ONE of the two auth styles:\n"
+    "#\n"
+    "# (A) Long-term Bedrock API key (recommended): generated in the\n"
+    "#     Bedrock console. Just paste the key + region.\n"
+    "bearer_token: \n"
+    "#\n"
+    "# (B) IAM access key pair: traditional AWS SigV4 auth.\n"
     "access_key_id: \n"
     "secret_access_key: \n"
+    "#\n"
+    "# Region is always required.\n"
     "region: \n"
 )
 
 
 def cmd_clients_set_bedrock_creds(args: argparse.Namespace) -> int:
     """Open $EDITOR with a YAML template; on save, PUT the parsed contents as
-    the client's Bedrock creds (access key id + secret + region). The blob is
-    encrypted at rest with CONDUCT_SECRETS_KEY; nothing is echoed back."""
+    the client's Bedrock creds. Accepts either a long-term Bedrock API key
+    (bearer_token + region) OR an IAM pair (access_key_id +
+    secret_access_key + region). The blob is encrypted at rest with
+    CONDUCT_SECRETS_KEY; nothing is echoed back."""
     import yaml  # noqa: PLC0415
 
     with httpx.Client(base_url=_base_url(), headers=_headers(), timeout=30) as c:
@@ -464,16 +475,39 @@ def cmd_clients_set_bedrock_creds(args: argparse.Namespace) -> int:
             print(f"invalid YAML: {e}", file=sys.stderr)
             return 1
         if not isinstance(parsed, dict):
-            print("expected a mapping with access_key_id, secret_access_key, region",
-                  file=sys.stderr)
+            print(
+                "expected a mapping with region and either bearer_token "
+                "or access_key_id + secret_access_key",
+                file=sys.stderr,
+            )
             return 1
-        required = ("access_key_id", "secret_access_key", "region")
-        body = {k: (parsed.get(k) or "").strip() for k in required}
-        if not all(body.values()):
-            missing = [k for k in required if not body[k]]
-            print(f"aborting: missing required field(s): {', '.join(missing)}",
-                  file=sys.stderr)
+        fields = ("bearer_token", "access_key_id", "secret_access_key", "region")
+        got = {k: (parsed.get(k) or "").strip() for k in fields}
+        if not got["region"]:
+            print("aborting: region is required", file=sys.stderr)
             return 1
+        has_bearer = bool(got["bearer_token"])
+        has_pair = bool(got["access_key_id"] and got["secret_access_key"])
+        if has_bearer and has_pair:
+            print(
+                "aborting: provide bearer_token OR access_key_id + secret_access_key, "
+                "not both",
+                file=sys.stderr,
+            )
+            return 1
+        if not has_bearer and not has_pair:
+            print(
+                "aborting: provide either bearer_token OR access_key_id + "
+                "secret_access_key",
+                file=sys.stderr,
+            )
+            return 1
+        body = {"region": got["region"]}
+        if has_bearer:
+            body["bearer_token"] = got["bearer_token"]
+        else:
+            body["access_key_id"] = got["access_key_id"]
+            body["secret_access_key"] = got["secret_access_key"]
         r = c.put(f"/clients/{client['id']}/bedrock-creds", json=body)
         r.raise_for_status()
         out = r.json()

@@ -6,9 +6,19 @@ native protocol. One provider class works for Anthropic-on-Bedrock, Llama,
 Mistral, Cohere, Nova, and friends without per-family adapters.
 
 Credentials are passed in by the registry on a per-call basis (decrypted
-from the owning ClientApp's `bedrock_creds_encrypted` blob). There is no
-host-IAM fallback by design — a client without its own creds simply can't
-route to Bedrock, mirroring the per-client Anthropic-key rule.
+from the owning ClientApp's `bedrock_creds_encrypted` blob). Two auth
+styles are supported:
+
+  - **Long-term API key (bearer token).** Generated in the Bedrock console;
+    sent as `Authorization: Bearer <token>` via a botocore event hook so
+    we avoid the process-global `AWS_BEARER_TOKEN_BEDROCK` env var (unsafe
+    under concurrent multi-tenant shadow fan-out).
+  - **IAM access key + secret.** Traditional SigV4 signing via boto3's
+    default credential chain.
+
+There is no host-IAM fallback by design — a client without its own creds
+simply can't route to Bedrock, mirroring the per-client Anthropic-key
+rule.
 """
 
 from __future__ import annotations
@@ -43,12 +53,27 @@ class BedrockProvider(BaseProvider):
 
     def __init__(
         self,
-        access_key_id: str,
-        secret_access_key: str,
+        *,
         region: str,
+        access_key_id: str = "",
+        secret_access_key: str = "",
+        bearer_token: str = "",
     ) -> None:
+        has_pair = bool(access_key_id and secret_access_key)
+        has_bearer = bool(bearer_token)
+        if has_pair and has_bearer:
+            raise ValueError(
+                "BedrockProvider takes either (access_key_id + secret_access_key) "
+                "OR bearer_token, not both"
+            )
+        if not has_pair and not has_bearer:
+            raise ValueError(
+                "BedrockProvider requires either (access_key_id + secret_access_key) "
+                "or bearer_token"
+            )
         self._access_key_id = access_key_id
         self._secret_access_key = secret_access_key
+        self._bearer_token = bearer_token
         self._region = region
         # aioboto3 sessions are cheap; we hold one per provider instance so
         # the underlying httpx/aiohttp client is reused across calls within
@@ -80,13 +105,21 @@ class BedrockProvider(BaseProvider):
         if system_prompt:
             converse_kwargs["system"] = [{"text": system_prompt}]
 
+        # Use real AKID+secret if we have them, otherwise placeholder strings
+        # are enough to satisfy boto3's session construction — the actual
+        # Authorization header gets overwritten by the bearer-token event
+        # hook below before the request goes out.
+        ak = self._access_key_id or "conduct-bearer-placeholder"
+        sk = self._secret_access_key or "conduct-bearer-placeholder"
         started = time.perf_counter()
         async with self._session.client(
             "bedrock-runtime",
             region_name=self._region,
-            aws_access_key_id=self._access_key_id,
-            aws_secret_access_key=self._secret_access_key,
+            aws_access_key_id=ak,
+            aws_secret_access_key=sk,
         ) as client:
+            if self._bearer_token:
+                self._install_bearer_auth(client, self._bearer_token)
             try:
                 resp = await client.converse(**converse_kwargs)
             except ClientError as e:
@@ -121,3 +154,22 @@ class BedrockProvider(BaseProvider):
             model_used=model,
             provider=self.name,
         )
+
+    @staticmethod
+    def _install_bearer_auth(client, token: str) -> None:
+        """Register a botocore event hook that overwrites the Authorization
+        header with a bearer token after SigV4 signing but before the request
+        is sent. This is per-client (the hook closes over `token`), so it's
+        safe under concurrent shadow fan-out — unlike the
+        `AWS_BEARER_TOKEN_BEDROCK` env var, which is process-global."""
+
+        def _override_auth(request, **_kwargs):
+            # `request` is a botocore AWSPreparedRequest at before-send time;
+            # mutating headers here replaces SigV4's Authorization with ours.
+            request.headers["Authorization"] = f"Bearer {token}"
+            # SigV4 also stamps these; bearer auth doesn't use them and a
+            # few Bedrock endpoints reject a mix of signing styles.
+            for stale in ("X-Amz-Date", "X-Amz-Security-Token", "X-Amz-Content-SHA256"):
+                request.headers.pop(stale, None)
+
+        client.meta.events.register("before-send.bedrock-runtime.*", _override_auth)

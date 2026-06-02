@@ -162,21 +162,39 @@
                 <button class="rounded-md bg-zinc-100 text-zinc-900 px-3 py-1.5 text-xs font-medium hover:bg-white">Save</button>
               </form>
               <form method="post" action="/ui/clients/{{ c.id }}/bedrock-creds" x-show="showBedrock" x-cloak
+                    x-data="{ authStyle: 'bearer' }"
                     class="basis-full mt-2 grid gap-2 sm:grid-cols-3 text-left">
-                <div class="sm:col-span-1">
+                <div class="sm:col-span-3 flex items-center gap-3">
+                  <label class="flex items-center gap-1.5 text-xs text-zinc-300">
+                    <input type="radio" name="auth_style_radio" value="bearer"
+                           x-model="authStyle" class="bg-zinc-900 border-zinc-700">
+                    Long-term API key <span class="text-zinc-500">(recommended)</span>
+                  </label>
+                  <label class="flex items-center gap-1.5 text-xs text-zinc-300">
+                    <input type="radio" name="auth_style_radio" value="pair"
+                           x-model="authStyle" class="bg-zinc-900 border-zinc-700">
+                    Access key + secret
+                  </label>
+                </div>
+                <div class="sm:col-span-2" x-show="authStyle === 'bearer'">
+                  <label class="block text-[10px] uppercase text-zinc-500 mb-1">Bedrock API key</label>
+                  <input type="password" name="bearer_token" autocomplete="off" spellcheck="false"
+                         placeholder="ABSK..." class="w-full bg-zinc-950 border border-zinc-700 rounded-md px-2 py-1 text-xs font-mono">
+                </div>
+                <div class="sm:col-span-1" x-show="authStyle === 'pair'" x-cloak>
                   <label class="block text-[10px] uppercase text-zinc-500 mb-1">Access key id</label>
-                  <input type="text" name="access_key_id" required autocomplete="off" spellcheck="false"
+                  <input type="text" name="access_key_id" autocomplete="off" spellcheck="false"
                          placeholder="AKIA..." class="w-full bg-zinc-950 border border-zinc-700 rounded-md px-2 py-1 text-xs font-mono">
                 </div>
-                <div class="sm:col-span-1">
+                <div class="sm:col-span-1" x-show="authStyle === 'pair'" x-cloak>
                   <label class="block text-[10px] uppercase text-zinc-500 mb-1">Secret access key</label>
-                  <input type="password" name="secret_access_key" required autocomplete="off" spellcheck="false"
+                  <input type="password" name="secret_access_key" autocomplete="off" spellcheck="false"
                          class="w-full bg-zinc-950 border border-zinc-700 rounded-md px-2 py-1 text-xs font-mono">
                 </div>
                 <div class="sm:col-span-1">
                   <label class="block text-[10px] uppercase text-zinc-500 mb-1">Region</label>
                   <input type="text" name="region" required spellcheck="false"
-                         placeholder="us-west-2" class="w-full bg-zinc-950 border border-zinc-700 rounded-md px-2 py-1 text-xs font-mono">
+                         placeholder="us-east-1" class="w-full bg-zinc-950 border border-zinc-700 rounded-md px-2 py-1 text-xs font-mono">
                 </div>
                 <div class="sm:col-span-3 flex justify-end">
                   <button class="rounded-md bg-zinc-100 text-zinc-900 px-3 py-1.5 text-xs font-medium hover:bg-white">Save Bedrock creds</button>

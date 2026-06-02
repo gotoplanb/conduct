@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import json
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
@@ -5,7 +7,7 @@ from typing import Annotated
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -214,9 +216,27 @@ async def clear_anthropic_key(
 
 
 class BedrockCredsIn(BaseModel):
-    access_key_id: str = Field(min_length=1)
-    secret_access_key: str = Field(min_length=1)
+    """Accept either a long-term Bedrock API key (`bearer_token`) OR an IAM
+    access-key pair. Region is always required."""
+
     region: str = Field(min_length=1, max_length=40)
+    bearer_token: str | None = Field(default=None, min_length=1)
+    access_key_id: str | None = Field(default=None, min_length=1)
+    secret_access_key: str | None = Field(default=None, min_length=1)
+
+    @model_validator(mode="after")
+    def _exactly_one_auth_style(self) -> BedrockCredsIn:
+        has_bearer = bool(self.bearer_token)
+        has_pair = bool(self.access_key_id and self.secret_access_key)
+        if has_bearer and has_pair:
+            raise ValueError(
+                "Provide either bearer_token OR access_key_id + secret_access_key, not both"
+            )
+        if not has_bearer and not has_pair:
+            raise ValueError(
+                "Provide either bearer_token OR both access_key_id and secret_access_key"
+            )
+        return self
 
 
 class BedrockCredsOut(BaseModel):
@@ -232,18 +252,21 @@ async def set_bedrock_creds(
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> BedrockCredsOut:
     """Store a per-client AWS Bedrock credential set, encrypted as a single
-    Fernet blob ({access_key_id, secret_access_key, region}). Plaintext is
-    never persisted or echoed back — only the set timestamp."""
+    Fernet blob. The blob holds either {bearer_token, region} (long-term API
+    key) or {access_key_id, secret_access_key, region} (IAM pair). Plaintext
+    is never persisted or echoed back — only the set timestamp."""
     client = await session.get(ClientApp, client_id)
     if client is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, _CLIENT_NOT_FOUND)
-    blob = json.dumps(
-        {
-            "access_key_id": body.access_key_id.strip(),
-            "secret_access_key": body.secret_access_key.strip(),
-            "region": body.region.strip(),
-        }
-    )
+    payload: dict[str, str] = {"region": body.region.strip()}
+    if body.bearer_token:
+        payload["bearer_token"] = body.bearer_token.strip()
+    else:
+        # Validator guarantees both fields are non-empty in the pair branch.
+        assert body.access_key_id and body.secret_access_key
+        payload["access_key_id"] = body.access_key_id.strip()
+        payload["secret_access_key"] = body.secret_access_key.strip()
+    blob = json.dumps(payload)
     try:
         client.bedrock_creds_encrypted = encrypt(blob)
     except SecretsKeyMissing as e:

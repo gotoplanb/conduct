@@ -134,3 +134,24 @@ def test_has_for_client_bedrock_true_only_with_creds() -> None:
     reg = ProviderRegistry()
     assert reg.has_for_client(_StubClient(bedrock_creds_encrypted=None), "bedrock") is False
     assert reg.has_for_client(_StubClient(bedrock_creds_encrypted="blob"), "bedrock") is True
+
+
+def test_get_for_client_bedrock_dispatches_on_bearer_blob(secrets_key) -> None:
+    """A blob containing {bearer_token, region} should construct a
+    BedrockProvider in bearer mode, not the access-key-pair mode."""
+    import json
+
+    reg = ProviderRegistry()
+    blob = secrets_box.encrypt(
+        json.dumps({"bearer_token": "ABSK-test", "region": "us-east-1"})
+    )
+    client = _StubClient(bedrock_creds_encrypted=blob)
+
+    from providers.bedrock import BedrockProvider
+
+    provider = reg.get_for_client(client, "bedrock")
+    assert isinstance(provider, BedrockProvider)
+    assert provider._bearer_token == "ABSK-test"
+    assert provider._region == "us-east-1"
+    assert provider._access_key_id == ""
+    assert provider._secret_access_key == ""

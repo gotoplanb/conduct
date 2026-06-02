@@ -172,3 +172,81 @@ async def test_complete_maps_other_client_errors_to_provider_error(monkeypatch) 
         await provider.complete(
             prompt="hi", model="anthropic.claude-3-haiku-fake-v1:0", max_tokens=10
         )
+
+
+# --- Bearer-token (long-term API key) auth ---
+
+
+@pytest.mark.asyncio
+async def test_complete_with_bearer_token_registers_event_hook(monkeypatch) -> None:
+    """When constructed with bearer_token, the provider should register a
+    before-send hook that overwrites Authorization with `Bearer <token>` and
+    strips SigV4-specific headers — without touching the env var."""
+    import os
+
+    fake = _FakeAsyncBedrockClient(
+        converse_result=_fake_converse_response("hi", 1, 1)
+    )
+    # Track event-hook registrations.
+    registered: list[tuple[str, object]] = []
+    fake.meta = MagicMock()
+    fake.meta.events = MagicMock()
+    fake.meta.events.register = MagicMock(
+        side_effect=lambda event, handler: registered.append((event, handler))
+    )
+    _patch_session(monkeypatch, fake)
+    # Guarantee no env var leaks in
+    monkeypatch.delenv("AWS_BEARER_TOKEN_BEDROCK", raising=False)
+
+    from providers.bedrock import BedrockProvider
+
+    provider = BedrockProvider(region="us-east-1", bearer_token="ABSK-test-token")
+    await provider.complete(
+        prompt="hi", model="anthropic.claude-sonnet-4-6", max_tokens=10
+    )
+
+    # Hook registered for the right event
+    assert len(registered) == 1
+    event, handler = registered[0]
+    assert event == "before-send.bedrock-runtime.*"
+
+    # Invoke the captured handler against a stub request and confirm it
+    # overwrites Authorization and removes the SigV4 stamps.
+    class _Req:
+        headers: dict[str, str] = {
+            "Authorization": "AWS4-HMAC-SHA256 Credential=…",
+            "X-Amz-Date": "20260602T130000Z",
+            "X-Amz-Security-Token": "stale",
+            "X-Amz-Content-SHA256": "stale",
+            "Other-Header": "kept",
+        }
+
+    req = _Req()
+    handler(req)
+    assert req.headers["Authorization"] == "Bearer ABSK-test-token"
+    assert "X-Amz-Date" not in req.headers
+    assert "X-Amz-Security-Token" not in req.headers
+    assert "X-Amz-Content-SHA256" not in req.headers
+    assert req.headers["Other-Header"] == "kept"
+
+    # Process-global env var must not have been touched
+    assert "AWS_BEARER_TOKEN_BEDROCK" not in os.environ
+
+
+def test_init_requires_some_credentials() -> None:
+    from providers.bedrock import BedrockProvider
+
+    with pytest.raises(ValueError, match="requires either"):
+        BedrockProvider(region="us-east-1")
+
+
+def test_init_rejects_both_auth_styles() -> None:
+    from providers.bedrock import BedrockProvider
+
+    with pytest.raises(ValueError, match="not both"):
+        BedrockProvider(
+            region="us-east-1",
+            access_key_id="A",
+            secret_access_key="B",
+            bearer_token="ABSK",
+        )

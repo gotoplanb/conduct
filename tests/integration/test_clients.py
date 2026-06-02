@@ -361,3 +361,60 @@ async def test_list_clients_includes_bedrock_creds_set_at(
     r = await client.get("/clients", headers=admin_headers)
     me = next(c for c in r.json() if c["id"] == str(row.id))
     assert me["bedrock_creds_set_at"] is not None
+
+
+async def test_set_bedrock_creds_with_bearer_token_persists(
+    client, admin_headers, seeded_client, secrets_key, db_session: AsyncSession
+) -> None:
+    import json
+
+    from secrets_box import decrypt
+
+    row, _ = seeded_client
+    r = await client.put(
+        f"/clients/{row.id}/bedrock-creds",
+        json={"bearer_token": "ABSK-conduct-test", "region": "us-east-1"},
+        headers=admin_headers,
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["bedrock_creds_set_at"] is not None
+    # No plaintext echoed
+    assert "ABSK-conduct-test" not in r.text
+
+    await db_session.refresh(row)
+    creds = json.loads(decrypt(row.bedrock_creds_encrypted))
+    assert creds == {"bearer_token": "ABSK-conduct-test", "region": "us-east-1"}
+    # Pair fields must not be sneakily present
+    assert "access_key_id" not in creds
+    assert "secret_access_key" not in creds
+
+
+async def test_set_bedrock_creds_rejects_both_styles_simultaneously(
+    client, admin_headers, seeded_client, secrets_key
+) -> None:
+    row, _ = seeded_client
+    r = await client.put(
+        f"/clients/{row.id}/bedrock-creds",
+        json={
+            "bearer_token": "ABSK-x",
+            "access_key_id": "AKIA-x",
+            "secret_access_key": "y",
+            "region": "us-east-1",
+        },
+        headers=admin_headers,
+    )
+    assert r.status_code == 422
+    assert "not both" in r.text
+
+
+async def test_set_bedrock_creds_rejects_neither_style(
+    client, admin_headers, seeded_client, secrets_key
+) -> None:
+    row, _ = seeded_client
+    r = await client.put(
+        f"/clients/{row.id}/bedrock-creds",
+        json={"region": "us-east-1"},
+        headers=admin_headers,
+    )
+    assert r.status_code == 422

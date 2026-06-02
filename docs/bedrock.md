@@ -17,17 +17,31 @@ default credential chain (env vars, `~/.aws/`, instance profile) is **not**
 consulted, because letting one client's job silently bill against the
 operator's AWS account would defeat the per-tenant cost model.
 
-Three values are stored together as a single Fernet-encrypted JSON blob:
+Two auth styles are supported. The encrypted blob holds one of:
 
-- `access_key_id` — IAM access key id (e.g. `AKIAxxxxxxxxxxxxxxxx`)
-- `secret_access_key` — paired secret
-- `region` — the Bedrock region this key is enabled in (e.g. `us-west-2`)
+**(A) Long-term Bedrock API key (recommended).** Generated in the Bedrock
+console under *API keys → Long-term API keys*; no IAM user, no AKID/secret
+pair to manage. The blob is `{bearer_token, region}` — two fields,
+generated and revoked from one place.
 
-Rotation is atomic at the blob level (any update overwrites all three).
+**(B) IAM access key + secret.** Traditional AWS SigV4 auth. The blob is
+`{access_key_id, secret_access_key, region}` — three fields. Useful if you
+already have IAM-based provisioning automation and want to keep Bedrock on
+the same key as other AWS services.
+
+In code: bearer tokens are injected via a botocore event hook
+(`before-send.bedrock-runtime.*`) that overwrites the Authorization header
+per request. **Conduct deliberately does not use the documented
+`AWS_BEARER_TOKEN_BEDROCK` env var**, because env vars are process-global
+and would race under concurrent multi-tenant shadow fan-out.
+
+Rotation is atomic at the blob level (any PUT overwrites the whole thing,
+so you can switch a client from access-key to bearer-token by re-saving).
 
 ## IAM policy
 
-The minimum policy attached to the IAM user/role whose key Conduct holds:
+For both auth styles, the underlying identity (whether the IAM user behind
+an access-key pair or the IAM identity behind a long-term API key) needs:
 
 ```json
 {
@@ -49,10 +63,14 @@ is fine and recommended for production — Converse forwards the underlying
 `InvokeModel` permission check, so blocking a model at the IAM layer
 deterministically rejects routing to it.
 
-**Cost control**: prefer setting an AWS Budgets alert on the IAM user (or a
-service control policy on the account) rather than trying to cap spend
-inside Conduct. Same delegation rationale as the per-client Anthropic key —
-the cloud provider is the right place for cost ceilings.
+For long-term API keys: the Bedrock console binds each key to a single IAM
+identity at creation time. Manage permissions on that identity exactly as
+above; revoking the key in the console invalidates it immediately.
+
+**Cost control**: prefer setting an AWS Budgets alert on the IAM identity
+(or a service control policy on the account) rather than trying to cap
+spend inside Conduct. Same delegation rationale as the per-client
+Anthropic key — the cloud provider is the right place for cost ceilings.
 
 ## Model access
 
@@ -128,15 +146,43 @@ If you haven't done this yet, see
 
 ### 2. Set the creds on a client
 
-**UI:** `/ui/clients` → click **Set Bedrock** on the client row → paste
-access key id + secret access key + region → **Save Bedrock creds**.
+#### Long-term API key (recommended)
+
+Generate one in the Bedrock console → *API keys* → *Long-term API keys*. No
+AWS CLI or IAM provisioning needed; the key is bound to the IAM identity
+you select at creation time.
+
+**UI:** `/ui/clients` → **Set Bedrock** → leave the *Long-term API key*
+radio selected → paste the key + region → **Save Bedrock creds**.
 
 **CLI:**
 
 ```bash
 conduct clients set-bedrock-creds dave
-# $EDITOR opens with a YAML template; fill in all three fields, save.
+# $EDITOR opens with a YAML template — fill in `bearer_token` and
+# `region`, leave the access-key fields blank, save.
 ```
+
+**API:**
+
+```bash
+curl -X PUT "$CONDUCT_BASE_URL/clients/$CLIENT_ID/bedrock-creds" \
+  -H "Authorization: Bearer $CONDUCT_ADMIN_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"bearer_token": "ABSK...", "region": "us-east-1"}'
+```
+
+#### Access key + secret (traditional)
+
+Create an IAM user with the policy above, generate a programmatic access
+key pair, then:
+
+**UI:** `/ui/clients` → **Set Bedrock** → switch to the *Access key +
+secret* radio → paste both values + region → **Save Bedrock creds**.
+
+**CLI:** same `conduct clients set-bedrock-creds dave`, fill in
+`access_key_id` + `secret_access_key` + `region` instead, leave
+`bearer_token` blank.
 
 **API:**
 
@@ -196,6 +242,7 @@ existing direct-API setup.
 | Symptom | Likely cause |
 |---|---|
 | `KeyError: client has no Bedrock credentials configured` | Client hasn't been set up yet, or the creds were cleared. Per-client only — no host fallback by design. |
+| Long-term API key returns `401 Unauthorized` | Key was revoked in the Bedrock console, or it was generated for a different region than what's stored on the client. Re-issue and re-save. |
 | `AccessDeniedException` from Converse | Model access not granted in the AWS console for this region. Bedrock → Model access. |
 | `ValidationException: model not found` | Model ID typo, or the ID exists only behind a cross-region inference profile (try the `us.` / `eu.` prefixed form). |
 | `ThrottlingException` keeps happening | Bedrock has per-account per-model concurrent-request limits. Conduct retries up to 3× with exponential backoff; if it still throttles, request a quota increase in the Service Quotas console. |

@@ -369,3 +369,54 @@ async def test_ui_clear_bedrock_creds_nulls_columns(
     assert f"Bedrock creds cleared for {row.name}" in r.text
     await db_session.refresh(row)
     assert row.bedrock_creds_encrypted is None
+
+
+async def test_ui_set_bedrock_creds_bearer_token_persists(
+    admin_client, seeded_client, secrets_key, db_session
+) -> None:
+    import json
+
+    from secrets_box import decrypt
+
+    row, _ = seeded_client
+    r = await admin_client.post(
+        f"/ui/clients/{row.id}/bedrock-creds",
+        data={"bearer_token": "ABSK-ui-test", "region": "us-east-1"},
+    )
+    assert r.status_code == 200
+    assert f"Bedrock creds set for {row.name}" in r.text
+    # No plaintext rendered on the page
+    assert "ABSK-ui-test" not in r.text
+
+    await db_session.refresh(row)
+    creds = json.loads(decrypt(row.bedrock_creds_encrypted))
+    assert creds == {"bearer_token": "ABSK-ui-test", "region": "us-east-1"}
+
+
+async def test_ui_set_bedrock_creds_bearer_and_pair_is_400(
+    admin_client, seeded_client, secrets_key
+) -> None:
+    row, _ = seeded_client
+    r = await admin_client.post(
+        f"/ui/clients/{row.id}/bedrock-creds",
+        data={
+            "bearer_token": "ABSK-x",
+            "access_key_id": "AKIA-x",
+            "secret_access_key": "y",
+            "region": "us-east-1",
+        },
+    )
+    assert r.status_code == 400
+    assert "not both" in r.text
+
+
+async def test_ui_set_bedrock_creds_neither_is_400(
+    admin_client, seeded_client, secrets_key
+) -> None:
+    row, _ = seeded_client
+    r = await admin_client.post(
+        f"/ui/clients/{row.id}/bedrock-creds",
+        data={"region": "us-east-1"},
+    )
+    assert r.status_code == 400
+    assert "either" in r.text.lower()

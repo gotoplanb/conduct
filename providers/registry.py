@@ -64,10 +64,16 @@ class ProviderRegistry:
             from secrets_box import decrypt  # noqa: PLC0415
 
             creds = json.loads(decrypt(blob))
+            region = creds["region"]
+            # The blob holds either a long-term API key (bearer token) OR an
+            # IAM access-key/secret pair. The provider validates the shape;
+            # we just route the fields it actually finds.
+            if creds.get("bearer_token"):
+                return BedrockProvider(region=region, bearer_token=creds["bearer_token"])
             return BedrockProvider(
+                region=region,
                 access_key_id=creds["access_key_id"],
                 secret_access_key=creds["secret_access_key"],
-                region=creds["region"],
             )
         return self.get(name)
 

@@ -563,9 +563,10 @@ async def clients_set_bedrock_creds(
     request: Request,
     client_id: UUID,
     session: Annotated[AsyncSession, Depends(get_session)],
-    access_key_id: Annotated[str, Form()],
-    secret_access_key: Annotated[str, Form()],
     region: Annotated[str, Form()],
+    bearer_token: Annotated[str, Form()] = "",
+    access_key_id: Annotated[str, Form()] = "",
+    secret_access_key: Annotated[str, Form()] = "",
 ) -> HTMLResponse:
     import json as _json  # noqa: PLC0415
 
@@ -575,22 +576,37 @@ async def clients_set_bedrock_creds(
             request, session, error=_CLIENT_NOT_FOUND,
             status_code=status.HTTP_404_NOT_FOUND,
         )
+    bearer_token = bearer_token.strip()
     access_key_id = access_key_id.strip()
     secret_access_key = secret_access_key.strip()
     region = region.strip()
-    if not (access_key_id and secret_access_key and region):
+    if not region:
         return await _render_clients(
             request, session,
-            error="Access key id, secret access key, and region are all required.",
+            error="Region is required.",
             status_code=status.HTTP_400_BAD_REQUEST,
         )
-    blob = _json.dumps(
-        {
-            "access_key_id": access_key_id,
-            "secret_access_key": secret_access_key,
-            "region": region,
-        }
-    )
+    has_bearer = bool(bearer_token)
+    has_pair = bool(access_key_id and secret_access_key)
+    if has_bearer and has_pair:
+        return await _render_clients(
+            request, session,
+            error="Provide either a bearer token OR access key + secret, not both.",
+            status_code=status.HTTP_400_BAD_REQUEST,
+        )
+    if not has_bearer and not has_pair:
+        return await _render_clients(
+            request, session,
+            error="Provide either a bearer token OR access key id + secret access key.",
+            status_code=status.HTTP_400_BAD_REQUEST,
+        )
+    payload: dict[str, str] = {"region": region}
+    if has_bearer:
+        payload["bearer_token"] = bearer_token
+    else:
+        payload["access_key_id"] = access_key_id
+        payload["secret_access_key"] = secret_access_key
+    blob = _json.dumps(payload)
     try:
         client.bedrock_creds_encrypted = encrypt(blob)
     except SecretsKeyMissing:
