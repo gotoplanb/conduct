@@ -126,13 +126,13 @@ rules:
   # so swapping between gen and eval doesn't pay reload cost. Cross-family
   # shadows can be added later once the pipeline is proven.
   - task_type: wander_gen
-    preferred_model: gemma4:12b
-    fallback_model: gemma4:e4b
+    preferred_model: gemma4:e4b
+    fallback_model: gemma4:12b
     sensitivity: public
     max_tokens: 1200
-    notes: "Story scenario generation for the wander game. Big-model primary for narrative depth; smaller Gemma as shadow + fallback."
+    notes: "Story scenario generation for the wander game. e4b primary — in early game-side tests, gemma4:12b was slower AND wrapped structured output in ```json fences (breaks downstream parsing). 12b stays as shadow + fallback so we keep evaluating the trade."
     eval_shadow_models:
-      - { model: gemma4:e4b, rate: 1.0 }   # same-family step-down
+      - { model: gemma4:12b, rate: 1.0 }   # same-family step-up; watch for the fence-wrap regression
 
   - task_type: wander_eval
     preferred_model: gemma4:e4b
