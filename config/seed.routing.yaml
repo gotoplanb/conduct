@@ -117,3 +117,19 @@ rules:
     fallback_model: claude-opus-4-5
     sensitivity: public
     # TODO: add cloud shadows once ANTHROPIC_API_KEY is configured.
+
+  # Free-form creative ideation. Local-only by design — the consuming app is
+  # meant to run on a MacBook Air, so the matrix has to fit in ~10-14 GB RAM
+  # without ever reaching for the cloud. Four cross-family shadows on every
+  # job (sample rate 1.0) so we get a meaningful eval signal every time.
+  - task_type: wander
+    preferred_model: gemma4:12b
+    fallback_model: gemma4:e4b
+    sensitivity: public
+    max_tokens: 1200
+    notes: "Free-form creative wandering. Local-only by design (the app runs on a MacBook Air, no cloud). Four cross-family shadows on every job."
+    eval_shadow_models:
+      - { model: qwen3.5:9b, rate: 1.0 }   # Qwen family, mid-tier
+      - { model: llama3.1:8b, rate: 1.0 }  # Llama family
+      - { model: mistral:7b, rate: 1.0 }   # Mistral family
+      - { model: gemma4:e4b, rate: 1.0 }   # same-family step-down
