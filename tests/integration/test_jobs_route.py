@@ -36,7 +36,12 @@ def task_type() -> str:
 
 
 async def _seed_rule(
-    db, *, task_type: str, preferred="claude-haiku-4-5", fallback="claude-sonnet-4-5"
+    db,
+    *,
+    task_type: str,
+    preferred="claude-haiku-4-5",
+    fallback="claude-sonnet-4-5",
+    eval_shadow_models: list[dict] | None = None,
 ) -> RoutingRule:
     rule = RoutingRule(
         task_type=task_type,
@@ -44,6 +49,7 @@ async def _seed_rule(
         fallback_model=fallback,
         sensitivity="public",  # so the cloud client_headers fixture works
         max_tokens=500,
+        eval_shadow_models=eval_shadow_models or [],
     )
     db.add(rule)
     await db.commit()
@@ -368,3 +374,80 @@ async def test_list_shadows_admin_sees_any_job(
 async def test_list_shadows_unknown_job_is_404(client, admin_headers) -> None:
     r = await client.get(f"/jobs/{uuid4()}/shadows", headers=admin_headers)
     assert r.status_code == 404
+
+
+async def test_sync_post_enqueues_rule_shadows(
+    client, db_session, cloud_client, task_type, fake_redis, monkeypatch
+) -> None:
+    """Regression: sync POST /jobs must call enqueue_shadows_for_parent
+    after the primary lands. Earlier, only the MCP and async-worker paths
+    fanned shadows out — the sync HTTP path silently skipped them."""
+    import eval.shadow_runner as shadow_runner
+
+    await _seed_rule(
+        db_session,
+        task_type=task_type,
+        eval_shadow_models=[
+            {"model": "qwen3.5:9b", "rate": 1.0},
+            {"model": "llama3.1:8b", "rate": 1.0},
+        ],
+    )
+
+    captured: list[dict] = []
+
+    async def _stub_enqueue(*, parent_job, rule, client, session):
+        captured.append({
+            "parent_job_id": str(parent_job.id),
+            "rule_task": rule.task_type,
+            "client_id": str(client.id),
+        })
+
+    monkeypatch.setattr(shadow_runner, "enqueue_shadows_for_parent", _stub_enqueue)
+    import routes.jobs as jobs_route
+    monkeypatch.setattr(jobs_route, "enqueue_shadows_for_parent", _stub_enqueue)
+
+    headers = {"Authorization": f"Bearer {cloud_client[1]}"}
+    r = await client.post(
+        "/jobs",
+        json={"task_type": task_type, "prompt": "hi", "system_prompt": "sys"},
+        headers=headers,
+    )
+    assert r.status_code == 200
+    assert r.json()["status"] == "complete"
+    assert len(captured) == 1
+    assert captured[0]["rule_task"] == task_type
+    assert captured[0]["parent_job_id"] == r.json()["job_id"]
+
+
+async def test_sync_post_skips_shadows_when_primary_fails(
+    client, db_session, cloud_client, task_type, monkeypatch
+) -> None:
+    """If the primary fails, we shouldn't fan shadows out against an empty
+    job — they'd just compare to nothing. Mirrors the MCP path's behavior."""
+    import eval.shadow_runner as shadow_runner
+
+    await _seed_rule(
+        db_session,
+        task_type=task_type,
+        eval_shadow_models=[{"model": "x", "rate": 1.0}],
+    )
+
+    called = []
+
+    async def _stub_enqueue(**kwargs):
+        called.append(kwargs)
+
+    monkeypatch.setattr(shadow_runner, "enqueue_shadows_for_parent", _stub_enqueue)
+    import routes.jobs as jobs_route
+    monkeypatch.setattr(jobs_route, "enqueue_shadows_for_parent", _stub_enqueue)
+
+    # Make the primary raise PromptNotFoundError by giving no system_prompt
+    # for a task_type that has no Dave-scoped prompt seeded.
+    headers = {"Authorization": f"Bearer {cloud_client[1]}"}
+    r = await client.post(
+        "/jobs",
+        json={"task_type": task_type, "prompt": "hi"},
+        headers=headers,
+    )
+    assert r.status_code == 500
+    assert called == []

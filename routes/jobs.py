@@ -20,6 +20,7 @@ from db.session import get_session
 from deps import get_provider_registry
 from eval.fanout import FanoutValidationError, run_fanout_secondaries, validate_fanout_targets
 from eval.scoring import EvalTokenError, mint_eval_token, redeem_eval_token, score_state
+from eval.shadow_runner import enqueue_shadows_for_parent
 from models.client import ClientApp
 from models.job import Job
 from models.routing import RoutingRule
@@ -326,6 +327,15 @@ async def submit_job(
         providers=providers,
         session=session,
     )
+    # Fan out the rule's eval shadows once the primary lands successfully —
+    # mirrors the MCP path (mcp_server.create_job). Without this, sync HTTP
+    # jobs silently skipped every shadow in their rule. We don't fan out on
+    # failure (no point comparing against a broken primary), and we don't
+    # block the response on shadow enqueueing — RQ takes them from here.
+    if job.status == JobStatus.COMPLETE.value:
+        await enqueue_shadows_for_parent(
+            parent_job=job, rule=rule, client=client, session=session
+        )
     return JobOut.from_job(job)
 
 
