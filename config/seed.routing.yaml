@@ -119,17 +119,15 @@ rules:
     # TODO: add cloud shadows once ANTHROPIC_API_KEY is configured.
 
   # Free-form creative ideation. Local-only by design — the consuming app is
-  # meant to run on a MacBook Air, so the matrix has to fit in ~10-14 GB RAM
-  # without ever reaching for the cloud. Four cross-family shadows on every
-  # job (sample rate 1.0) so we get a meaningful eval signal every time.
+  # meant to run on a MacBook Air. Starting minimal: 4B primary head-to-head
+  # against the 12B, both Gemma. Add cross-family shadows (qwen, llama,
+  # mistral, etc.) once the pipeline is proven and we want a richer eval
+  # signal. Both models belong in RESIDENT_MODELS so they stay loaded.
   - task_type: wander
-    preferred_model: gemma4:12b
-    fallback_model: gemma4:e4b
+    preferred_model: gemma4:e4b
+    fallback_model: gemma4:12b
     sensitivity: public
     max_tokens: 1200
-    notes: "Free-form creative wandering. Local-only by design (the app runs on a MacBook Air, no cloud). Four cross-family shadows on every job."
+    notes: "Free-form creative wandering. Local-only, runnable on a MacBook Air. Starting minimal: 4B primary head-to-head against 12B. Add more families once the pipeline is proven."
     eval_shadow_models:
-      - { model: qwen3.5:9b, rate: 1.0 }   # Qwen family, mid-tier
-      - { model: llama3.1:8b, rate: 1.0 }  # Llama family
-      - { model: mistral:7b, rate: 1.0 }   # Mistral family
-      - { model: gemma4:e4b, rate: 1.0 }   # same-family step-down
+      - { model: gemma4:12b, rate: 1.0 }   # same-family step-up
