@@ -1,5 +1,8 @@
-# Per-million-token pricing in USD. Edit and send SIGUSR1 to the running app to reload:
-#   kill -USR1 $(pgrep -f "uvicorn main:app")
+# Per-million-token pricing in USD. Edit and hot-reload both processes
+# (API + worker) with:
+#   make reload-pricing
+# or directly:
+#   docker kill --signal=USR1 conduct-api conduct-worker
 #
 # Local provider pricing is implicitly zero — omit them.
 # Add entries when new cloud models are routed to.

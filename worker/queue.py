@@ -99,6 +99,8 @@ def main() -> None:
             pinned = asyncio.run(pin_resident_models(ollama))
             log.info("pinned %d resident model(s): %s", len(pinned), pinned)
 
+    _install_sigusr1_pricing_reload(log)
+
     redis = get_redis()
     main_queue = Queue(QUEUE_NAME, connection=redis)
     shadow_queue = Queue(SHADOW_QUEUE_NAME, connection=redis)
@@ -106,6 +108,38 @@ def main() -> None:
     # run when the main queue is empty.
     worker = SimpleWorker([main_queue, shadow_queue], connection=redis)
     worker.work(with_scheduler=False)
+
+
+def _install_sigusr1_pricing_reload(log: logging.Logger) -> None:
+    """Hot-reload pricing.yaml on SIGUSR1, mirroring the API's lifespan
+    handler in lifespan.py. The worker is the process that prices shadow
+    jobs (it runs the providers' .complete() calls), so without this the
+    API and the worker can diverge on cost_usd after a pricing edit.
+
+    Uses plain signal.signal() — RQ's SimpleWorker is synchronous, so the
+    asyncio add_signal_handler trick the API uses doesn't apply. RQ
+    installs its own SIGINT/SIGTERM handlers for graceful shutdown;
+    SIGUSR1 is unclaimed and safe to take."""
+    import signal  # noqa: PLC0415
+
+    from config.pricing import get_pricing  # noqa: PLC0415
+
+    def _reload(_signum, _frame) -> None:
+        try:
+            get_pricing().reload()
+            log.warning("pricing reloaded from %s", get_pricing().path)
+        except Exception:  # noqa: BLE001
+            log.exception("pricing reload failed")
+
+    try:
+        signal.signal(signal.SIGUSR1, _reload)
+        log.warning(
+            "SIGUSR1 handler installed for pricing reload "
+            "(send via: docker kill --signal=USR1 conduct-worker)"
+        )
+    except (OSError, ValueError) as e:
+        # Windows or no main thread in tests
+        log.info("SIGUSR1 not available (%s) — pricing must be reloaded by restart", e)
 
 
 if __name__ == "__main__":

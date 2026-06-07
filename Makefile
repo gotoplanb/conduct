@@ -18,6 +18,7 @@ help:
 	@echo "  make psql      — open psql against the dev database"
 	@echo "  make redis-cli — open redis-cli against the dev redis"
 	@echo "  make tunnel    — start the ngrok HTTPS tunnel"
+	@echo "  make reload-pricing — SIGUSR1 the api + worker to reload config/pricing.yaml without restart"
 	@echo "  make download-voice [v=<voice-name>] — download a Piper TTS voice (default en_US-amy-medium)"
 	@echo "  make coverage — run pytest with coverage, write coverage.xml"
 	@echo "  make sonar-scan — run SonarQube static analysis (results at http://localhost:9000/dashboard?id=conduct)"
@@ -76,6 +77,10 @@ redis-cli:
 
 tunnel:
 	ngrok http 8000
+
+reload-pricing:
+	@docker kill --signal=USR1 conduct-api conduct-worker
+	@echo "SIGUSR1 sent — check the api/worker logs for 'pricing reloaded'"
 
 # Run SonarQube static analysis against the local watchtower instance.
 # First runs pytest with coverage (writes coverage.xml in Cobertura format,
