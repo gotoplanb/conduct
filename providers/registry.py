@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from providers.base import BaseProvider
+from providers.media_base import BaseMediaProvider
 
 # AWS Bedrock model IDs use a dotted namespace identifying the foundation-
 # model vendor (anthropic.claude-..., meta.llama3-..., etc). Cross-region
@@ -22,9 +23,17 @@ _INFERENCE_PROFILE_PREFIXES = frozenset(
 class ProviderRegistry:
     def __init__(self) -> None:
         self._providers: dict[str, BaseProvider] = {}
+        # Media providers live in a separate namespace because the dispatch
+        # paths are different (BaseProvider.complete vs BaseMediaProvider.produce)
+        # and a single provider type can show up in both if it grew text APIs
+        # later — keeping the namespaces separate avoids ambiguous .get() calls.
+        self._media_providers: dict[str, BaseMediaProvider] = {}
 
     def register(self, provider: BaseProvider) -> None:
         self._providers[provider.name] = provider
+
+    def register_media(self, provider: BaseMediaProvider) -> None:
+        self._media_providers[provider.name] = provider
 
     def get(self, name: str) -> BaseProvider:
         try:
@@ -32,8 +41,17 @@ class ProviderRegistry:
         except KeyError as e:
             raise KeyError(f"provider not registered: {name}") from e
 
+    def get_media(self, name: str) -> BaseMediaProvider:
+        try:
+            return self._media_providers[name]
+        except KeyError as e:
+            raise KeyError(f"media provider not registered: {name}") from e
+
     def has(self, name: str) -> bool:
         return name in self._providers
+
+    def has_media(self, name: str) -> bool:
+        return name in self._media_providers
 
     def get_for_client(self, client_app, name: str) -> BaseProvider:
         """Provider lookup that honors per-client secrets.

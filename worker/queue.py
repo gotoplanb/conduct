@@ -20,12 +20,19 @@ from observability.logs import init_logging
 from observability.tracing import init_tracing
 
 QUEUE_NAME = "conduct"
+MEDIA_QUEUE_NAME = "conduct-media"
 SHADOW_QUEUE_NAME = "conduct-shadow"
 DEFAULT_JOB_TIMEOUT_S = 600  # 10 minutes; long enough for cold-start swaps + inference
+# Media tasks (Wan 2.2 I2V, big SDXL workflows, etc.) routinely run 5-30
+# minutes — keep them out of the text-job timeout so a long video gen
+# doesn't get killed mid-diffusion. Default is generous; rules can pin
+# tighter timeouts via metadata when speed matters.
+DEFAULT_MEDIA_JOB_TIMEOUT_S = 3600  # 1 hour
 WORKER_METRICS_PORT = 8001
 
 _redis: Redis | None = None
 _queue: Queue | None = None
+_media_queue: Queue | None = None
 _shadow_queue: Queue | None = None
 
 
@@ -43,12 +50,23 @@ def get_queue() -> Queue:
     return _queue
 
 
+def get_media_queue() -> Queue:
+    """Long-running media tasks (image gen, video gen, audio gen, mux).
+    Separated from the main queue so a 10-minute video job can't starve
+    text-job throughput. SimpleWorker drains queues left-to-right, so the
+    worker priority order puts text > media > shadows."""
+    global _media_queue
+    if _media_queue is None:
+        _media_queue = Queue(MEDIA_QUEUE_NAME, connection=get_redis())
+    return _media_queue
+
+
 def get_shadow_queue() -> Queue:
     """Lower-priority queue for eval shadow jobs.
 
     SimpleWorker drains queues in list order, so by passing
-    [main_queue, shadow_queue] the worker only pulls a shadow when the main
-    queue is empty.
+    [main_queue, media_queue, shadow_queue] the worker only pulls a shadow
+    when both higher-priority queues are empty.
     """
     global _shadow_queue
     if _shadow_queue is None:
@@ -103,10 +121,12 @@ def main() -> None:
 
     redis = get_redis()
     main_queue = Queue(QUEUE_NAME, connection=redis)
+    media_queue = Queue(MEDIA_QUEUE_NAME, connection=redis)
     shadow_queue = Queue(SHADOW_QUEUE_NAME, connection=redis)
-    # Order matters: SimpleWorker drains queues left-to-right, so shadows only
-    # run when the main queue is empty.
-    worker = SimpleWorker([main_queue, shadow_queue], connection=redis)
+    # Order matters: SimpleWorker drains queues left-to-right, so text > media >
+    # shadows. A media job can't block a text job from being picked up, but it
+    # can block another media job (we only run one worker process per pod).
+    worker = SimpleWorker([main_queue, media_queue, shadow_queue], connection=redis)
     worker.work(with_scheduler=False)
 
 

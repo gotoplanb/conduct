@@ -51,6 +51,15 @@ class Job(Base):
     job_metadata: Mapped[dict] = mapped_column(
         "metadata", JSONB, nullable=False, default=dict, server_default="{}"
     )
+    # Typed input bag for media tasks (source_image_url, source_video_url,
+    # source_audio_url, etc.) The text-only path leaves this {}.
+    inputs: Mapped[dict] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default="{}"
+    )
+    # URL of the generated artifact for media tasks (e.g. /output/{job.id}.mp4).
+    # Mirrors the TTS executor's existing /output/{id}.mp3 pattern; the API
+    # serves this static path. Text tasks leave it NULL.
+    media_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     # Single-use eval token: lets a credential-less party (e.g. a portal link)
     # submit one quality score for this job. Stored hashed; raw shown once at
     # mint time. Scores themselves live in job_metadata.quality_scores.

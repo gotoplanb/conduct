@@ -39,6 +39,8 @@ _tracer = get_tracer(__name__)
 # Default failure handler — swap to TriageFailureHandler in lifespan when v2 is ready.
 _default_failure_handler: FailureHandler = StaticFailureHandler()
 
+_SPAN_MODEL_USED = "model.used"
+
 
 async def _call_provider(
     provider: BaseProvider,
@@ -50,7 +52,7 @@ async def _call_provider(
     is_local: bool,
 ) -> ProviderResponse:
     with _tracer.start_as_current_span("conduct.inference") as span:
-        span.set_attribute("model.used", model)
+        span.set_attribute(_SPAN_MODEL_USED, model)
         span.set_attribute("model.provider", provider.name)
         if is_local:
             async with _local_inference_lock:
@@ -242,7 +244,7 @@ async def execute_job(
 
         duration_s = perf_counter() - started
         job_span.set_attribute("job.status", job.status)
-        job_span.set_attribute("model.used", job.model_used or "")
+        job_span.set_attribute(_SPAN_MODEL_USED, job.model_used or "")
         job_span.set_attribute("job.duration_s", duration_s)
 
         record_job_completion(
@@ -253,6 +255,119 @@ async def execute_job(
             duration_s=duration_s,
             tokens_in=job.tokens_in or 0,
             tokens_out=job.tokens_out or 0,
+            cost_usd=float(job.cost_usd or 0),
+        )
+        return job
+
+
+async def execute_media_job(
+    *,
+    job: Job,
+    media_provider_name: str,
+    media_kind: str,
+    workflow_template: str,
+    providers: ProviderRegistry,
+    output_dir: str,
+    session: AsyncSession,
+    extra_params: dict | None = None,
+) -> Job:
+    """Media-path counterpart to execute_job. Calls the named
+    BaseMediaProvider via `produce()` and writes Job.media_url + metadata.
+
+    `media_kind` is for observability — we set it as a span attribute so
+    Tempo searches can filter `media.kind=video` etc. The actual dispatch
+    is driven by `media_provider_name` (which the routing engine derived
+    from the rule).
+
+    `workflow_template` is the ComfyUI-specific knob (which JSON to load).
+    For non-ComfyUI providers it's a no-op param. Passed via the
+    provider's `params` so each provider decides what to honor.
+    """
+    from providers.media_base import BaseMediaProvider  # noqa: PLC0415
+
+    media: BaseMediaProvider = providers.get_media(media_provider_name)
+    client_name = (await session.get(ClientApp, job.client_app_id)).name
+
+    with _tracer.start_as_current_span("conduct.media_job") as span:
+        span.set_attribute("job.id", str(job.id))
+        span.set_attribute("job.task_type", job.task_type)
+        span.set_attribute("job.client_app", client_name)
+        span.set_attribute("media.kind", media_kind)
+        span.set_attribute("media.provider", media_provider_name)
+        span.set_attribute("media.workflow_template", workflow_template or "")
+
+        started = perf_counter()
+        job.status = JobStatus.RUNNING.value
+        job.started_at = datetime.now(UTC)
+        job.model_used = workflow_template or media_provider_name
+        await session.commit()
+
+        params = dict(extra_params or {})
+        if workflow_template:
+            params.setdefault("workflow_template", workflow_template)
+
+        try:
+            response = await media.produce(
+                prompt=job.prompt,
+                inputs=job.inputs or {},
+                output_dir=output_dir,
+                output_basename=str(job.id),
+                params=params,
+            )
+        except Exception as e:  # noqa: BLE001 — surface every failure to the row
+            job.status = JobStatus.FAILED.value
+            job.error = f"{type(e).__name__}: {e}"
+            job.completed_at = datetime.now(UTC)
+            span.record_exception(e)
+            span.set_status(Status(StatusCode.ERROR, str(e)[:200]))
+            await session.commit()
+            await session.refresh(job)
+            duration_s = perf_counter() - started
+            record_job_completion(
+                status=job.status,
+                task_type=job.task_type,
+                model=job.model_used or "",
+                client_app=client_name,
+                duration_s=duration_s,
+                tokens_in=0, tokens_out=0, cost_usd=0.0,
+            )
+            return job
+
+        job.status = JobStatus.COMPLETE.value
+        job.completed_at = datetime.now(UTC)
+        job.latency_ms = response.latency_ms
+        job.cost_usd = response.cost_usd
+        job.model_used = response.model_used
+        job.media_url = response.url_path
+        # Mirror the existing routing metadata block; media-specific bits
+        # land under metadata['media'] so they're queryable in /ui/jobs.
+        job.job_metadata = {
+            **(job.job_metadata or {}),
+            "media": {
+                "mime_type": response.mime_type,
+                "width": response.width,
+                "height": response.height,
+                "duration_s": response.duration_s,
+                "provider": response.provider,
+                "extra": response.extra,
+            },
+        }
+        await _bump_usage(session, job)
+        await session.commit()
+        await session.refresh(job)
+
+        duration_s = perf_counter() - started
+        span.set_attribute("job.status", job.status)
+        span.set_attribute(_SPAN_MODEL_USED, job.model_used or "")
+        span.set_attribute("job.duration_s", duration_s)
+
+        record_job_completion(
+            status=job.status,
+            task_type=job.task_type,
+            model=job.model_used or "",
+            client_app=client_name,
+            duration_s=duration_s,
+            tokens_in=0, tokens_out=0,
             cost_usd=float(job.cost_usd or 0),
         )
         return job

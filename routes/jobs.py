@@ -63,6 +63,12 @@ class JobCreateIn(BaseModel):
     # Handy for "I want the full comparison for this specific input."
     force_shadows: bool = False
     metadata: dict = Field(default_factory=dict)
+    # Typed inputs for media tasks. Per-task-type shape (e.g.
+    # `{"source_image_url": "/output/abc.png"}` for image→video,
+    # `{"source_video_url": "...", "source_audio_url": "..."}` for mux).
+    # Text-only tasks leave this empty. The provider decides what's required;
+    # missing required inputs surface as task-time errors.
+    inputs: dict = Field(default_factory=dict)
 
 
 class JobOut(BaseModel):
@@ -84,6 +90,10 @@ class JobOut(BaseModel):
     completed_at: datetime | None = None
     metadata: dict = {}
     eval_url: str | None = None
+    # For media tasks: served from the API's /output/ static handler.
+    # Text tasks leave this null; clients should check `task_type`'s rule
+    # `media_kind` or just look for `media_url` being non-null.
+    media_url: str | None = None
 
     @classmethod
     def from_job(cls, job: Job) -> JobOut:
@@ -105,6 +115,7 @@ class JobOut(BaseModel):
             completed_at=job.completed_at,
             metadata=job.job_metadata or {},
             eval_url=f"{base}/jobs/{job.id}/eval",
+            media_url=job.media_url,
         )
 
 
@@ -201,6 +212,41 @@ def _check_cloud_target_sensitivity(
         )
 
 
+async def _enqueue_for_media_async(job: Job, session: AsyncSession) -> JSONResponse:
+    """Media tasks land on the conduct-media RQ queue with the longer
+    DEFAULT_MEDIA_JOB_TIMEOUT_S — Wan 2.2 I2V routinely runs 5-30 minutes,
+    well past the 10-min default for text jobs. Same shape as the text
+    enqueue path otherwise."""
+    from worker.queue import (  # noqa: PLC0415
+        DEFAULT_MEDIA_JOB_TIMEOUT_S,
+        get_media_queue,
+    )
+
+    try:
+        get_media_queue().enqueue(
+            run_job,
+            str(job.id),
+            job_id=str(job.id),
+            job_timeout=DEFAULT_MEDIA_JOB_TIMEOUT_S,
+        )
+    except Exception as e:
+        log.exception("failed to enqueue media job %s", job.id)
+        job.status = JobStatus.FAILED.value
+        job.error = f"enqueue failed: {e}"
+        await session.commit()
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE, "queue backend unavailable"
+        ) from e
+    return JSONResponse(
+        status_code=status.HTTP_202_ACCEPTED,
+        content={
+            "job_id": str(job.id),
+            "status": JobStatus.PENDING.value,
+            "poll_url": f"/jobs/{job.id}",
+        },
+    )
+
+
 async def _enqueue_for_async(job: Job, session: AsyncSession) -> JSONResponse:
     try:
         get_queue().enqueue(
@@ -292,6 +338,30 @@ async def submit_job(
             RoutingRule.is_archived.is_(False),
         )
     )
+
+    # Media tasks (image/video/audio/mux) bypass the text routing engine
+    # entirely — there's no model/provider/sensitivity decision to make on
+    # the API side. Just enqueue onto the conduct-media queue and let the
+    # worker dispatch via execute_media_job. The worker re-reads the rule
+    # to pick the workflow template + provider, so the API doesn't need to.
+    if rule is not None and rule.media_kind != "text":
+        job = Job(
+            client_app_id=client.id,
+            task_type=body.task_type,
+            sensitivity=Sensitivity(rule.sensitivity).value,
+            priority=body.priority,
+            prompt=body.prompt,
+            system_prompt=body.system_prompt,
+            model_requested=body.model or "",
+            status=JobStatus.PENDING.value,
+            inputs=body.inputs or {},
+            job_metadata={**(body.metadata or {})},
+        )
+        session.add(job)
+        await session.commit()
+        await session.refresh(job)
+        return await _enqueue_for_media_async(job, session)
+
     decision = _resolve_decision(body, client, rule, providers)
     _validate_fanout(body, decision, client)
 
@@ -312,6 +382,7 @@ async def submit_job(
         system_prompt=body.system_prompt,
         model_requested=body.model or "",
         status=JobStatus.PENDING.value,
+        inputs=body.inputs or {},
         job_metadata={
             **(body.metadata or {}),
             **({"force_shadows": True} if body.force_shadows else {}),

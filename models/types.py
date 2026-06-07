@@ -26,3 +26,16 @@ class JobStatus(StrEnum):
     COMPLETE = "complete"
     FAILED = "failed"
     CANCELLED = "cancelled"
+
+
+class MediaKind(StrEnum):
+    """Declared by RoutingRule. Tells the worker which dispatch path to take:
+    `text` (the default) uses the existing BaseProvider.complete; everything
+    else routes through BaseMediaProvider.produce and writes Job.media_url.
+    `mux` is the ffmpeg composition primitive — no model, just shells out."""
+
+    TEXT = "text"
+    IMAGE = "image"
+    VIDEO = "video"
+    AUDIO = "audio"
+    MUX = "mux"

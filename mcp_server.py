@@ -134,6 +134,48 @@ def _job_detail(job: Job) -> dict[str, Any]:
         "cost_usd": float(job.cost_usd) if isinstance(job.cost_usd, Decimal) else job.cost_usd,
         "latency_ms": job.latency_ms,
         "completed_at": job.completed_at.isoformat() if job.completed_at else None,
+        # Media tasks return URLs instead of text. Clients render audio/video
+        # by fetching `media_url` from the API's /output handler; text tasks
+        # leave it null.
+        "media_url": job.media_url,
+    }
+
+
+async def _create_media_job(
+    *, client, rule, task_type, prompt, system_prompt, inputs
+) -> dict[str, Any]:
+    """Media task path — skip the routing engine, enqueue onto the
+    conduct-media queue with the longer media job timeout."""
+    from worker.queue import (  # noqa: PLC0415
+        DEFAULT_MEDIA_JOB_TIMEOUT_S,
+        get_media_queue,
+    )
+
+    async with SessionLocal() as session:
+        job = Job(
+            client_app_id=client.id,
+            task_type=task_type,
+            sensitivity=rule.sensitivity,
+            priority=5,
+            prompt=prompt,
+            system_prompt=system_prompt,
+            model_requested="",
+            status=JobStatus.PENDING.value,
+            inputs=inputs,
+            job_metadata={},
+        )
+        session.add(job)
+        await session.commit()
+        await session.refresh(job)
+        job_id = str(job.id)
+
+    get_media_queue().enqueue(
+        run_job, job_id, job_id=job_id, job_timeout=DEFAULT_MEDIA_JOB_TIMEOUT_S
+    )
+    return {
+        "job_id": job_id,
+        "status": JobStatus.PENDING.value,
+        "note": "queued on conduct-media — call get_job(job_id) for the result",
     }
 
 
@@ -247,6 +289,7 @@ async def create_job(
     system_prompt: str = "",
     sensitivity: str | None = None,
     force_shadows: bool = False,
+    inputs: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Create a job. Fast tasks (cloud or resident local models) run inline
     and the result is returned directly; heavier ones return status=pending —
@@ -254,9 +297,16 @@ async def create_job(
     list_task_types. `sensitivity` (public/internal/confidential) may raise the
     floor, never lower it. Set `force_shadows=true` to fan out every eligible
     eval shadow for THIS request regardless of the rule's sampling rate —
-    useful when you specifically want a side-by-side model comparison."""
+    useful when you specifically want a side-by-side model comparison.
+
+    `inputs` is the typed-input bag for media tasks. Examples by task kind:
+    image→video: `{"source_image_url": "/output/abc.png"}`. video+audio→mux:
+    `{"source_video_url": "/output/vid.mp4", "source_audio_url":
+    "/output/aud.mp3"}`. Text tasks ignore it. URLs can be any other
+    Conduct job's /output URL or any http(s) URL the worker can reach."""
     client_app_id = _client_app_id()
     settings = get_settings()
+    inputs = inputs or {}
     try:
         requested = Sensitivity(sensitivity) if sensitivity else None
     except ValueError as e:
@@ -270,6 +320,20 @@ async def create_job(
                 RoutingRule.is_archived.is_(False),
             )
         )
+
+        # Media tasks (image/video/audio/mux) skip the text routing engine
+        # and go straight onto the conduct-media queue. Mirror the HTTP
+        # path in routes/jobs.py.
+        if rule is not None and rule.media_kind != "text":
+            return await _create_media_job(
+                client=client,
+                rule=rule,
+                task_type=task_type,
+                prompt=prompt,
+                system_prompt=system_prompt,
+                inputs=inputs,
+            )
+
         effective_request = requested or (
             Sensitivity(rule.sensitivity) if rule else Sensitivity.INTERNAL
         )
@@ -295,6 +359,7 @@ async def create_job(
             system_prompt=system_prompt,
             model_requested="",
             status=JobStatus.PENDING.value,
+            inputs=inputs,
             job_metadata={"force_shadows": True} if force_shadows else {},
         )
         session.add(job)
