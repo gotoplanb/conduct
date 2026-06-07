@@ -187,6 +187,56 @@ async def test_jobs_requires_auth(client) -> None:
     assert r.status_code == 403
 
 
+async def test_cancel_live_running_job_is_409(
+    client, db_session, cloud_client, task_type, fake_redis
+) -> None:
+    """A running job whose RQ record still exists belongs to a live worker —
+    the API must refuse to cancel it, else we race the executor."""
+    from rq import Queue
+
+    job = await _seed_job(
+        db_session,
+        client_id=cloud_client[0].id,
+        task_type=task_type,
+        status=JobStatus.RUNNING.value,
+    )
+    # Plant an RQ record with matching id so the route's fetch succeeds.
+    q = Queue("conduct", connection=fake_redis)
+    q.enqueue(lambda: None, job_id=str(job.id), job_timeout=60)
+
+    r = await client.delete(
+        f"/jobs/{job.id}",
+        headers={"Authorization": f"Bearer {cloud_client[1]}"},
+    )
+    assert r.status_code == 409
+    assert "running" in r.json()["detail"]
+
+
+async def test_cancel_abandoned_running_job_flips_to_cancelled(
+    client, db_session, cloud_client, task_type, fake_redis
+) -> None:
+    """When the worker host crashes, the Job row stays status=running but the
+    RQ record is gone (AbandonedJobError / TTL). The route should detect the
+    NoSuchJobError and flip the orphan to cancelled so it doesn't stick."""
+    job = await _seed_job(
+        db_session,
+        client_id=cloud_client[0].id,
+        task_type=task_type,
+        status=JobStatus.RUNNING.value,
+    )
+    # fake_redis is empty — no RQ record for this id → NoSuchJobError path.
+
+    r = await client.delete(
+        f"/jobs/{job.id}",
+        headers={"Authorization": f"Bearer {cloud_client[1]}"},
+    )
+    assert r.status_code == 200
+    assert r.json()["status"] == JobStatus.CANCELLED.value
+
+    await db_session.refresh(job)
+    assert job.status == JobStatus.CANCELLED.value
+
+
 async def test_admin_list_jobs(client, db_session, seeded_client, admin_headers, task_type) -> None:
     await _seed_job(db_session, client_id=seeded_client[0].id, task_type=task_type)
     await _seed_job(db_session, client_id=seeded_client[0].id, task_type=task_type)

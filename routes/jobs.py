@@ -628,6 +628,16 @@ async def cancel_job(
     if job is None or job.client_app_id != client.id:
         raise HTTPException(status.HTTP_404_NOT_FOUND, _JOB_NOT_FOUND)
     if job.status == JobStatus.RUNNING.value:
+        # A live worker still owns the job → refuse. But if the RQ record is
+        # gone (worker host crashed, AbandonedJobError fired, TTL expired),
+        # the row is orphaned and safe to flip → cancelled.
+        try:
+            RQJob.fetch(str(job.id), connection=get_redis())
+        except NoSuchJobError:
+            job.status = JobStatus.CANCELLED.value
+            await session.commit()
+            await session.refresh(job)
+            return JobOut.from_job(job)
         raise HTTPException(status.HTTP_409_CONFLICT, "cannot cancel a running job")
     if job.status == JobStatus.PENDING.value:
         try:
