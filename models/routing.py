@@ -5,7 +5,7 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from db.base import Base
-from models.types import Sensitivity
+from models.types import MediaKind, Sensitivity
 
 
 class RoutingRule(Base):
@@ -39,4 +39,11 @@ class RoutingRule(Base):
     # archived rules as nonexistent.
     is_archived: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default="false"
+    )
+    # Output shape: 'text' (the default) keeps the existing BaseProvider path.
+    # 'image'/'video'/'audio'/'mux' dispatch through BaseMediaProvider via the
+    # conduct-media RQ queue. The text-only rules predating this column get
+    # 'text' as a server default, so the migration is fully backward compatible.
+    media_kind: Mapped[str] = mapped_column(
+        String(16), nullable=False, default=MediaKind.TEXT.value, server_default="text"
     )

@@ -142,3 +142,41 @@ rules:
     notes: "Per-turn eval of player choices in the wander game. Small-model primary (latency matters at every turn); bigger Gemma as shadow + fallback."
     eval_shadow_models:
       - { model: gemma4:12b, rate: 1.0 }   # same-family step-up
+
+  # ===== Media task primitives =====
+  # These four are the wander scene-pipeline primitives. Each one is
+  # independent: the client orchestrates the chain by passing previous-job
+  # output URLs into the next job's `inputs`. See docs/quickstart-ios-eval.md
+  # for the pattern. media_kind drives the worker's dispatch path.
+
+  - task_type: wander_scene_image
+    preferred_model: wander_scene_image    # = comfy_workflows/wander_scene_image.json
+    fallback_model: wander_scene_image
+    sensitivity: public
+    max_tokens: 1
+    media_kind: image
+    notes: "SDXL + Ghibli LoRA scene still. 1024x768. ~23s on M5 Max."
+
+  - task_type: wander_scene_video
+    preferred_model: wander_scene_video    # = comfy_workflows/wander_scene_video.json
+    fallback_model: wander_scene_video
+    sensitivity: public
+    max_tokens: 1
+    media_kind: video
+    notes: "Wan 2.2 14B I2V FP16. Inputs require source_image_url. ~6 min for a 3s clip @ 720x480 on M5 Max."
+
+  - task_type: wander_scene_music
+    preferred_model: acestep-v15-xl-turbo  # ignored at dispatch; selected by provider config
+    fallback_model: acestep-v15-xl-turbo
+    sensitivity: public
+    max_tokens: 1
+    media_kind: audio
+    notes: "ACE-Step 1.5 XL Turbo chiptune via MLX. ~23s for ~34s of audio after one-time init."
+
+  - task_type: wander_scene_assemble
+    preferred_model: ffmpeg                # cosmetic; the mux provider doesn't honor it
+    fallback_model: ffmpeg
+    sensitivity: public
+    max_tokens: 1
+    media_kind: mux
+    notes: "FFmpeg mux. Inputs require source_video_url + source_audio_url. Sub-second."

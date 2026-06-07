@@ -189,6 +189,32 @@ async def _run_async(job_id: UUID) -> None:
                     RoutingRule.is_archived.is_(False),
                 )
             )
+
+            # Media-task branch: image/video/audio/mux routes go through
+            # execute_media_job and write Job.media_url. No routing engine
+            # involvement (no fallback model, no fan-out shadows) — the
+            # provider directly invokes the daemon API.
+            if rule is not None and rule.media_kind != "text":
+                from worker.executor import execute_media_job  # noqa: PLC0415
+
+                provider_name, workflow_template, extra_params = _media_dispatch_for_rule(rule)
+                output_dir = getattr(settings, "tts_output_dir", "/app/output")
+                await execute_media_job(
+                    job=job,
+                    media_provider_name=provider_name,
+                    media_kind=rule.media_kind,
+                    workflow_template=workflow_template,
+                    providers=providers,
+                    output_dir=output_dir,
+                    session=session,
+                    extra_params=extra_params,
+                )
+                dispatch_span.set_attribute(_DISPATCH_OUTCOME, "media_executed")
+                # Media tasks don't fan out eval shadows (yet) — comparing
+                # generated videos is a different problem from comparing
+                # text completions, and it's out of scope for this branch.
+                return
+
             decision = await _decide_or_fail(
                 job, client, rule, settings, session, dispatch_span
             )
@@ -226,3 +252,24 @@ async def _run_async(job_id: UUID) -> None:
                 )
                 if shadow_ids:
                     dispatch_span.set_attribute("shadows.enqueued", len(shadow_ids))
+
+
+def _media_dispatch_for_rule(rule: RoutingRule) -> tuple[str, str, dict]:
+    """Map a media RoutingRule to (provider_name, workflow_template, params).
+
+    For ComfyUI-backed kinds (image/video), the rule's `preferred_model`
+    holds the workflow template name (e.g. 'wander_scene_image'). For
+    audio, the provider is 'acestep' and there's no template. For mux,
+    the provider is 'ffmpeg_mux' with no template. The
+    `eval_shadow_models[0]` slot (if present) can carry default-params
+    overrides as a `{}` dict — that's how rule authors pin width/height/
+    fps without touching code; ignored for now to keep this commit
+    focused.
+    """
+    if rule.media_kind in ("image", "video"):
+        return "comfyui", rule.preferred_model, {}
+    if rule.media_kind == "audio":
+        return "acestep", "", {}
+    if rule.media_kind == "mux":
+        return "ffmpeg_mux", "", {}
+    raise ValueError(f"unknown media_kind: {rule.media_kind!r}")

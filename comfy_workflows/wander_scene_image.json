@@ -1,0 +1,52 @@
+{
+  "_meta": {
+    "description": "SDXL base + Ghibli LoRA scene image. Verified end-to-end on M5 Max (23s @ 1024x768).",
+    "inject": {
+      "prompt": {"node": "3", "input": "text"},
+      "negative_prompt": {"node": "4", "input": "text"},
+      "width": {"node": "5", "input": "width"},
+      "height": {"node": "5", "input": "height"},
+      "seed": {"node": "6", "input": "seed"}
+    },
+    "output_node": "8",
+    "default_negative": "blurry, low quality, photograph, modern, neon, ugly, deformed",
+    "default_params": {"width": 1024, "height": 768, "seed": 42}
+  },
+  "1": {
+    "class_type": "CheckpointLoaderSimple",
+    "inputs": {"ckpt_name": "sd_xl_base_1.0.safetensors"}
+  },
+  "2": {
+    "class_type": "LoraLoader",
+    "inputs": {
+      "lora_name": "Ghibli_v6.safetensors",
+      "strength_model": 0.85,
+      "strength_clip": 0.85,
+      "model": ["1", 0],
+      "clip": ["1", 1]
+    }
+  },
+  "3": {"class_type": "CLIPTextEncode", "inputs": {"text": "", "clip": ["2", 1]}},
+  "4": {"class_type": "CLIPTextEncode", "inputs": {"text": "", "clip": ["2", 1]}},
+  "5": {
+    "class_type": "EmptyLatentImage",
+    "inputs": {"width": 1024, "height": 768, "batch_size": 1}
+  },
+  "6": {
+    "class_type": "KSampler",
+    "inputs": {
+      "seed": 42, "steps": 24, "cfg": 7.0,
+      "sampler_name": "euler", "scheduler": "normal", "denoise": 1.0,
+      "model": ["2", 0], "positive": ["3", 0], "negative": ["4", 0],
+      "latent_image": ["5", 0]
+    }
+  },
+  "7": {
+    "class_type": "VAEDecode",
+    "inputs": {"samples": ["6", 0], "vae": ["1", 2]}
+  },
+  "8": {
+    "class_type": "SaveImage",
+    "inputs": {"filename_prefix": "conduct_wander_scene", "images": ["7", 0]}
+  }
+}
