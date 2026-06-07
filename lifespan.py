@@ -48,6 +48,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         registry.register(AnthropicProvider(api_key=settings.anthropic_api_key))
     else:
         log.warning("ANTHROPIC_API_KEY not set — Anthropic-routed jobs will fail.")
+    _register_media_providers(registry, log)
     app.state.providers = registry
     # Hand the registry to the MCP server so sync-eligible tools run inline.
     from mcp_server import set_provider_registry
@@ -85,3 +86,47 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         yield
 
     HTTPXClientInstrumentor().uninstrument()
+
+
+def _register_media_providers(registry, log) -> None:
+    """Register ComfyUI / ACE-Step / FFmpeg mux providers.
+
+    Reachability: defaults assume the host-side daemons we run as launchd
+    services on the M5 Max. Override via env (COMFYUI_BASE_URL,
+    ACESTEP_BASE_URL) when deploying elsewhere. Failures here are
+    non-fatal — text-only jobs should still work even if a media daemon
+    isn't reachable, so we log and continue."""
+    import os  # noqa: PLC0415
+
+    try:
+        from providers.comfyui import ComfyUIProvider  # noqa: PLC0415
+
+        registry.register_media(
+            ComfyUIProvider(
+                base_url=os.environ.get(
+                    "COMFYUI_BASE_URL", "http://host.docker.internal:8188"
+                )
+            )
+        )
+    except Exception:  # noqa: BLE001
+        log.warning("ComfyUI media provider unavailable; image/video tasks will fail")
+
+    try:
+        from providers.acestep import ACEStepProvider  # noqa: PLC0415
+
+        registry.register_media(
+            ACEStepProvider(
+                base_url=os.environ.get(
+                    "ACESTEP_BASE_URL", "http://host.docker.internal:8002"
+                )
+            )
+        )
+    except Exception:  # noqa: BLE001
+        log.warning("ACE-Step media provider unavailable; audio tasks will fail")
+
+    try:
+        from providers.ffmpeg_mux import FFmpegMuxProvider  # noqa: PLC0415
+
+        registry.register_media(FFmpegMuxProvider())
+    except Exception:  # noqa: BLE001
+        log.warning("ffmpeg mux provider unavailable; mux tasks will fail")

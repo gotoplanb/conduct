@@ -41,11 +41,46 @@ _providers: ProviderRegistry | None = None
 def _get_providers() -> ProviderRegistry:
     global _providers
     if _providers is None:
+        import os  # noqa: PLC0415
+
         settings = get_settings()
         registry = ProviderRegistry()
         registry.register(OllamaProvider(base_url=settings.ollama_base_url))
         if settings.anthropic_api_key:
             registry.register(AnthropicProvider(api_key=settings.anthropic_api_key))
+        # Media providers — same defaults as the API lifespan's
+        # _register_media_providers. Failures are non-fatal so text jobs
+        # work even if a media daemon is down.
+        try:
+            from providers.comfyui import ComfyUIProvider  # noqa: PLC0415
+
+            registry.register_media(
+                ComfyUIProvider(
+                    base_url=os.environ.get(
+                        "COMFYUI_BASE_URL", "http://host.docker.internal:8188"
+                    )
+                )
+            )
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            from providers.acestep import ACEStepProvider  # noqa: PLC0415
+
+            registry.register_media(
+                ACEStepProvider(
+                    base_url=os.environ.get(
+                        "ACESTEP_BASE_URL", "http://host.docker.internal:8002"
+                    )
+                )
+            )
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            from providers.ffmpeg_mux import FFmpegMuxProvider  # noqa: PLC0415
+
+            registry.register_media(FFmpegMuxProvider())
+        except Exception:  # noqa: BLE001
+            pass
         _providers = registry
     return _providers
 
