@@ -107,10 +107,12 @@ async def _client_id_to_name(session: AsyncSession, client_id) -> str | None:
 @router.get("")
 async def list_prompts(
     session: Annotated[AsyncSession, Depends(get_session)],
+    include_archived: Annotated[bool, Query()] = False,
 ) -> PromptListOut:
-    rows = (await session.scalars(
-        select(Prompt).order_by(Prompt.task_type, Prompt.client_id)
-    )).all()
+    stmt = select(Prompt).order_by(Prompt.task_type, Prompt.client_id)
+    if not include_archived:
+        stmt = stmt.where(Prompt.is_archived.is_(False))
+    rows = (await session.scalars(stmt)).all()
     out: list[PromptListItem] = []
     for r in rows:
         name = await _client_id_to_name(session, r.client_id)
@@ -130,6 +132,7 @@ async def get_prompt(
     task_type: str,
     session: Annotated[AsyncSession, Depends(get_session)],
     client: Annotated[str | None, Query(alias="client")] = None,
+    include_archived: Annotated[bool, Query()] = False,
 ) -> PromptOut:
     client_id = await _resolve_client_id(session, client)
     stmt = select(Prompt).where(Prompt.task_type == task_type)
@@ -137,6 +140,8 @@ async def get_prompt(
         stmt = stmt.where(Prompt.client_id.is_(None))
     else:
         stmt = stmt.where(Prompt.client_id == client_id)
+    if not include_archived:
+        stmt = stmt.where(Prompt.is_archived.is_(False))
     row = await session.scalar(stmt)
     if row is None:
         raise HTTPException(
@@ -184,6 +189,10 @@ async def upsert_prompt(
     else:
         row.content = body.content
         row.updated_by = fp
+        # PUT revives archived rows transparently — operator shouldn't have
+        # to know the row is archived to bring it back. Matches the routing
+        # rule revive behavior in routes/routing.upsert_routing.
+        row.is_archived = False
 
     session.add(
         PromptVersion(
@@ -230,6 +239,39 @@ async def prompt_history(
             )
             for r in rows
         ],
+    )
+
+
+@router.delete("/{task_type}")
+async def archive_prompt(
+    task_type: str,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    client: Annotated[str | None, Query(alias="client")] = None,
+) -> PromptOut:
+    """Soft-delete a prompt (shared or per-client). The row stays in the
+    table so PromptVersion history keeps linking; is_archived=true makes
+    resolve_prompt() raise PromptNotFoundError. Idempotent."""
+    client_id = await _resolve_client_id(session, client)
+    stmt = select(Prompt).where(Prompt.task_type == task_type)
+    if client_id is None:
+        stmt = stmt.where(Prompt.client_id.is_(None))
+    else:
+        stmt = stmt.where(Prompt.client_id == client_id)
+    row = await session.scalar(stmt)
+    if row is None:
+        raise HTTPException(
+            status.HTTP_404_NOT_FOUND,
+            f"no prompt for task_type={task_type!r} client={client!r}",
+        )
+    row.is_archived = True
+    await session.commit()
+    await session.refresh(row)
+    return PromptOut(
+        task_type=row.task_type,
+        client_name=client,
+        content=row.content,
+        updated_at=row.updated_at,
+        updated_by=row.updated_by,
     )
 
 

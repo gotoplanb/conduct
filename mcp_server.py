@@ -144,7 +144,11 @@ async def list_task_types() -> list[dict[str, Any]]:
     create_job."""
     async with SessionLocal() as session:
         rules = (
-            await session.scalars(select(RoutingRule).order_by(RoutingRule.task_type))
+            await session.scalars(
+                select(RoutingRule)
+                .where(RoutingRule.is_archived.is_(False))
+                .order_by(RoutingRule.task_type)
+            )
         ).all()
     return [
         {
@@ -261,7 +265,10 @@ async def create_job(
     async with SessionLocal() as session:
         client = await session.get(ClientApp, client_app_id)
         rule = await session.scalar(
-            select(RoutingRule).where(RoutingRule.task_type == task_type)
+            select(RoutingRule).where(
+                RoutingRule.task_type == task_type,
+                RoutingRule.is_archived.is_(False),
+            )
         )
         effective_request = requested or (
             Sensitivity(rule.sensitivity) if rule else Sensitivity.INTERNAL

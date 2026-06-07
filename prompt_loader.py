@@ -37,13 +37,19 @@ async def resolve_prompt(
     """Find the prompt for this task_type, preferring a per-client override
     when one exists. Raises PromptNotFoundError if neither path matches."""
 
+    # Archived prompts are treated as nonexistent — the route's DELETE flips
+    # is_archived but leaves PromptVersion history intact. Filter at both
+    # lookup sites so a soft-deleted prompt can't keep silently dispatching.
+
     # 1. Client override (if a client was named).
     if client_name:
         client = await session.scalar(select(ClientApp).where(ClientApp.name == client_name))
         if client is not None:
             row = await session.scalar(
                 select(Prompt).where(
-                    Prompt.task_type == task_type, Prompt.client_id == client.id
+                    Prompt.task_type == task_type,
+                    Prompt.client_id == client.id,
+                    Prompt.is_archived.is_(False),
                 )
             )
             if row is not None:
@@ -58,7 +64,11 @@ async def resolve_prompt(
 
     # 2. Shared default.
     row = await session.scalar(
-        select(Prompt).where(Prompt.task_type == task_type, Prompt.client_id.is_(None))
+        select(Prompt).where(
+            Prompt.task_type == task_type,
+            Prompt.client_id.is_(None),
+            Prompt.is_archived.is_(False),
+        )
     )
     if row is None:
         raise PromptNotFoundError(

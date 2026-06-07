@@ -286,7 +286,12 @@ async def submit_job(
     session: Annotated[AsyncSession, Depends(get_session)],
     providers: Annotated[ProviderRegistry, Depends(get_provider_registry)],
 ) -> JSONResponse | JobOut:
-    rule = await session.scalar(select(RoutingRule).where(RoutingRule.task_type == body.task_type))
+    rule = await session.scalar(
+        select(RoutingRule).where(
+            RoutingRule.task_type == body.task_type,
+            RoutingRule.is_archived.is_(False),
+        )
+    )
     decision = _resolve_decision(body, client, rule, providers)
     _validate_fanout(body, decision, client)
 

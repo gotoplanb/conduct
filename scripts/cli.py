@@ -95,9 +95,12 @@ def _open_in_editor(initial: str, *, suffix: str = ".md") -> str | None:
 
 
 def cmd_prompts_list(args: argparse.Namespace) -> None:
-    """Print all prompts. Errors raise via HTTPStatusError → handled in main()."""
+    """Print all prompts. Errors raise via HTTPStatusError → handled in main().
+    Archived prompts are hidden by default; pass --include-archived to see
+    them too."""
+    params = {"include_archived": "true"} if args.include_archived else {}
     with httpx.Client(base_url=_base_url(), headers=_headers(), timeout=30) as c:
-        r = c.get("/prompts")
+        r = c.get("/prompts", params=params)
         r.raise_for_status()
         data = r.json()
     rows = data.get("prompts", [])
@@ -181,6 +184,33 @@ def cmd_prompts_history(args: argparse.Namespace) -> int:
     for v in versions:
         editor = v["edited_by"] or "<unknown>"
         print(f"{v['id']:>6}  {v['edited_at']}  by {editor:<14}  {v['bytes']:>6}B")
+    return 0
+
+
+def cmd_prompts_delete(args: argparse.Namespace) -> int:
+    """Soft-delete (archive) a prompt. PromptVersion history stays linked so
+    historic jobs still trace back to the right content. Revive by re-PUTing
+    via `conduct prompts edit`."""
+    target = (
+        f"prompts/{args.task_type} (client={args.client})"
+        if args.client
+        else f"prompts/{args.task_type} (shared)"
+    )
+    with httpx.Client(base_url=_base_url(), headers=_headers(), timeout=30) as c:
+        if not args.yes:
+            answer = input(
+                f"Archive {target}? resolve_prompt will raise PromptNotFoundError "
+                f"for this key until revived. [y/N] "
+            ).strip().lower()
+            if answer != "y":
+                print("aborted", file=sys.stderr)
+                return 1
+        r = c.delete(f"/prompts/{args.task_type}", params=_client_params(args.client))
+        if r.status_code == 404:
+            print(r.json().get("detail", _NOT_FOUND_FALLBACK), file=sys.stderr)
+            return 1
+        r.raise_for_status()
+    print(f"archived {target}")
     return 0
 
 
@@ -710,9 +740,11 @@ def _yaml_to_rule_body(text: str) -> dict:
 
 
 def cmd_routing_list(args: argparse.Namespace) -> None:
-    """List routing rules (admin)."""
+    """List routing rules (admin). Archived rules are hidden by default; pass
+    `--include-archived` to see them too (shown with an `[archived]` tag)."""
+    params = {"include_archived": "true"} if args.include_archived else {}
     with httpx.Client(base_url=_base_url(), headers=_headers(), timeout=30) as c:
-        r = c.get("/routing")
+        r = c.get("/routing", params=params)
         r.raise_for_status()
         rules = r.json().get("rules", [])
     if not rules:
@@ -729,6 +761,8 @@ def cmd_routing_list(args: argparse.Namespace) -> None:
         )
         if shadows:
             line += f"  shadows: {shadows}"
+        if rule.get("is_archived"):
+            line += "  [archived]"
         print(line)
 
 
@@ -799,6 +833,29 @@ def cmd_routing_edit(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_routing_delete(args: argparse.Namespace) -> int:
+    """Soft-delete (archive) a routing rule. The row stays in the DB so old
+    jobs and shadows keep linking; dispatch + listings ignore it. Reviving
+    is just `conduct routing edit <task>` (the upsert clears is_archived
+    transparently)."""
+    with httpx.Client(base_url=_base_url(), headers=_headers(), timeout=30) as c:
+        if not args.yes:
+            answer = input(
+                f"Archive routing/{args.task_type}? Dispatch will stop using it "
+                f"immediately; revive with `conduct routing edit {args.task_type}`. [y/N] "
+            ).strip().lower()
+            if answer != "y":
+                print("aborted", file=sys.stderr)
+                return 1
+        r = c.delete(f"/routing/{args.task_type}")
+        if r.status_code == 404:
+            print(r.json().get("detail", _NOT_FOUND_FALLBACK), file=sys.stderr)
+            return 1
+        r.raise_for_status()
+    print(f"archived routing/{args.task_type}")
+    return 0
+
+
 # --- argparse wiring ----
 
 
@@ -813,6 +870,10 @@ def _build_parser() -> argparse.ArgumentParser:
     psubs = prompts.add_subparsers(dest="action", required=True)
 
     plist = psubs.add_parser("list", help="list all prompts")
+    plist.add_argument(
+        "--include-archived", action="store_true",
+        help="also show soft-deleted prompts",
+    )
     plist.set_defaults(func=cmd_prompts_list)
 
     pget = psubs.add_parser("get", help="print a prompt's current content")
@@ -830,6 +891,14 @@ def _build_parser() -> argparse.ArgumentParser:
     phist.add_argument("--client", help="restrict to this client's override")
     phist.add_argument("--limit", type=int, default=20, help="max rows (default 20)")
     phist.set_defaults(func=cmd_prompts_history)
+
+    pdel = psubs.add_parser(
+        "delete", help="soft-delete (archive) a prompt; revive with `edit`",
+    )
+    pdel.add_argument("task_type")
+    pdel.add_argument("--client", help="archive a per-client override (omit for shared)")
+    pdel.add_argument("-y", "--yes", action="store_true", help=_SKIP_CONFIRM_HELP)
+    pdel.set_defaults(func=cmd_prompts_delete)
 
     jobs = subs.add_parser("jobs", help="inspect jobs across all clients")
     jsubs = jobs.add_subparsers(dest="action", required=True)
@@ -856,6 +925,10 @@ def _build_parser() -> argparse.ArgumentParser:
     routing = subs.add_parser("routing", help="inspect & edit routing rules")
     rsubs = routing.add_subparsers(dest="action", required=True)
     rlist = rsubs.add_parser("list", help="list routing rules")
+    rlist.add_argument(
+        "--include-archived", action="store_true",
+        help="also show soft-deleted rules (marked [archived])",
+    )
     rlist.set_defaults(func=cmd_routing_list)
 
     rget = rsubs.add_parser("get", help="print a routing rule as YAML")
@@ -865,6 +938,13 @@ def _build_parser() -> argparse.ArgumentParser:
     redit = rsubs.add_parser("edit", help="edit a routing rule in $EDITOR (creates if missing)")
     redit.add_argument("task_type")
     redit.set_defaults(func=cmd_routing_edit)
+
+    rdel = rsubs.add_parser(
+        "delete", help="soft-delete (archive) a routing rule; revive with `edit`",
+    )
+    rdel.add_argument("task_type")
+    rdel.add_argument("-y", "--yes", action="store_true", help=_SKIP_CONFIRM_HELP)
+    rdel.set_defaults(func=cmd_routing_delete)
 
     clients = subs.add_parser("clients", help="manage client apps")
     csubs = clients.add_subparsers(dest="action", required=True)

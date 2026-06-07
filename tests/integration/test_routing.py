@@ -93,3 +93,91 @@ async def test_get_single_rule_missing_is_404(client, admin_headers) -> None:
 async def test_get_single_rule_requires_admin(client) -> None:
     r = await client.get("/routing/whatever")
     assert r.status_code == 403
+
+
+# --- soft-delete (archive) endpoints + filtering ---
+
+
+async def _put(client, admin_headers, task_type, **overrides):
+    body = {
+        "preferred_model": "llama3.3:70b",
+        "fallback_model": "claude-haiku-4-5",
+        "sensitivity": "internal",
+        "max_tokens": 500,
+        "notes": "",
+        "eval_shadow_models": [],
+        **overrides,
+    }
+    r = await client.put(f"/routing/{task_type}", json=body, headers=admin_headers)
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+async def test_delete_archives_routing_rule(client, admin_headers) -> None:
+    await _put(client, admin_headers, "to_archive")
+    r = await client.delete("/routing/to_archive", headers=admin_headers)
+    assert r.status_code == 200
+    assert r.json()["is_archived"] is True
+
+
+async def test_delete_unknown_routing_rule_is_404(client, admin_headers) -> None:
+    r = await client.delete("/routing/never_existed", headers=admin_headers)
+    assert r.status_code == 404
+
+
+async def test_delete_routing_rule_is_idempotent(client, admin_headers) -> None:
+    await _put(client, admin_headers, "to_archive_twice")
+    await client.delete("/routing/to_archive_twice", headers=admin_headers)
+    r = await client.delete("/routing/to_archive_twice", headers=admin_headers)
+    # Still archived, still 200 — idempotent.
+    assert r.status_code == 200
+    assert r.json()["is_archived"] is True
+
+
+async def test_list_routing_hides_archived_by_default(client, admin_headers) -> None:
+    await _put(client, admin_headers, "visible_rule")
+    await _put(client, admin_headers, "hidden_rule")
+    await client.delete("/routing/hidden_rule", headers=admin_headers)
+
+    r = await client.get("/routing", headers=admin_headers)
+    visible_names = {row["task_type"] for row in r.json()["rules"]}
+    assert "visible_rule" in visible_names
+    assert "hidden_rule" not in visible_names
+
+
+async def test_list_routing_include_archived(client, admin_headers) -> None:
+    await _put(client, admin_headers, "exposed_rule")
+    await client.delete("/routing/exposed_rule", headers=admin_headers)
+    r = await client.get(
+        "/routing?include_archived=true", headers=admin_headers
+    )
+    names = {row["task_type"]: row for row in r.json()["rules"]}
+    assert names["exposed_rule"]["is_archived"] is True
+
+
+async def test_get_archived_routing_rule_is_404_by_default(
+    client, admin_headers
+) -> None:
+    await _put(client, admin_headers, "ghost_rule")
+    await client.delete("/routing/ghost_rule", headers=admin_headers)
+
+    r1 = await client.get("/routing/ghost_rule", headers=admin_headers)
+    assert r1.status_code == 404
+
+    r2 = await client.get(
+        "/routing/ghost_rule?include_archived=true", headers=admin_headers
+    )
+    assert r2.status_code == 200
+    assert r2.json()["is_archived"] is True
+
+
+async def test_put_revives_archived_routing_rule(client, admin_headers) -> None:
+    """PUT means 'this is the current rule' — operators shouldn't have to
+    know about archives. The upsert revives transparently."""
+    await _put(client, admin_headers, "revive_me")
+    await client.delete("/routing/revive_me", headers=admin_headers)
+    revived = await _put(
+        client, admin_headers, "revive_me", preferred_model="llama3.3:70b"
+    )
+    assert revived["is_archived"] is False
+    assert revived["preferred_model"] == "llama3.3:70b"

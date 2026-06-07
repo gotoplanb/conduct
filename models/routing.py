@@ -1,6 +1,6 @@
 from datetime import UTC, datetime
 
-from sqlalchemy import DateTime, Integer, String, Text
+from sqlalchemy import Boolean, DateTime, Integer, String, Text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -32,4 +32,11 @@ class RoutingRule(Base):
         nullable=False,
         default=lambda: datetime.now(UTC),
         onupdate=lambda: datetime.now(UTC),
+    )
+    # Soft-delete flag — DELETE /routing/{task_type} flips this rather than
+    # dropping the row, so JobShadow.parent_job_id references and historical
+    # /ui/jobs/{id} pages stay readable. The routing engine + listings treat
+    # archived rules as nonexistent.
+    is_archived: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
     )

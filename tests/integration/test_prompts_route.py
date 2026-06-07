@@ -141,3 +141,81 @@ async def test_history_limit_caps_rows(client, admin_headers, task) -> None:
     assert len(r.json()["versions"]) == 3
 
 
+
+
+# --- soft-delete (archive) ---
+
+
+async def test_delete_archives_shared_prompt(client, admin_headers, task) -> None:
+    await client.put(f"/prompts/{task}", headers=admin_headers, json={"content": "live"})
+    r = await client.delete(f"/prompts/{task}", headers=admin_headers)
+    assert r.status_code == 200
+    # GET 404s by default once archived
+    g = await client.get(f"/prompts/{task}", headers=admin_headers)
+    assert g.status_code == 404
+
+
+async def test_delete_unknown_prompt_is_404(client, admin_headers, task) -> None:
+    r = await client.delete(f"/prompts/{task}", headers=admin_headers)
+    assert r.status_code == 404
+
+
+async def test_list_prompts_hides_archived_by_default(
+    client, admin_headers, task
+) -> None:
+    await client.put(f"/prompts/{task}", headers=admin_headers, json={"content": "x"})
+    await client.delete(f"/prompts/{task}", headers=admin_headers)
+
+    r = await client.get("/prompts", headers=admin_headers)
+    visible = {p["task_type"] for p in r.json()["prompts"]}
+    assert task not in visible
+
+    r = await client.get("/prompts?include_archived=true", headers=admin_headers)
+    visible = {p["task_type"] for p in r.json()["prompts"]}
+    assert task in visible
+
+
+async def test_put_revives_archived_prompt(client, admin_headers, task) -> None:
+    await client.put(f"/prompts/{task}", headers=admin_headers, json={"content": "v1"})
+    await client.delete(f"/prompts/{task}", headers=admin_headers)
+    # Re-put as if the archive never happened
+    r = await client.put(
+        f"/prompts/{task}", headers=admin_headers, json={"content": "v2"}
+    )
+    assert r.status_code == 200
+    # Now visible again
+    g = await client.get(f"/prompts/{task}", headers=admin_headers)
+    assert g.status_code == 200
+    assert g.json()["content"] == "v2"
+
+
+async def test_delete_client_scoped_prompt(
+    client, admin_headers, task, seeded_client
+) -> None:
+    """Archiving a per-client override leaves the shared default intact."""
+    row, _ = seeded_client
+    await client.put(
+        f"/prompts/{task}", headers=admin_headers, json={"content": "shared"}
+    )
+    await client.put(
+        f"/prompts/{task}?client={row.name}",
+        headers=admin_headers,
+        json={"content": "client override"},
+    )
+    r = await client.delete(
+        f"/prompts/{task}?client={row.name}", headers=admin_headers
+    )
+    assert r.status_code == 200
+    # Shared still resolves
+    g = await client.get(f"/prompts/{task}", headers=admin_headers)
+    assert g.status_code == 200
+    assert g.json()["content"] == "shared"
+    # Client override is gone (the client lookup falls back to shared
+    # because the override is archived; route returns shared content).
+    g2 = await client.get(
+        f"/prompts/{task}?client={row.name}", headers=admin_headers
+    )
+    # The route only fetches the row by (task, client_id), so an archived
+    # client override means no row — 404. Resolver behavior is tested
+    # separately.
+    assert g2.status_code == 404

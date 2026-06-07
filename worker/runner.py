@@ -184,7 +184,10 @@ async def _run_async(job_id: UUID) -> None:
                 return
 
             rule = await session.scalar(
-                select(RoutingRule).where(RoutingRule.task_type == job.task_type)
+                select(RoutingRule).where(
+                    RoutingRule.task_type == job.task_type,
+                    RoutingRule.is_archived.is_(False),
+                )
             )
             decision = await _decide_or_fail(
                 job, client, rule, settings, session, dispatch_span

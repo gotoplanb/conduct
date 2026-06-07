@@ -149,7 +149,10 @@ async def _run_async(shadow_id: UUID) -> None:
 
             client = await session.get(ClientApp, parent.client_app_id)
             rule = await session.scalar(
-                select(RoutingRule).where(RoutingRule.task_type == parent.task_type)
+                select(RoutingRule).where(
+                    RoutingRule.task_type == parent.task_type,
+                    RoutingRule.is_archived.is_(False),
+                )
             )
             max_tokens = rule.max_tokens if rule else 1000
 

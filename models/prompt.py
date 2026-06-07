@@ -1,7 +1,7 @@
 from datetime import UTC, datetime
 from uuid import UUID
 
-from sqlalchemy import BigInteger, DateTime, ForeignKey, Index, String, Text
+from sqlalchemy import BigInteger, Boolean, DateTime, ForeignKey, Index, String, Text
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -48,6 +48,13 @@ class Prompt(Base):
     )
     updated_by: Mapped[str] = mapped_column(
         String(64), nullable=False, default="", server_default=""
+    )
+    # Soft-delete flag — DELETE /prompts/{task_type}?client=name flips this
+    # rather than dropping the row, so PromptVersion history stays linked
+    # and historic jobs render correctly. resolve_prompt() ignores archived
+    # rows (raises PromptNotFoundError if there's no live row to use).
+    is_archived: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
     )
 
 

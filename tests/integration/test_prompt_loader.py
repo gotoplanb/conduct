@@ -147,3 +147,52 @@ async def test_version_id_is_none_when_no_history(
     out = await resolve_prompt(db_session, unique_task_type)
     assert out.content == "seed only"
     assert out.version_id is None
+
+
+@pytest.mark.asyncio
+async def test_resolve_falls_through_archived_client_override(
+    db_session: AsyncSession,
+) -> None:
+    """An archived per-client override behaves as if it didn't exist — the
+    resolver falls through to the shared default. Without this, a soft-
+    deleted prompt could keep silently dispatching."""
+    task = f"resolve-{uuid4().hex[:6]}"
+
+    client = ClientApp(
+        name=f"c-{uuid4().hex[:6]}",
+        api_key_hash=hash_api_key(generate_api_key()),
+    )
+    db_session.add(client)
+    await db_session.flush()
+    # Shared default + archived per-client override.
+    db_session.add(Prompt(task_type=task, client_id=None, content="shared body"))
+    db_session.add(
+        Prompt(
+            task_type=task,
+            client_id=client.id,
+            content="archived client body",
+            is_archived=True,
+        )
+    )
+    await db_session.commit()
+
+    resolved = await resolve_prompt(db_session, task, client_name=client.name)
+    assert resolved.content == "shared body"
+    assert resolved.source == f"shared:{task}"
+
+
+@pytest.mark.asyncio
+async def test_resolve_raises_when_only_remaining_is_archived(
+    db_session: AsyncSession,
+) -> None:
+    """If both the client override and the shared default are archived, the
+    resolver raises — the dispatch shouldn't keep working off a soft-deleted
+    row."""
+    task = f"resolve-{uuid4().hex[:6]}"
+    db_session.add(
+        Prompt(task_type=task, client_id=None, content="x", is_archived=True)
+    )
+    await db_session.commit()
+
+    with pytest.raises(PromptNotFoundError):
+        await resolve_prompt(db_session, task)

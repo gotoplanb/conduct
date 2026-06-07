@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -33,6 +33,7 @@ class RoutingRuleOut(BaseModel):
     notes: str
     eval_shadow_models: list[ShadowModelSpec] = Field(default_factory=list)
     updated_at: datetime
+    is_archived: bool = False
 
 
 class RoutingRuleIn(BaseModel):
@@ -51,8 +52,12 @@ class RoutingListOut(BaseModel):
 @router.get("")
 async def list_routing(
     session: Annotated[AsyncSession, Depends(get_session)],
+    include_archived: Annotated[bool, Query()] = False,
 ) -> RoutingListOut:
-    rows = (await session.scalars(select(RoutingRule).order_by(RoutingRule.task_type))).all()
+    stmt = select(RoutingRule).order_by(RoutingRule.task_type)
+    if not include_archived:
+        stmt = stmt.where(RoutingRule.is_archived.is_(False))
+    rows = (await session.scalars(stmt)).all()
     return RoutingListOut(rules=[RoutingRuleOut.model_validate(r) for r in rows])
 
 
@@ -60,9 +65,10 @@ async def list_routing(
 async def get_routing(
     task_type: str,
     session: Annotated[AsyncSession, Depends(get_session)],
+    include_archived: Annotated[bool, Query()] = False,
 ) -> RoutingRuleOut:
     rule = await session.get(RoutingRule, task_type)
-    if rule is None:
+    if rule is None or (rule.is_archived and not include_archived):
         raise HTTPException(
             status.HTTP_404_NOT_FOUND, f"no routing rule for {task_type!r}"
         )
@@ -97,6 +103,32 @@ async def upsert_routing(
         rule.max_tokens = body.max_tokens
         rule.notes = body.notes
         rule.eval_shadow_models = shadow_specs
+        # Revive an archived rule transparently — PUT means "make this the
+        # current rule", so the operator shouldn't have to know the row is
+        # archived to bring it back. Soft-delete is for cleanup hygiene,
+        # not a workflow speed bump.
+        rule.is_archived = False
+    await session.commit()
+    await session.refresh(rule)
+    return RoutingRuleOut.model_validate(rule)
+
+
+@router.delete("/{task_type}")
+async def archive_routing(
+    task_type: str,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> RoutingRuleOut:
+    """Soft-delete a routing rule. The row stays in the table (so
+    JobShadow.parent_job_id references and historical /ui/jobs pages keep
+    working); is_archived=true makes it invisible to GET listings + the
+    routing engine. Idempotent — DELETE on an already-archived rule still
+    returns 200."""
+    rule = await session.get(RoutingRule, task_type)
+    if rule is None:
+        raise HTTPException(
+            status.HTTP_404_NOT_FOUND, f"no routing rule for {task_type!r}"
+        )
+    rule.is_archived = True
     await session.commit()
     await session.refresh(rule)
     return RoutingRuleOut.model_validate(rule)
