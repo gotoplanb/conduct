@@ -237,6 +237,40 @@ async def test_cancel_abandoned_running_job_flips_to_cancelled(
     assert job.status == JobStatus.CANCELLED.value
 
 
+async def test_cancel_running_job_in_failed_registry_flips_to_cancelled(
+    client, db_session, cloud_client, task_type, fake_redis
+) -> None:
+    """Crash variant where the RQ record survives: on worker-host crash,
+    AbandonedJobError moves the job to the FailedJobRegistry, so RQJob.fetch
+    still succeeds (no NoSuchJobError) while the Postgres row is stuck at
+    running. The route must read the RQ status, see it's failed, and reconcile
+    the orphan to cancelled instead of 409'ing forever."""
+    from rq import Queue
+    from rq.job import JobStatus as RQJobStatus
+
+    job = await _seed_job(
+        db_session,
+        client_id=cloud_client[0].id,
+        task_type=task_type,
+        status=JobStatus.RUNNING.value,
+    )
+    # Plant a fetchable RQ record, then mark it failed (the AbandonedJobError
+    # end-state) — the record is NOT gone, so this exercises the is_failed path.
+    q = Queue("conduct", connection=fake_redis)
+    rq_job = q.enqueue(lambda: None, job_id=str(job.id), job_timeout=60)
+    rq_job.set_status(RQJobStatus.FAILED)
+
+    r = await client.delete(
+        f"/jobs/{job.id}",
+        headers={"Authorization": f"Bearer {cloud_client[1]}"},
+    )
+    assert r.status_code == 200
+    assert r.json()["status"] == JobStatus.CANCELLED.value
+
+    await db_session.refresh(job)
+    assert job.status == JobStatus.CANCELLED.value
+
+
 async def test_admin_list_jobs(client, db_session, seeded_client, admin_headers, task_type) -> None:
     await _seed_job(db_session, client_id=seeded_client[0].id, task_type=task_type)
     await _seed_job(db_session, client_id=seeded_client[0].id, task_type=task_type)

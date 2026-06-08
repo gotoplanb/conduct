@@ -631,12 +631,19 @@ async def cancel_job(
     if job is None or job.client_app_id != client.id:
         raise HTTPException(status.HTTP_404_NOT_FOUND, _JOB_NOT_FOUND)
     if job.status == JobStatus.RUNNING.value:
-        # A live worker still owns the job → refuse. But if the RQ record is
-        # gone (worker host crashed, AbandonedJobError fired, TTL expired),
-        # the row is orphaned and safe to flip → cancelled.
+        # A live worker still owns the job → refuse. The row is orphaned and
+        # safe to flip → cancelled only if the RQ side is gone or already
+        # failed:
+        #   - NoSuchJobError: the record expired / TTL'd away after a host crash.
+        #   - is_failed: AbandonedJobError moved it to the FailedJobRegistry
+        #     (worker host crashed mid-job) but the Postgres row stayed
+        #     `running`. The record is still fetchable, so NoSuchJobError never
+        #     fires — we have to read its status to spot the orphan.
         try:
-            RQJob.fetch(str(job.id), connection=get_redis())
+            rq_job = RQJob.fetch(str(job.id), connection=get_redis())
         except NoSuchJobError:
+            rq_job = None
+        if rq_job is None or rq_job.is_failed:
             job.status = JobStatus.CANCELLED.value
             await session.commit()
             await session.refresh(job)
