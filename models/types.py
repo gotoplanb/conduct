@@ -28,6 +28,27 @@ class JobStatus(StrEnum):
     CANCELLED = "cancelled"
 
 
+class Sampling(StrEnum):
+    """Per-task generation profile, declared by RoutingRule (overridable
+    per-request). Bundles temperature + seed policy so the two knobs stay
+    coherent — exposing raw temperature alone invites "fixed seed + high temp =
+    the same 'random' output forever". The engine maps each profile to concrete
+    params (see routing.engine.sampling_params):
+
+      deterministic — temperature 0.0 + a seed derived from the input, so the
+        same prompt+context yields the same output (a bio generator). Real
+        reproducibility is local-model only; cloud (Anthropic/Bedrock) has no
+        seed param, so it's temperature 0 best-effort.
+      balanced      — temperature 0.7, random seed. The default.
+      creative      — temperature 1.0, random seed: same prompt, different
+        output each call (a dad-joke generator).
+    """
+
+    DETERMINISTIC = "deterministic"
+    BALANCED = "balanced"
+    CREATIVE = "creative"
+
+
 class MediaKind(StrEnum):
     """Declared by RoutingRule. Tells the worker which dispatch path to take:
     `text` (the default) uses the existing BaseProvider.complete; everything

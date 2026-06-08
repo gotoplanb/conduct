@@ -31,6 +31,10 @@ class Job(Base):
     model_requested: Mapped[str] = mapped_column(
         String(100), nullable=False, default="", server_default=""
     )
+    # Per-request sampling-profile override (deterministic/balanced/creative).
+    # NULL → fall back to the task's routing rule. Mirrors model_requested:
+    # set at submit time, read by the worker on the async path.
+    sampling: Mapped[str | None] = mapped_column(String(20), nullable=True)
     model_used: Mapped[str] = mapped_column(
         String(100), nullable=False, default="", server_default=""
     )

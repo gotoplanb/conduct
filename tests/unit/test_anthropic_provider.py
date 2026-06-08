@@ -50,3 +50,30 @@ anthropic:
     # 1000 in × $3/1M + 500 out × $15/1M = $0.003 + $0.0075 = $0.0105
     assert result.cost_usd == Decimal("0.010500")
     assert result.provider == "anthropic"
+
+
+@pytest.mark.asyncio
+async def test_temperature_passed_seed_ignored() -> None:
+    """A deterministic task sends temperature 0 to the Anthropic API. There's
+    no seed param, so `seed` is dropped (temperature-0 best-effort)."""
+    provider = AnthropicProvider(api_key="sk-test")
+    fake = _fake_message("x", 1, 1)
+    create = AsyncMock(return_value=fake)
+    with patch.object(provider._client.messages, "create", create):
+        await provider.complete(
+            prompt="hi", model="claude-x", max_tokens=64, temperature=0.0, seed=7
+        )
+    sent = create.call_args.kwargs
+    assert sent["temperature"] == 0.0
+    assert "seed" not in sent
+
+
+@pytest.mark.asyncio
+async def test_temperature_omitted_when_none() -> None:
+    """No profile temperature → don't send the param (provider default)."""
+    provider = AnthropicProvider(api_key="sk-test")
+    fake = _fake_message("x", 1, 1)
+    create = AsyncMock(return_value=fake)
+    with patch.object(provider._client.messages, "create", create):
+        await provider.complete(prompt="hi", model="claude-x", max_tokens=64)
+    assert "temperature" not in create.call_args.kwargs

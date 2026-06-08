@@ -31,7 +31,7 @@ from providers.base import BaseProvider, ProviderError, ProviderResponse
 from providers.registry import ProviderRegistry
 from retry.base import FailureContext, FailureHandler, HandlerAction
 from retry.static import StaticFailureHandler
-from routing.engine import RoutingDecision
+from routing.engine import RoutingDecision, derive_seed
 
 # Process-level lock — protects the API process if it ever runs local sync.
 _local_inference_lock = asyncio.Lock()
@@ -129,6 +129,16 @@ async def _resolve_media_input_refs(
     return resolved
 
 
+def _sampling_for(
+    decision: RoutingDecision, prompt: str, system_prompt: str
+) -> tuple[float, int | None]:
+    """Resolve the (temperature, seed) to send for this job. The seed is
+    derived from the input only when the profile is deterministic — otherwise
+    None so the provider varies each call."""
+    seed = derive_seed(prompt, system_prompt) if decision.deterministic_seed else None
+    return decision.temperature, seed
+
+
 async def _call_provider(
     provider: BaseProvider,
     *,
@@ -137,10 +147,15 @@ async def _call_provider(
     system_prompt: str,
     max_tokens: int,
     is_local: bool,
+    temperature: float | None = None,
+    seed: int | None = None,
 ) -> ProviderResponse:
     with _tracer.start_as_current_span("conduct.inference") as span:
         span.set_attribute(_SPAN_MODEL_USED, model)
         span.set_attribute("model.provider", provider.name)
+        if temperature is not None:
+            span.set_attribute("sampling.temperature", temperature)
+        span.set_attribute("sampling.seed", seed if seed is not None else -1)
         if is_local:
             async with _local_inference_lock:
                 response = await provider.complete(
@@ -148,6 +163,8 @@ async def _call_provider(
                     model=model,
                     system_prompt=system_prompt,
                     max_tokens=max_tokens,
+                    temperature=temperature,
+                    seed=seed,
                 )
         else:
             response = await provider.complete(
@@ -155,6 +172,8 @@ async def _call_provider(
                 model=model,
                 system_prompt=system_prompt,
                 max_tokens=max_tokens,
+                temperature=temperature,
+                seed=seed,
             )
         span.set_attribute("tokens.in", response.tokens_in)
         span.set_attribute("tokens.out", response.tokens_out)
@@ -216,6 +235,7 @@ async def _try_fallback(
         reason=type(primary_err).__name__,
     )
     job.model_used = fb_model
+    temperature, seed = _sampling_for(decision, job.prompt, system_prompt)
     try:
         response = await _call_provider(
             providers.get_for_client(client, fb_provider_name),
@@ -224,6 +244,8 @@ async def _try_fallback(
             system_prompt=system_prompt,
             max_tokens=decision.max_tokens,
             is_local=fb_provider_name == "ollama",
+            temperature=temperature,
+            seed=seed,
         )
         return response, True, ""
     except ProviderError as fb_err:
@@ -269,6 +291,7 @@ async def execute_job(
         error_message = ""
         used_fallback = False
 
+        temperature, seed = _sampling_for(decision, job.prompt, system_prompt)
         try:
             response = await _call_provider(
                 providers.get_for_client(client, decision.provider),
@@ -277,6 +300,8 @@ async def execute_job(
                 system_prompt=system_prompt,
                 max_tokens=decision.max_tokens,
                 is_local=decision.provider == "ollama",
+                temperature=temperature,
+                seed=seed,
             )
         except ProviderError as primary_err:
             job_span.add_event(

@@ -4,6 +4,14 @@
 #
 # `sensitivity` here is a floor — clients can request stricter, never looser.
 #
+# `sampling` (optional, default `balanced`) — the task's generation profile,
+# bundling temperature + seed policy:
+#   deterministic — temp 0 + a seed derived from the input → same input, same
+#     output (reproducible on local models; temp-0 best-effort on cloud).
+#   balanced      — temp 0.7, random seed.
+#   creative      — temp 1.0, random seed → same prompt, different output.
+# Override per-request with the job's `sampling` field. Ignored by media tasks.
+#
 # `eval_shadow_models` (optional) — candidate models replayed on real jobs for
 # A/B eval. Each entry: {model, rate (0-1 sampling fraction),
 # daily_cost_cap_usd (optional, cloud only)}. Cloud shadows are skipped on
@@ -22,6 +30,7 @@ rules:
     fallback_model: llama3.3:70b
     sensitivity: public
     max_tokens: 150
+    sampling: creative   # want a fresh joke every call, not the same one
     notes: "Demo task; small-class primary, peers + step-up + cloud A/B across direct-API and Bedrock-hosted Anthropic."
     eval_shadow_models:
       - { model: gemma4:e2b, rate: 1.0 }
@@ -37,6 +46,7 @@ rules:
     preferred_model: qwen3.5:4b
     fallback_model: claude-haiku-4-5
     sensitivity: internal
+    sampling: deterministic   # stable labels for the same email
     eval_shadow_models:
       - { model: gemma4:e4b, rate: 1.0 }
       - { model: mistral:7b, rate: 1.0 }
@@ -59,6 +69,7 @@ rules:
     preferred_model: qwen3.5:9b
     fallback_model: claude-sonnet-4-6
     sensitivity: internal
+    sampling: deterministic   # structured extraction should be reproducible
     eval_shadow_models:
       - { model: mistral-small3.2, rate: 1.0 }
       - { model: gemma4:26b, rate: 1.0 }
@@ -71,6 +82,7 @@ rules:
     preferred_model: llama3.3:70b
     fallback_model: claude-sonnet-4-6
     sensitivity: internal
+    sampling: deterministic   # same bio + context → consistent output (local model = real reproducibility)
     eval_shadow_models:
       - { model: qwen3.5:35b, rate: 1.0 }
       - { model: gemma4:31b, rate: 1.0 }
@@ -107,6 +119,7 @@ rules:
     preferred_model: llama3.3:70b
     fallback_model: llama3.3:70b
     sensitivity: confidential
+    sampling: deterministic   # math must be reproducible
     eval_shadow_models:
       - { model: qwen3.5:35b, rate: 1.0 }
       - { model: llama4:16x17b, rate: 1.0 }

@@ -43,6 +43,8 @@ class AnthropicProvider(BaseProvider):
         model: str,
         system_prompt: str = "",
         max_tokens: int = 1000,
+        temperature: float | None = None,
+        seed: int | None = None,
         **kwargs: object,
     ) -> ProviderResponse:
         kwargs_for_create: dict = {
@@ -52,6 +54,12 @@ class AnthropicProvider(BaseProvider):
         }
         if system_prompt:
             kwargs_for_create["system"] = system_prompt
+        # The Anthropic API has no seed param — `seed` is ignored here, so a
+        # "deterministic" task gets temperature 0 (most-stable, but not a
+        # reproducibility guarantee). The temperature scale is [0, 1], which
+        # matches every sampling profile's value.
+        if temperature is not None:
+            kwargs_for_create["temperature"] = temperature
 
         started = time.perf_counter()
         try:

@@ -110,6 +110,27 @@ bedrock:
 
 
 @pytest.mark.asyncio
+async def test_temperature_lands_in_inference_config_seed_ignored(monkeypatch) -> None:
+    """A deterministic task sends temperature 0 into Bedrock's inferenceConfig.
+    Bedrock has no seed param, so `seed` is silently ignored (best-effort
+    determinism via temperature alone)."""
+    fake = _FakeAsyncBedrockClient(converse_result=_fake_converse_response("x", 1, 1))
+    _patch_session(monkeypatch, fake)
+
+    from providers.bedrock import BedrockProvider
+
+    provider = BedrockProvider(
+        access_key_id="AKIA-x", secret_access_key="sk-x", region="us-west-2"
+    )
+    await provider.complete(
+        prompt="hi", model="anthropic.claude-3-haiku-fake-v1:0",
+        max_tokens=100, temperature=0.0, seed=999,
+    )
+    sent = fake.last_call_kwargs
+    assert sent["inferenceConfig"] == {"maxTokens": 100, "temperature": 0.0}
+
+
+@pytest.mark.asyncio
 async def test_complete_omits_system_when_blank(monkeypatch) -> None:
     fake = _FakeAsyncBedrockClient(
         converse_result=_fake_converse_response("yo", 1, 1)

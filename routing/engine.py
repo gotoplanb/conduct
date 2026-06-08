@@ -5,15 +5,50 @@ No DB or HTTP. Routes/workers do the lookups, then call `decide()` with values.
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 
 from models.routing import RoutingRule
-from models.types import Sensitivity, stricter
+from models.types import Sampling, Sensitivity, stricter
 from providers.registry import is_cloud, provider_for_model
 
 
 class SensitivityViolation(Exception):
     """A required model is disallowed by the job's effective sensitivity."""
+
+
+# Profile → (temperature, derive_seed_from_input). Kept here, next to decide(),
+# so the temperature/seed pair always moves together. `derive_seed` True means
+# the executor seeds the model from a hash of the input (reproducible); False
+# means leave the seed unset so each call varies.
+_SAMPLING_PARAMS: dict[Sampling, tuple[float, bool]] = {
+    Sampling.DETERMINISTIC: (0.0, True),
+    Sampling.BALANCED: (0.7, False),
+    Sampling.CREATIVE: (1.0, False),
+}
+
+
+def sampling_params(profile: Sampling) -> tuple[float, bool]:
+    """Return (temperature, derive_seed_from_input) for a sampling profile."""
+    return _SAMPLING_PARAMS[profile]
+
+
+def rule_sampling(rule: RoutingRule | None) -> Sampling:
+    """The rule's sampling profile, defaulting to BALANCED. Tolerates a
+    missing rule and an in-memory rule whose column default hasn't been applied
+    yet (SQLAlchemy fills server defaults only on flush, so `rule.sampling` can
+    be None for a freshly-constructed row)."""
+    if rule is not None and rule.sampling:
+        return Sampling(rule.sampling)
+    return Sampling.BALANCED
+
+
+def derive_seed(prompt: str, system_prompt: str = "") -> int:
+    """Deterministic seed from the input. Same prompt+context → same seed →
+    (with temperature 0) reproducible output; different input → different seed.
+    A positive 31-bit int, the safe range for an Ollama `options.seed`."""
+    digest = hashlib.sha256(f"{system_prompt}\x00{prompt}".encode()).digest()
+    return int.from_bytes(digest[:4], "big") & 0x7FFFFFFF
 
 
 @dataclass(frozen=True)
@@ -25,6 +60,10 @@ class RoutingDecision:
     effective_sensitivity: Sensitivity
     max_tokens: int
     reason: str
+    temperature: float = 0.7
+    # True → executor derives a seed from the job's input for reproducibility;
+    # False → leave the seed unset so generations vary.
+    deterministic_seed: bool = False
 
 
 def _is_allowed(
@@ -53,6 +92,8 @@ def _explicit_override(
     allow_cloud_for_internal: bool,
     max_tokens: int,
     available_cloud_providers: frozenset[str],
+    temperature: float,
+    deterministic_seed: bool,
 ) -> RoutingDecision:
     """Build the decision when the caller specified a model directly. Raises
     SensitivityViolation if the requested model isn't allowed."""
@@ -70,6 +111,8 @@ def _explicit_override(
         effective_sensitivity=effective,
         max_tokens=max_tokens,
         reason="explicit-override",
+        temperature=temperature,
+        deterministic_seed=deterministic_seed,
     )
 
 
@@ -97,16 +140,22 @@ def decide(
     default_model: str,
     default_sensitive_model: str,
     available_cloud_providers: frozenset[str] = frozenset({"anthropic", "bedrock"}),
+    sampling: Sampling | None = None,
 ) -> RoutingDecision:
     # Rule sensitivity acts as a floor; clients can request stricter but not looser.
     rule_sensitivity = Sensitivity(rule.sensitivity) if rule else Sensitivity.INTERNAL
     effective = stricter(sensitivity, rule_sensitivity)
     max_tokens = rule.max_tokens if rule else 1000
 
+    # Sampling profile: per-request override wins, else the rule's, else the
+    # global default. Resolves to a concrete (temperature, seed-policy) pair.
+    profile = sampling or rule_sampling(rule)
+    temperature, deterministic_seed = sampling_params(profile)
+
     if model_requested:
         return _explicit_override(
             model_requested, effective, allow_cloud_for_internal,
-            max_tokens, available_cloud_providers,
+            max_tokens, available_cloud_providers, temperature, deterministic_seed,
         )
 
     preferred, fallback, reason = _rule_preferred_and_fallback(
@@ -142,4 +191,6 @@ def decide(
         effective_sensitivity=effective,
         max_tokens=max_tokens,
         reason=reason,
+        temperature=temperature,
+        deterministic_seed=deterministic_seed,
     )

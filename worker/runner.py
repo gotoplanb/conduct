@@ -18,7 +18,7 @@ from config.settings import get_settings
 from models.client import ClientApp
 from models.job import Job
 from models.routing import RoutingRule
-from models.types import JobStatus, Sensitivity
+from models.types import JobStatus, Sampling, Sensitivity
 from observability.metrics import record_job_completion, record_model_swap
 from observability.tracing import get_tracer
 from providers.anthropic import AnthropicProvider
@@ -108,6 +108,7 @@ async def _decide_or_fail(
             rule=rule,
             default_model=settings.default_model,
             default_sensitive_model=settings.default_sensitive_model,
+            sampling=Sampling(job.sampling) if job.sampling else None,
         )
     except SensitivityViolation as e:
         job.status = JobStatus.FAILED.value

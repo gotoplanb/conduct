@@ -29,8 +29,18 @@ class OllamaProvider(BaseProvider):
         model: str,
         system_prompt: str = "",
         max_tokens: int = 1000,
+        temperature: float | None = None,
+        seed: int | None = None,
         **kwargs: object,
     ) -> ProviderResponse:
+        # Ollama takes sampling knobs under `options`. A fixed `seed` with
+        # `temperature: 0` is reproducible on the same model build/host; omit
+        # the seed and Ollama randomizes each call.
+        options: dict = {"num_predict": max_tokens}
+        if temperature is not None:
+            options["temperature"] = temperature
+        if seed is not None:
+            options["seed"] = seed
         payload: dict = {
             "model": model,
             "prompt": prompt,
@@ -40,7 +50,7 @@ class OllamaProvider(BaseProvider):
             # `thinking` field and our token budget runs out before any answer
             # lands in `response`. Older models ignore unknown keys.
             "think": False,
-            "options": {"num_predict": max_tokens},
+            "options": options,
         }
         if system_prompt:
             payload["system"] = system_prompt

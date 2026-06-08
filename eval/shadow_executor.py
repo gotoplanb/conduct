@@ -25,6 +25,7 @@ from observability.tracing import get_tracer
 from prompt_loader import resolve_prompt
 from providers.base import ProviderError
 from providers.registry import ProviderRegistry
+from routing.engine import derive_seed
 
 _tracer = get_tracer(__name__)
 
@@ -37,8 +38,15 @@ async def execute_shadow(
     max_tokens: int,
     providers: ProviderRegistry,
     session: AsyncSession,
+    temperature: float | None = None,
+    deterministic_seed: bool = False,
 ) -> JobShadow:
-    """Run a shadow job to completion, persist the result, return the row."""
+    """Run a shadow job to completion, persist the result, return the row.
+
+    `temperature`/`deterministic_seed` come from the rule's sampling profile so
+    the shadow generates under the same regime as the primary — otherwise a
+    deterministic task's A/B would compare a seeded primary against a
+    differently-sampled shadow."""
 
     client_name = client.name
     with _tracer.start_as_current_span("conduct.shadow") as span:
@@ -60,6 +68,9 @@ async def execute_shadow(
         shadow.started_at = datetime.now(UTC)
         await session.commit()
 
+        seed = (
+            derive_seed(parent.prompt, system_prompt) if deterministic_seed else None
+        )
         provider = providers.get_for_client(client, shadow.provider)
         started = perf_counter()
         try:
@@ -68,6 +79,8 @@ async def execute_shadow(
                 model=shadow.model,
                 system_prompt=system_prompt,
                 max_tokens=max_tokens,
+                temperature=temperature,
+                seed=seed,
             )
             shadow.status = JobStatus.COMPLETE.value
             shadow.response = response.response

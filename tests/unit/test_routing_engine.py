@@ -3,8 +3,14 @@ from __future__ import annotations
 import pytest
 
 from models.routing import RoutingRule
-from models.types import Sensitivity
-from routing.engine import SensitivityViolation, decide
+from models.types import Sampling, Sensitivity
+from routing.engine import (
+    SensitivityViolation,
+    decide,
+    derive_seed,
+    rule_sampling,
+    sampling_params,
+)
 
 
 def _rule(
@@ -13,6 +19,7 @@ def _rule(
     fallback: str = "claude-sonnet-4-5",
     sensitivity: Sensitivity = Sensitivity.INTERNAL,
     max_tokens: int = 1000,
+    sampling: str | None = None,
 ) -> RoutingRule:
     r = RoutingRule(
         task_type=task_type,
@@ -20,6 +27,7 @@ def _rule(
         fallback_model=fallback,
         sensitivity=sensitivity.value,
         max_tokens=max_tokens,
+        sampling=sampling,
     )
     return r
 
@@ -196,6 +204,84 @@ def test_max_tokens_default_when_no_rule() -> None:
         default_sensitive_model="llama3.3:70b",
     )
     assert d.max_tokens == 1000
+
+
+# --- sampling profile ---
+
+
+def _decide_with_sampling(rule, sampling=None):
+    return decide(
+        sensitivity=Sensitivity.PUBLIC,
+        model_requested=None,
+        allow_cloud_for_internal=False,
+        rule=rule,
+        default_model="llama3.3:70b",
+        default_sensitive_model="llama3.3:70b",
+        sampling=sampling,
+    )
+
+
+def test_sampling_params_table() -> None:
+    assert sampling_params(Sampling.DETERMINISTIC) == (0.0, True)
+    assert sampling_params(Sampling.BALANCED) == (0.7, False)
+    assert sampling_params(Sampling.CREATIVE) == (1.0, False)
+
+
+def test_deterministic_profile_from_rule_sets_temp0_and_seed_flag() -> None:
+    d = _decide_with_sampling(_rule(sampling="deterministic"))
+    assert d.temperature == 0.0
+    assert d.deterministic_seed is True
+
+
+def test_creative_profile_from_rule() -> None:
+    d = _decide_with_sampling(_rule(sampling="creative"))
+    assert d.temperature == 1.0
+    assert d.deterministic_seed is False
+
+
+def test_per_request_sampling_overrides_rule() -> None:
+    # Rule says deterministic, request asks for creative → creative wins.
+    d = _decide_with_sampling(_rule(sampling="deterministic"), sampling=Sampling.CREATIVE)
+    assert d.temperature == 1.0
+    assert d.deterministic_seed is False
+
+
+def test_sampling_defaults_to_balanced_when_unset() -> None:
+    # In-memory rule with sampling=None (column default not yet applied) and no
+    # request override → balanced, not a crash.
+    d = _decide_with_sampling(_rule(sampling=None))
+    assert d.temperature == 0.7
+    assert d.deterministic_seed is False
+
+
+def test_explicit_model_override_still_carries_sampling() -> None:
+    d = decide(
+        sensitivity=Sensitivity.PUBLIC,
+        model_requested="claude-haiku-4-5",
+        allow_cloud_for_internal=False,
+        rule=_rule(sensitivity=Sensitivity.PUBLIC, sampling="deterministic"),
+        default_model="llama3.3:70b",
+        default_sensitive_model="llama3.3:70b",
+    )
+    assert d.reason == "explicit-override"
+    assert d.temperature == 0.0
+    assert d.deterministic_seed is True
+
+
+def test_rule_sampling_helper_tolerates_none_and_missing() -> None:
+    assert rule_sampling(None) is Sampling.BALANCED
+    assert rule_sampling(_rule(sampling=None)) is Sampling.BALANCED
+    assert rule_sampling(_rule(sampling="creative")) is Sampling.CREATIVE
+
+
+def test_derive_seed_is_stable_and_input_keyed() -> None:
+    # Same input → same seed (reproducible); different input → different seed.
+    a = derive_seed("a bio", "context")
+    assert a == derive_seed("a bio", "context")
+    assert a != derive_seed("a different bio", "context")
+    assert a != derive_seed("a bio", "other context")
+    # Positive 31-bit int — the safe Ollama seed range.
+    assert 0 <= a <= 0x7FFFFFFF
 
 
 def test_no_anthropic_key_falls_back_to_local() -> None:

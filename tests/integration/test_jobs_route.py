@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 
@@ -42,6 +42,7 @@ async def _seed_rule(
     preferred="claude-haiku-4-5",
     fallback="claude-sonnet-4-5",
     eval_shadow_models: list[dict] | None = None,
+    sampling: str | None = None,
 ) -> RoutingRule:
     rule = RoutingRule(
         task_type=task_type,
@@ -50,6 +51,7 @@ async def _seed_rule(
         sensitivity="public",  # so the cloud client_headers fixture works
         max_tokens=500,
         eval_shadow_models=eval_shadow_models or [],
+        sampling=sampling,
     )
     db.add(rule)
     await db.commit()
@@ -71,6 +73,94 @@ async def test_submit_sync_cloud_job(client, db_session, cloud_client, task_type
     body = r.json()
     assert body["status"] == "complete"
     assert body["model_used"] == "claude-haiku-4-5"
+
+
+def _capture_complete(stub_registry, provider_name="anthropic"):
+    """Wrap a stub provider's complete() to record the kwargs it's called
+    with. Returns the dict that gets populated on the next call."""
+    captured: dict = {}
+    prov = stub_registry.get(provider_name)
+    original = prov.complete
+
+    async def _wrapped(**kwargs):
+        captured.update(kwargs)
+        return await original(**kwargs)
+
+    prov.complete = _wrapped
+    return captured
+
+
+async def test_deterministic_rule_sends_temp0_and_seed_to_provider(
+    client, db_session, cloud_client, task_type, stub_registry
+) -> None:
+    """A deterministic task reaches the provider with temperature 0 and a
+    derived (non-null) seed — the reproducibility path."""
+    await _seed_rule(db_session, task_type=task_type, sampling="deterministic")
+    captured = _capture_complete(stub_registry)
+    r = await client.post(
+        "/jobs",
+        json={"task_type": task_type, "prompt": "a bio", "system_prompt": "context"},
+        headers={"Authorization": f"Bearer {cloud_client[1]}"},
+    )
+    assert r.status_code == 200
+    assert captured["temperature"] == 0.0
+    assert isinstance(captured["seed"], int)
+
+
+async def test_creative_rule_sends_high_temp_and_no_seed(
+    client, db_session, cloud_client, task_type, stub_registry
+) -> None:
+    """A creative task reaches the provider with high temperature and no seed
+    (so each call varies)."""
+    await _seed_rule(db_session, task_type=task_type, sampling="creative")
+    captured = _capture_complete(stub_registry)
+    r = await client.post(
+        "/jobs",
+        json={"task_type": task_type, "prompt": "joke about robots", "system_prompt": "s"},
+        headers={"Authorization": f"Bearer {cloud_client[1]}"},
+    )
+    assert r.status_code == 200
+    assert captured["temperature"] == 1.0
+    assert captured["seed"] is None
+
+
+async def test_per_request_sampling_overrides_rule_at_provider(
+    client, db_session, cloud_client, task_type, stub_registry
+) -> None:
+    """Rule is deterministic, but the request asks for creative → the provider
+    gets the creative params (override wins end-to-end)."""
+    await _seed_rule(db_session, task_type=task_type, sampling="deterministic")
+    captured = _capture_complete(stub_registry)
+    r = await client.post(
+        "/jobs",
+        json={
+            "task_type": task_type, "prompt": "x", "system_prompt": "s",
+            "sampling": "creative",
+        },
+        headers={"Authorization": f"Bearer {cloud_client[1]}"},
+    )
+    assert r.status_code == 200
+    assert captured["temperature"] == 1.0
+    assert captured["seed"] is None
+
+
+async def test_async_job_persists_sampling_override_on_row(
+    client, db_session, seeded_client, fake_redis, task_type
+) -> None:
+    """The async path must persist the per-request sampling on the Job row so
+    the worker (which re-decides) can honor it."""
+    await _seed_rule(
+        db_session, task_type=task_type, preferred="llama3.3:70b", fallback="llama3.3:70b"
+    )
+    r = await client.post(
+        "/jobs",
+        json={"task_type": task_type, "prompt": "hi", "sampling": "deterministic"},
+        headers={"Authorization": f"Bearer {seeded_client[1]}"},
+    )
+    assert r.status_code == 202
+    job_id = r.json()["job_id"]
+    row = await db_session.get(Job, UUID(job_id))
+    assert row.sampling == "deterministic"
 
 
 async def test_submit_async_when_explicitly_requested(

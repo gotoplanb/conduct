@@ -39,6 +39,41 @@ async def test_upsert_creates_then_updates_rule(client, admin_headers) -> None:
     assert r2.json()["notes"] == "second"
 
 
+async def test_sampling_defaults_to_balanced_and_round_trips(client, admin_headers) -> None:
+    """A rule with no sampling field defaults to 'balanced'; an explicit
+    profile round-trips through PUT → GET."""
+    base = {
+        "preferred_model": "llama3.3:70b",
+        "fallback_model": "claude-haiku-4-5",
+        "sensitivity": "internal",
+    }
+    # Default when omitted.
+    r = await client.put("/routing/sampling_default_task", json=base, headers=admin_headers)
+    assert r.status_code == 200
+    assert r.json()["sampling"] == "balanced"
+
+    # Explicit profile persists and is readable.
+    r2 = await client.put(
+        "/routing/sampling_det_task",
+        json={**base, "sampling": "deterministic"},
+        headers=admin_headers,
+    )
+    assert r2.status_code == 200
+    assert r2.json()["sampling"] == "deterministic"
+    g = await client.get("/routing/sampling_det_task", headers=admin_headers)
+    assert g.json()["sampling"] == "deterministic"
+
+
+async def test_sampling_rejects_unknown_profile(client, admin_headers) -> None:
+    body = {
+        "preferred_model": "llama3.3:70b",
+        "fallback_model": "claude-haiku-4-5",
+        "sampling": "wildly-creative",
+    }
+    r = await client.put("/routing/bad_sampling_task", json=body, headers=admin_headers)
+    assert r.status_code == 422
+
+
 async def test_upsert_validates_fanout_rate_bounds(client, admin_headers) -> None:
     body = {
         "preferred_model": "x",

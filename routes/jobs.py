@@ -25,7 +25,7 @@ from models.client import ClientApp
 from models.job import Job
 from models.routing import RoutingRule
 from models.shadow import JobShadow
-from models.types import JobStatus, Sensitivity
+from models.types import JobStatus, Sampling, Sensitivity
 from prompt_loader import PromptNotFoundError
 from providers.base import ProviderError
 from providers.registry import ProviderRegistry, is_cloud
@@ -52,6 +52,9 @@ class JobCreateIn(BaseModel):
     sensitivity: Sensitivity | None = None
     priority: int = Field(default=5, ge=1, le=10)
     model: str | None = None
+    # Per-request override of the task's sampling profile
+    # (deterministic/balanced/creative). None → use the routing rule's profile.
+    sampling: Sampling | None = None
     is_async: bool = Field(default=False, alias="async")
     # Fan-out targets — extra models to run in parallel for real-time eval.
     # Each target must be cloud or in RESIDENT_MODELS (the API can't trigger
@@ -169,6 +172,7 @@ def _resolve_decision(
             default_model=settings.default_model,
             default_sensitive_model=settings.default_sensitive_model,
             available_cloud_providers=_cloud_providers_for(client, providers),
+            sampling=body.sampling,
         )
     except SensitivityViolation as e:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e)) from e
@@ -307,6 +311,8 @@ async def _execute_sync(
                 max_tokens=decision.max_tokens,
                 providers=providers,
                 session=session,
+                temperature=decision.temperature,
+                deterministic_seed=decision.deterministic_seed,
             )
             await _asyncio.gather(primary, secondaries)
         else:
@@ -384,6 +390,7 @@ async def submit_job(
         prompt=body.prompt,
         system_prompt=body.system_prompt,
         model_requested=body.model or "",
+        sampling=body.sampling.value if body.sampling else None,
         status=JobStatus.PENDING.value,
         inputs=body.inputs or {},
         job_metadata={

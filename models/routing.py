@@ -5,7 +5,7 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from db.base import Base
-from models.types import MediaKind, Sensitivity
+from models.types import MediaKind, Sampling, Sensitivity
 
 
 class RoutingRule(Base):
@@ -46,4 +46,14 @@ class RoutingRule(Base):
     # 'text' as a server default, so the migration is fully backward compatible.
     media_kind: Mapped[str] = mapped_column(
         String(16), nullable=False, default=MediaKind.TEXT.value, server_default="text"
+    )
+    # Generation profile: bundles temperature + seed policy so determinism vs.
+    # variability is a per-task setting (see models.types.Sampling and
+    # routing.engine.sampling_params). Defaults to 'balanced' so rules predating
+    # this column keep moderate-temperature/random-seed behavior.
+    sampling: Mapped[str] = mapped_column(
+        String(20),
+        nullable=False,
+        default=Sampling.BALANCED.value,
+        server_default=Sampling.BALANCED.value,
     )

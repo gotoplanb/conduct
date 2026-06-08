@@ -93,14 +93,22 @@ class BedrockProvider(BaseProvider):
         model: str,
         system_prompt: str = "",
         max_tokens: int = 1000,
+        temperature: float | None = None,
+        seed: int | None = None,
         **kwargs: object,
     ) -> ProviderResponse:
+        inference_config: dict = {"maxTokens": max_tokens}
+        # Bedrock Converse has no seed param — `seed` is ignored; a
+        # "deterministic" task falls back to temperature 0 (best-effort, no
+        # reproducibility guarantee).
+        if temperature is not None:
+            inference_config["temperature"] = temperature
         converse_kwargs: dict = {
             "modelId": model,
             "messages": [
                 {"role": "user", "content": [{"text": prompt}]},
             ],
-            "inferenceConfig": {"maxTokens": max_tokens},
+            "inferenceConfig": inference_config,
         }
         if system_prompt:
             converse_kwargs["system"] = [{"text": system_prompt}]

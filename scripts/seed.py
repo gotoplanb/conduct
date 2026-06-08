@@ -26,7 +26,7 @@ from db.session import SessionLocal, engine
 from models.client import ClientApp
 from models.prompt import Prompt, PromptVersion
 from models.routing import RoutingRule
-from models.types import MediaKind, Sensitivity
+from models.types import MediaKind, Sampling, Sensitivity
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 CLIENTS_PATH = REPO_ROOT / "config" / "seed.clients.yaml"
@@ -80,6 +80,8 @@ async def _seed_routing(session, specs: list[dict]) -> tuple[list[str], list[str
         # media_kind defaults to 'text' — keeps existing seed entries that
         # predate this column working unchanged.
         media_kind = MediaKind(spec.get("media_kind", MediaKind.TEXT.value))
+        # sampling defaults to 'balanced' — same backward-compat rationale.
+        sampling = Sampling(spec.get("sampling", Sampling.BALANCED.value))
         session.add(
             RoutingRule(
                 task_type=tt,
@@ -90,6 +92,7 @@ async def _seed_routing(session, specs: list[dict]) -> tuple[list[str], list[str
                 notes=spec.get("notes", ""),
                 eval_shadow_models=spec.get("eval_shadow_models") or [],
                 media_kind=media_kind.value,
+                sampling=sampling.value,
             )
         )
         created.append(tt)

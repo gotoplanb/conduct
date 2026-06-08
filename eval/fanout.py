@@ -55,6 +55,8 @@ async def run_fanout_secondaries(
     max_tokens: int,
     providers: ProviderRegistry,
     session: AsyncSession,
+    temperature: float | None = None,
+    deterministic_seed: bool = False,
 ) -> list[JobShadow]:
     """Create JobShadow rows for each secondary, run them all in parallel,
     return the resulting rows. The caller is responsible for running the
@@ -84,6 +86,8 @@ async def run_fanout_secondaries(
             max_tokens=max_tokens,
             providers=providers,
             session=session,
+            temperature=temperature,
+            deterministic_seed=deterministic_seed,
         )
 
     with _tracer.start_as_current_span("conduct.fanout") as span:

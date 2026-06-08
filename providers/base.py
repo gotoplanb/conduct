@@ -42,5 +42,11 @@ class BaseProvider(ABC):
         model: str,
         system_prompt: str = "",
         max_tokens: int = 1000,
+        temperature: float | None = None,
+        seed: int | None = None,
         **kwargs: object,
-    ) -> ProviderResponse: ...
+    ) -> ProviderResponse:
+        """`temperature`/`seed` come from the task's sampling profile (see
+        routing.engine). `seed` is honored only by providers that support it
+        (Ollama); cloud providers ignore it and rely on temperature alone."""
+        ...

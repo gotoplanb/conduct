@@ -36,6 +36,49 @@ async def test_complete_success_parses_tokens_and_zero_cost() -> None:
 
 
 @pytest.mark.asyncio
+async def test_temperature_and_seed_land_in_options() -> None:
+    """The sampling profile reaches Ollama via `options.temperature` and
+    `options.seed` — this is what makes a deterministic task reproducible."""
+    base = "http://localhost:11434"
+    captured: dict = {}
+    with respx.mock(base_url=base) as mock:
+        def _capture(request):
+            import json
+            captured.update(json.loads(request.content))
+            return httpx.Response(200, json={"response": "x", "done": True})
+
+        mock.post("/api/generate").mock(side_effect=_capture)
+        provider = OllamaProvider(base_url=base)
+        await provider.complete(
+            prompt="hi", model="m", max_tokens=50, temperature=0.0, seed=12345
+        )
+
+    assert captured["options"]["temperature"] == 0.0
+    assert captured["options"]["seed"] == 12345
+    assert captured["options"]["num_predict"] == 50
+
+
+@pytest.mark.asyncio
+async def test_options_omit_temperature_and_seed_when_unset() -> None:
+    """No sampling params → don't send them; Ollama uses its own defaults and
+    randomizes the seed each call (the variable-output case)."""
+    base = "http://localhost:11434"
+    captured: dict = {}
+    with respx.mock(base_url=base) as mock:
+        def _capture(request):
+            import json
+            captured.update(json.loads(request.content))
+            return httpx.Response(200, json={"response": "x", "done": True})
+
+        mock.post("/api/generate").mock(side_effect=_capture)
+        provider = OllamaProvider(base_url=base)
+        await provider.complete(prompt="hi", model="m")
+
+    assert "temperature" not in captured["options"]
+    assert "seed" not in captured["options"]
+
+
+@pytest.mark.asyncio
 async def test_404_raises_model_not_loaded() -> None:
     base = "http://localhost:11434"
     with respx.mock(base_url=base) as mock:

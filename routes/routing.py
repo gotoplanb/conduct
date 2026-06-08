@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from auth import admin_only
 from db.session import get_session
 from models.routing import RoutingRule
-from models.types import MediaKind, Sensitivity
+from models.types import MediaKind, Sampling, Sensitivity
 
 router = APIRouter(prefix="/routing", tags=["routing"], dependencies=[Depends(admin_only)])
 
@@ -35,6 +35,7 @@ class RoutingRuleOut(BaseModel):
     updated_at: datetime
     is_archived: bool = False
     media_kind: MediaKind = MediaKind.TEXT
+    sampling: Sampling = Sampling.BALANCED
 
 
 class RoutingRuleIn(BaseModel):
@@ -45,6 +46,9 @@ class RoutingRuleIn(BaseModel):
     notes: str = ""
     eval_shadow_models: list[ShadowModelSpec] = Field(default_factory=list)
     media_kind: MediaKind = MediaKind.TEXT
+    # Generation profile: deterministic (temp 0 + input-derived seed),
+    # balanced (temp 0.7, random), or creative (temp 1.0, random).
+    sampling: Sampling = Sampling.BALANCED
 
 
 class RoutingListOut(BaseModel):
@@ -97,6 +101,7 @@ async def upsert_routing(
             notes=body.notes,
             eval_shadow_models=shadow_specs,
             media_kind=body.media_kind.value,
+            sampling=body.sampling.value,
         )
         session.add(rule)
     else:
@@ -107,6 +112,7 @@ async def upsert_routing(
         rule.notes = body.notes
         rule.eval_shadow_models = shadow_specs
         rule.media_kind = body.media_kind.value
+        rule.sampling = body.sampling.value
         # Revive an archived rule transparently — PUT means "make this the
         # current rule", so the operator shouldn't have to know the row is
         # archived to bring it back. Soft-delete is for cleanup hygiene,

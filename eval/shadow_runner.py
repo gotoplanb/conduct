@@ -30,6 +30,7 @@ from observability.tracing import get_tracer
 from providers.anthropic import AnthropicProvider
 from providers.ollama import OllamaProvider
 from providers.registry import ProviderRegistry
+from routing.engine import rule_sampling, sampling_params
 from worker.db import get_worker_session_maker
 
 log = logging.getLogger(__name__)
@@ -155,6 +156,12 @@ async def _run_async(shadow_id: UUID) -> None:
                 )
             )
             max_tokens = rule.max_tokens if rule else 1000
+            # Match the primary's sampling regime so a deterministic task's
+            # shadow is seeded the same way (fair A/B). Rule-level only —
+            # shadows don't carry the parent's per-request sampling override.
+            shadow_temperature, shadow_deterministic_seed = sampling_params(
+                rule_sampling(rule)
+            )
 
             # Local model swap, if needed. Same logic as the main worker — we
             # don't double-load if the model already matches.
@@ -182,6 +189,8 @@ async def _run_async(shadow_id: UUID) -> None:
                 max_tokens=max_tokens,
                 providers=providers,
                 session=session,
+                temperature=shadow_temperature,
+                deterministic_seed=shadow_deterministic_seed,
             )
             span.set_attribute(_DISPATCH_OUTCOME, "executed")
 
