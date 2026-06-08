@@ -60,10 +60,15 @@ class ComfyUIProvider(BaseMediaProvider):
         *,
         base_url: str = "http://host.docker.internal:8188",
         timeout_s: float = _DEFAULT_TIMEOUT_S,
+        free_after_video: bool = True,
     ) -> None:
         self._base = base_url.rstrip("/")
         self._timeout_s = timeout_s
         self._client_id = uuid.uuid4().hex
+        # Unload models after a video run (see _free_models). On by default;
+        # disable for a dedicated video-only host where the reload cost of a
+        # back-to-back video isn't worth giving the memory back.
+        self._free_after_video = free_after_video
 
     async def produce(
         self,
@@ -112,11 +117,20 @@ class ComfyUIProvider(BaseMediaProvider):
             # list, but for the wander_* templates each produces one artifact.
             head = outputs[0]
             data = await self._fetch(client, head)
+
+            # Choose extension based on filename ComfyUI gave us (it knows mp4
+            # vs png vs whatever the SaveVideo / SaveImage node decided).
+            suffix = Path(head["filename"]).suffix or ".bin"
+
+            # ComfyUI keeps the workflow's models resident after a run. The Wan
+            # I2V video model is ~30GB; left loaded it starves the next media
+            # job on the shared host — an audio gen OOM'd the box this way. Now
+            # that the bytes are in hand, free it. Best-effort, video only: the
+            # small SDXL image model isn't worth the per-image reload cost.
+            if self._free_after_video and _mime_from_suffix(suffix).startswith("video/"):
+                await self._free_models(client)
         latency_ms = int((time.perf_counter() - started) * 1000)
 
-        # Choose extension based on filename ComfyUI gave us (it knows mp4
-        # vs png vs whatever the SaveVideo / SaveImage node decided).
-        suffix = Path(head["filename"]).suffix or ".bin"
         out_path = Path(output_dir) / f"{output_basename}{suffix}"
         out_path.parent.mkdir(parents=True, exist_ok=True)
         out_path.write_bytes(data)
@@ -272,6 +286,19 @@ class ComfyUIProvider(BaseMediaProvider):
         r = await client.get(f"/view?{q}")
         r.raise_for_status()
         return r.content
+
+    async def _free_models(self, client: httpx.AsyncClient) -> None:
+        """POST /free to unload models and release memory. Best-effort: the
+        job already succeeded, so a free hiccup must never fail it — log and
+        move on."""
+        try:
+            r = await client.post(
+                "/free", json={"unload_models": True, "free_memory": True}
+            )
+            r.raise_for_status()
+            log.info("freed ComfyUI models after video job")
+        except httpx.HTTPError as e:
+            log.warning("ComfyUI /free failed (non-fatal): %s", e)
 
 
 # ----------------------------------------------------------------------

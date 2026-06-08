@@ -162,6 +162,9 @@ async def test_video_workflow_uploads_source_image(provider, tmp_path) -> None:
     respx.get("http://comfy.test/view").mock(
         return_value=httpx.Response(200, content=b"VIDDATA")
     )
+    free_route = respx.post("http://comfy.test/free").mock(
+        return_value=httpx.Response(200, json={})
+    )
 
     result = await provider.produce(
         prompt="gentle breeze",
@@ -178,6 +181,71 @@ async def test_video_workflow_uploads_source_image(provider, tmp_path) -> None:
     assert result.mime_type == "video/mp4"
     assert result.url_path == "/output/vid.mp4"
     assert result.duration_s == pytest.approx(49 / 16)
+    # The ~30GB Wan model must be unloaded after the video so a following
+    # media job on the shared host isn't fighting it for memory.
+    assert free_route.called
+    free_body = json.loads(free_route.calls.last.request.content)
+    assert free_body == {"unload_models": True, "free_memory": True}
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_image_workflow_does_not_free_models(provider, tmp_path) -> None:
+    """Image (SDXL) is small and images often run back-to-back — freeing
+    after each would pay a reload cost for no real memory relief. Only video
+    frees, so an image job must NOT POST /free."""
+    prompt_id = "test-image-nofree"
+    respx.post("http://comfy.test/prompt").mock(
+        return_value=httpx.Response(200, json={"prompt_id": prompt_id})
+    )
+    respx.get(f"http://comfy.test/history/{prompt_id}").mock(
+        return_value=httpx.Response(200, json=_history_complete(prompt_id))
+    )
+    respx.get("http://comfy.test/view").mock(
+        return_value=httpx.Response(200, content=b"PNG")
+    )
+    free_route = respx.post("http://comfy.test/free").mock(
+        return_value=httpx.Response(200, json={})
+    )
+
+    await provider.produce(
+        prompt="x", inputs={}, output_dir=str(tmp_path), output_basename="x",
+        params={"workflow_template": "wander_scene_image"},
+    )
+    assert not free_route.called
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_video_free_failure_is_non_fatal(provider, tmp_path) -> None:
+    """A /free failure must not fail an already-successful video job — the
+    bytes are in hand, the unload is just cleanup."""
+    src = tmp_path / "still.png"
+    src.write_bytes(b"FAKEPNG")
+    prompt_id = "test-free-fail"
+    respx.post("http://comfy.test/upload/image").mock(
+        return_value=httpx.Response(200, json={"name": "u.png", "subfolder": "", "type": "input"})
+    )
+    respx.post("http://comfy.test/prompt").mock(
+        return_value=httpx.Response(200, json={"prompt_id": prompt_id})
+    )
+    respx.get(f"http://comfy.test/history/{prompt_id}").mock(
+        return_value=httpx.Response(200, json=_history_video(prompt_id))
+    )
+    respx.get("http://comfy.test/view").mock(
+        return_value=httpx.Response(200, content=b"VID")
+    )
+    respx.post("http://comfy.test/free").mock(
+        return_value=httpx.Response(500, text="boom")
+    )
+
+    result = await provider.produce(
+        prompt="x", inputs={"source_image_url": str(src)},
+        output_dir=str(tmp_path), output_basename="vid",
+        params={"workflow_template": "wander_scene_video", "length": 49, "fps": 16},
+    )
+    assert result.mime_type == "video/mp4"
+    assert Path(result.file_path).read_bytes() == b"VID"
 
 
 @pytest.mark.asyncio
