@@ -63,11 +63,14 @@ class JobCreateIn(BaseModel):
     # Handy for "I want the full comparison for this specific input."
     force_shadows: bool = False
     metadata: dict = Field(default_factory=dict)
-    # Typed inputs for media tasks. Per-task-type shape (e.g.
-    # `{"source_image_url": "/output/abc.png"}` for image→video,
-    # `{"source_video_url": "...", "source_audio_url": "..."}` for mux).
-    # Text-only tasks leave this empty. The provider decides what's required;
-    # missing required inputs surface as task-time errors.
+    # Typed inputs for media tasks. Reference upstream jobs by id — the
+    # worker resolves each to a local file path via the upstream job's
+    # media_url before invoking the provider, so chaining never crosses the
+    # HTTP boundary. Per-task-type shape (e.g.
+    # `{"source_image_job_id": "<uuid>"}` for image→video,
+    # `{"source_video_job_id": "<uuid>", "source_audio_job_id": "<uuid>"}`
+    # for mux). Text-only tasks leave this empty. The legacy
+    # `source_<kind>_url` form is accepted but deprecated.
     inputs: dict = Field(default_factory=dict)
 
 

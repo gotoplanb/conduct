@@ -190,3 +190,191 @@ async def test_unknown_media_provider_raises(
             output_dir="/tmp/x",
             session=db_session,
         )
+
+
+async def _seed_completed_media_job(db, *, client_id, task_type, media_url):
+    """Seed a complete media job with a known media_url so the next job in
+    the chain has something to reference via source_*_job_id."""
+    job = Job(
+        client_app_id=client_id,
+        task_type=task_type,
+        sensitivity="public",
+        prompt="upstream",
+        status=JobStatus.COMPLETE.value,
+        media_url=media_url,
+    )
+    db.add(job)
+    await db.commit()
+    await db.refresh(job)
+    return job
+
+
+async def test_chain_by_job_id_resolves_to_worker_local_path(
+    db_session: AsyncSession, seeded_client
+) -> None:
+    """source_image_job_id → look up the upstream job → hand the provider
+    a worker-local path (/app/output/...). This is the contract for media
+    chaining post-#14; clients pass ids, never URLs."""
+    upstream = await _seed_completed_media_job(
+        db_session,
+        client_id=seeded_client[0].id,
+        task_type="wander_scene_image",
+        media_url=f"/output/{__import__('uuid').uuid4()}.png",
+    )
+    downstream = await _seed_media_job(
+        db_session,
+        client_id=seeded_client[0].id,
+        task_type="wander_scene_video",
+        inputs={"source_image_job_id": str(upstream.id)},
+    )
+
+    captured = {}
+
+    class _Capturing(BaseMediaProvider):
+        name = "capture"
+
+        async def produce(self, **kwargs):
+            captured.update(kwargs)
+            return MediaResponse(
+                file_path="/tmp/x", url_path=f"/output/{downstream.id}.mp4",
+                mime_type="video/mp4", width=None, height=None, duration_s=None,
+                latency_ms=0, cost_usd=Decimal("0"), model_used="x",
+                provider=self.name, extra={},
+            )
+
+    reg = ProviderRegistry()
+    reg.register_media(_Capturing())
+    out = await execute_media_job(
+        job=downstream,
+        media_provider_name="capture",
+        media_kind="video",
+        workflow_template="wander_scene_video",
+        providers=reg,
+        output_dir="/tmp/x",
+        session=db_session,
+    )
+
+    assert out.status == JobStatus.COMPLETE.value
+    # Resolver translated the id ref into a worker-local file path; the
+    # original *_job_id key was stripped so providers see only the *_url
+    # they already understand.
+    expected_path = upstream.media_url.replace("/output/", "/app/output/", 1)
+    assert captured["inputs"]["source_image_url"] == expected_path
+    assert "source_image_job_id" not in captured["inputs"]
+
+
+async def test_chain_by_job_id_unknown_id_marks_failed_with_clear_error(
+    db_session: AsyncSession, seeded_client
+) -> None:
+    """A bad job_id ref must fail the downstream job loudly (not silently
+    skip the input) so the operator can fix the client-side chain."""
+    bogus_id = "00000000-0000-0000-0000-000000000000"
+    downstream = await _seed_media_job(
+        db_session,
+        client_id=seeded_client[0].id,
+        task_type="wander_scene_video",
+        inputs={"source_image_job_id": bogus_id},
+    )
+
+    reg = ProviderRegistry()
+    reg.register_media(_GoodMediaProvider())  # will never get called
+
+    out = await execute_media_job(
+        job=downstream,
+        media_provider_name="good",
+        media_kind="video",
+        workflow_template="wander_scene_video",
+        providers=reg,
+        output_dir="/tmp/x",
+        session=db_session,
+    )
+
+    assert out.status == JobStatus.FAILED.value
+    assert "source_image_job_id" in out.error
+    assert bogus_id in out.error
+    assert "referenced job not found" in out.error
+
+
+async def test_chain_by_job_id_upstream_has_no_media_url_marks_failed(
+    db_session: AsyncSession, seeded_client
+) -> None:
+    """An upstream that hasn't completed (no media_url) shouldn't silently
+    produce empty inputs — the resolver must fail-fast and report status."""
+    upstream = await _seed_media_job(
+        db_session,
+        client_id=seeded_client[0].id,
+        task_type="wander_scene_image",
+    )
+    # upstream.media_url is None (pending) — resolver must reject.
+    downstream = await _seed_media_job(
+        db_session,
+        client_id=seeded_client[0].id,
+        task_type="wander_scene_video",
+        inputs={"source_image_job_id": str(upstream.id)},
+    )
+
+    reg = ProviderRegistry()
+    reg.register_media(_GoodMediaProvider())
+    out = await execute_media_job(
+        job=downstream,
+        media_provider_name="good",
+        media_kind="video",
+        workflow_template="wander_scene_video",
+        providers=reg,
+        output_dir="/tmp/x",
+        session=db_session,
+    )
+
+    assert out.status == JobStatus.FAILED.value
+    assert "no media_url" in out.error
+    assert f"status={JobStatus.PENDING.value}" in out.error
+
+
+async def test_chain_by_url_still_works_but_logs_deprecation(
+    db_session: AsyncSession, seeded_client, caplog
+) -> None:
+    """One-release grace period: the legacy `source_*_url` form keeps
+    working but emits a warning so callers migrate before the next bump."""
+    import logging
+
+    downstream = await _seed_media_job(
+        db_session,
+        client_id=seeded_client[0].id,
+        task_type="wander_scene_video",
+        inputs={"source_image_url": "/app/output/some-existing-file.png"},
+    )
+
+    captured = {}
+
+    class _Capturing(BaseMediaProvider):
+        name = "capture"
+
+        async def produce(self, **kwargs):
+            captured.update(kwargs)
+            return MediaResponse(
+                file_path="/tmp/x", url_path=f"/output/{downstream.id}.mp4",
+                mime_type="video/mp4", width=None, height=None, duration_s=None,
+                latency_ms=0, cost_usd=Decimal("0"), model_used="x",
+                provider=self.name, extra={},
+            )
+
+    reg = ProviderRegistry()
+    reg.register_media(_Capturing())
+    with caplog.at_level(logging.WARNING, logger="worker.executor"):
+        out = await execute_media_job(
+            job=downstream,
+            media_provider_name="capture",
+            media_kind="video",
+            workflow_template="wander_scene_video",
+            providers=reg,
+            output_dir="/tmp/x",
+            session=db_session,
+        )
+
+    assert out.status == JobStatus.COMPLETE.value
+    # URL passed through untouched
+    assert captured["inputs"]["source_image_url"] == "/app/output/some-existing-file.png"
+    assert any(
+        "deprecated URL form" in rec.message and "source_image_url" in rec.message
+        for rec in caplog.records
+    )

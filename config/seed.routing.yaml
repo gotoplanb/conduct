@@ -163,7 +163,7 @@ rules:
     sensitivity: public
     max_tokens: 1
     media_kind: video
-    notes: "Wan 2.2 14B I2V FP16. Inputs require source_image_url. ~6 min for a 3s clip @ 720x480 on M5 Max."
+    notes: "Wan 2.2 14B I2V FP16. Inputs require source_image_job_id. ~6 min for a 3s clip @ 720x480 on M5 Max."
 
   - task_type: wander_scene_music
     preferred_model: acestep-v15-xl-turbo  # ignored at dispatch; selected by provider config
@@ -179,4 +179,4 @@ rules:
     sensitivity: public
     max_tokens: 1
     media_kind: mux
-    notes: "FFmpeg mux. Inputs require source_video_url + source_audio_url. Sub-second."
+    notes: "FFmpeg mux. Inputs require source_video_job_id + source_audio_job_id. Sub-second."

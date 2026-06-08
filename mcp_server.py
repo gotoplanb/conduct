@@ -299,11 +299,14 @@ async def create_job(
     eval shadow for THIS request regardless of the rule's sampling rate —
     useful when you specifically want a side-by-side model comparison.
 
-    `inputs` is the typed-input bag for media tasks. Examples by task kind:
-    image→video: `{"source_image_url": "/output/abc.png"}`. video+audio→mux:
-    `{"source_video_url": "/output/vid.mp4", "source_audio_url":
-    "/output/aud.mp3"}`. Text tasks ignore it. URLs can be any other
-    Conduct job's /output URL or any http(s) URL the worker can reach."""
+    `inputs` is the typed-input bag for media tasks. Reference upstream jobs
+    by id — the worker resolves each id to a local file via the upstream
+    job's `media_url`, so no HTTP round-trip is needed. Examples by task
+    kind: image→video: `{"source_image_job_id": "<image_job_uuid>"}`.
+    video+audio→mux: `{"source_video_job_id": "<video_job_uuid>",
+    "source_audio_job_id": "<music_job_uuid>"}`. Text tasks ignore it.
+    The legacy `source_<kind>_url` form is still accepted but deprecated and
+    logs a warning; migrate to `_job_id` refs."""
     client_app_id = _client_app_id()
     settings = get_settings()
     inputs = inputs or {}

@@ -12,8 +12,10 @@ The executor:
 from __future__ import annotations
 
 import asyncio
+import logging
 from datetime import UTC, date, datetime
 from time import perf_counter
+from uuid import UUID
 
 from opentelemetry.trace import Status, StatusCode
 from sqlalchemy import select
@@ -40,6 +42,91 @@ _tracer = get_tracer(__name__)
 _default_failure_handler: FailureHandler = StaticFailureHandler()
 
 _SPAN_MODEL_USED = "model.used"
+
+log = logging.getLogger(__name__)
+
+# Media chaining inputs that historically held a URL. Workers no longer fetch
+# them over HTTP — the canonical contract is `source_<kind>_job_id`, which
+# the worker resolves to a local file path before invoking the provider.
+# Listed here to gate the deprecation warning on the URL alias.
+_MEDIA_SOURCE_URL_KEYS = frozenset(
+    {"source_image_url", "source_audio_url", "source_video_url"}
+)
+
+
+async def _resolve_one_job_id_ref(
+    key: str, ref_id, session: AsyncSession
+) -> str:
+    """Look up the referenced upstream Job and return a worker-local file
+    path translated from its media_url. Raises ValueError with an operator-
+    readable message on any failure."""
+    try:
+        ref_uuid = UUID(str(ref_id))
+    except (ValueError, TypeError) as e:
+        raise ValueError(f"{key}={ref_id!r} is not a valid UUID: {e}") from e
+    ref_job = await session.get(Job, ref_uuid)
+    if ref_job is None:
+        raise ValueError(f"{key}={ref_id}: referenced job not found")
+    if not ref_job.media_url:
+        raise ValueError(
+            f"{key}={ref_id}: referenced job has no media_url "
+            f"(status={ref_job.status})"
+        )
+    # media_url is stored as "/output/<uuid>.<ext>"; the worker mounts the
+    # same directory at /app/output so we translate to a local filesystem
+    # path that providers can hand straight to ffmpeg / ComfyUI's LoadImage
+    # node without any HTTP round-trip.
+    if ref_job.media_url.startswith("/output/"):
+        return ref_job.media_url.replace("/output/", "/app/output/", 1)
+    return ref_job.media_url
+
+
+def _warn_on_deprecated_url_inputs(
+    inputs: dict, resolved_url_keys: set[str]
+) -> None:
+    for k in inputs:
+        if k in _MEDIA_SOURCE_URL_KEYS and k not in resolved_url_keys:
+            log.warning(
+                "media input %s uses deprecated URL form; "
+                "switch to %s pointing at the upstream job's id",
+                k,
+                k[: -len("_url")] + "_job_id",
+            )
+
+
+async def _resolve_media_input_refs(
+    inputs: dict, session: AsyncSession
+) -> dict:
+    """Translate `source_<kind>_job_id` keys → `source_<kind>_url` pointing
+    at a worker-local file path, so providers stay oblivious to the DB.
+
+    Job-id refs are the canonical chaining contract (issues #12, #14). The
+    older URL form is accepted for one release as a deprecated alias and
+    logs a warning; when both forms are present the job-id wins.
+
+    A bad ref (unknown job_id, or referenced job has no media_url yet) raises
+    ValueError — execute_media_job's except-Exception block surfaces it as
+    Job.error, so /ui/jobs shows the operator exactly what was wrong.
+    """
+    if not inputs:
+        return inputs or {}
+    resolved = dict(inputs)
+    job_id_keys = [
+        k for k in inputs
+        if k.startswith("source_") and k.endswith("_job_id")
+    ]
+    resolved_url_keys: set[str] = set()
+    for key in job_id_keys:
+        # source_image_job_id → source_image_url (strip "_job_id", append "_url")
+        url_key = key[: -len("_job_id")] + "_url"
+        resolved[url_key] = await _resolve_one_job_id_ref(
+            key, inputs[key], session
+        )
+        resolved.pop(key, None)
+        resolved_url_keys.add(url_key)
+
+    _warn_on_deprecated_url_inputs(inputs, resolved_url_keys)
+    return resolved
 
 
 async def _call_provider(
@@ -307,9 +394,12 @@ async def execute_media_job(
             params.setdefault("workflow_template", workflow_template)
 
         try:
+            resolved_inputs = await _resolve_media_input_refs(
+                job.inputs or {}, session
+            )
             response = await media.produce(
                 prompt=job.prompt,
-                inputs=job.inputs or {},
+                inputs=resolved_inputs,
                 output_dir=output_dir,
                 output_basename=str(job.id),
                 params=params,
