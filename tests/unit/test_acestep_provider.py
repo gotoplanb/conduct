@@ -174,6 +174,54 @@ async def test_missing_audio_in_response_raises(provider, tmp_path) -> None:
 
 @pytest.mark.asyncio
 @respx.mock
+async def test_request_sends_bounded_audio_config_duration(provider, tmp_path) -> None:
+    """Regression for the OOM crash: the provider MUST send a bounded
+    `audio_config.duration`. ACE-Step reads generation settings from
+    `audio_config` only — with duration unset it auto-selects up to 600s, and a
+    long pick (a 215s auto-pick was observed spiking ~80GB of unified memory)
+    OOMs the host when the resident video model is also loaded. Also pins that
+    instrumental/format ride inside audio_config (where the adapter reads them)
+    and that the old top-level `audio` key is gone."""
+    import json as _json
+
+    respx.get("http://ace.test/health").mock(
+        return_value=httpx.Response(200, json={
+            "data": {"models_initialized": True, "llm_initialized": True}
+        })
+    )
+    captured: dict = {}
+
+    def _capture(request: httpx.Request) -> httpx.Response:
+        captured.clear()
+        captured.update(_json.loads(request.content))
+        return httpx.Response(200, json=_chat_response(b"x"))
+
+    respx.post("http://ace.test/v1/chat/completions").mock(side_effect=_capture)
+
+    # Default: bounded duration present, instrumental defaults True, no stray
+    # top-level `audio` key.
+    await provider.produce(
+        prompt="x", inputs={}, output_dir=str(tmp_path), output_basename="d1"
+    )
+    ac = captured["audio_config"]
+    assert ac["duration"] == 30.0
+    assert ac["instrumental"] is True
+    assert ac["format"] == "mp3"
+    assert "audio" not in captured
+
+    # Explicit params override the defaults.
+    await provider.produce(
+        prompt="x", inputs={}, output_dir=str(tmp_path), output_basename="d2",
+        params={"duration": 12.5, "instrumental": False, "audio_format": "wav"},
+    )
+    ac = captured["audio_config"]
+    assert ac["duration"] == 12.5
+    assert ac["instrumental"] is False
+    assert ac["format"] == "wav"
+
+
+@pytest.mark.asyncio
+@respx.mock
 async def test_wav_format_extension_used(provider, tmp_path) -> None:
     """Audio format flows from params through to filename suffix."""
     respx.get("http://ace.test/health").mock(

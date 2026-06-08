@@ -37,6 +37,12 @@ _DEFAULT_MODEL = "acestep-v15-xl-turbo"
 _DEFAULT_LM_MODEL = "acestep-5Hz-lm-1.7B"
 _DEFAULT_TIMEOUT_S = 1800  # 30 min — first-time init can pull a few GB
 _INIT_RETRY_S = 5.0
+# When `duration` is omitted ACE-Step's LM auto-selects a track length anywhere
+# in 10–600s. A long auto-pick balloons the diffusion latent into tens of GB of
+# unified memory (a 215s pick was measured spiking ~80GB) — enough to OOM the
+# host when the resident video model is still loaded. A Wander scene cue is a
+# short ambient loop, so bound it by default and let callers override.
+_DEFAULT_DURATION_S = 30.0
 
 
 class ACEStepProvider(BaseMediaProvider):
@@ -70,9 +76,12 @@ class ACEStepProvider(BaseMediaProvider):
         `output_dir/output_basename.<ext>`.
 
         Params honored (with sane defaults):
+          - `duration` (default 30.0s — bounded to cap diffusion memory; the
+            server auto-picks 10–600s when unset, which can OOM the host)
           - `temperature` (default 0.85)
-          - `vocal_language` (default "unknown")
+          - `vocal_language` (default unset → ACE-Step uses "en")
           - `instrumental` (default True — Wanderer-style ambient tracks)
+          - `bpm` (optional; passed through when present)
           - `audio_format` (default "mp3"; ACE-Step also handles wav)
         """
         params = params or {}
@@ -150,19 +159,28 @@ class ACEStepProvider(BaseMediaProvider):
         self, client: httpx.AsyncClient, prompt: str, params: dict[str, Any]
     ) -> tuple[bytes, str]:
         audio_format = params.get("audio_format", "mp3")
+        # ACE-Step's OpenRouter adapter reads every generation setting from the
+        # `audio_config` object — a top-level `audio`/`instrumental`/`duration`
+        # key is silently dropped. `duration` MUST be set here: left unset the
+        # server auto-selects 10–600s and a long pick blows the diffusion latent
+        # up to tens of GB, OOMing the host (see _DEFAULT_DURATION_S).
+        audio_config: dict[str, Any] = {
+            "format": audio_format,
+            "duration": float(params.get("duration", _DEFAULT_DURATION_S)),
+            "instrumental": bool(params.get("instrumental", True)),
+        }
+        if vlang := params.get("vocal_language"):
+            audio_config["vocal_language"] = vlang
+        if (bpm := params.get("bpm")) is not None:
+            audio_config["bpm"] = int(bpm)
+
         body = {
             "model": f"acestep/{self._model}",
             "messages": [{"role": "user", "content": prompt}],
             "modalities": ["audio"],
-            "audio": {"format": audio_format, "voice": ""},
+            "audio_config": audio_config,
             "temperature": params.get("temperature", 0.85),
         }
-        # ACE-Step picks instrumental vs vocal from the prompt's tags by
-        # default but the body's `instrumental` flag wins when present.
-        if params.get("instrumental") is not None:
-            body["instrumental"] = bool(params["instrumental"])
-        if vlang := params.get("vocal_language"):
-            body["vocal_language"] = vlang
 
         r = await client.post("/v1/chat/completions", json=body)
         if r.status_code >= 400:
