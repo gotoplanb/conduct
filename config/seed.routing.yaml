@@ -152,6 +152,7 @@ rules:
     fallback_model: gemma4:12b
     sensitivity: public
     max_tokens: 600
+    sampling: deterministic   # judge task: same scene+state+action → same verdict (reproducible rulings + clean DPO pairs, see #15/#16)
     notes: "Per-turn eval of player choices in the wander game. Small-model primary (latency matters at every turn); bigger Gemma as shadow + fallback."
     eval_shadow_models:
       - { model: gemma4:12b, rate: 1.0 }   # same-family step-up
