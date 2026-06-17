@@ -96,8 +96,14 @@ and the YAML can drift; treat the live DB as source of truth.
 
 Beyond operator scoring, clients can submit their own quality scores. All paths
 append to the same `quality_scores` list (so they feed the same rollup), and
-each score is tagged with a `via` provenance field (`admin` / `mcp` / `url`) so
-you can filter operator vs. client-sourced scores later.
+each score is tagged with a `via` provenance field (`admin` / `mcp` / `url` /
+`judge` / `judge-panel`) so you can filter operator vs. client- vs.
+model-sourced scores later.
+
+> **Automating the scoring itself?** The **`judge` task type** lets Conduct
+> score (or compare, or jury) outputs through its own dispatch — pointwise,
+> pairwise, and panel/jury modes, all feeding this same lane. See
+> [judging.md](judging.md).
 
 **From a Claude connector (MCP).** The `submit_eval` tool scores one of the
 caller's own jobs. The calling Claude session interprets freeform feedback
