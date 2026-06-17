@@ -20,6 +20,13 @@ def _qs(*scores, via="judge"):
     ]}
 
 
+def _qs_dims(dims, via="judge"):
+    overall = round(sum(dims.values()) / len(dims))
+    return {"quality_scores": [
+        {"score": overall, "scores": dims, "via": via, "reviewer": "m", "at": "x"}
+    ]}
+
+
 async def _job(db, client_id, *, task_type="qa", prompt="Q?", response="A", model="m",
                system_prompt="", metadata=None, sensitivity="internal") -> Job:
     job = Job(
@@ -59,6 +66,24 @@ async def test_sft_keeps_high_scored_only(db_session: AsyncSession, seeded_clien
     assert r["prompt"] == "good?" and r["completion"] == "great"
     assert r["meta"]["score"] == 4.5 and r["meta"]["n_scores"] == 2
     assert r["meta"]["source"] == "job" and r["meta"]["id"] == str(good.id)
+
+
+async def test_sft_label_dim_filters_and_surfaces_dimensions(
+    db_session: AsyncSession, seeded_client
+) -> None:
+    cid = seeded_client[0].id
+    # high overall (4.3) but low correctness (2) → excluded when label_dim=correctness
+    await _job(db_session, cid, prompt="a", response="x",
+               metadata=_qs_dims({"correctness": 2, "format": 5, "craft": 6 - 1}))
+    # high correctness (5) → kept
+    await _job(db_session, cid, prompt="b", response="y",
+               metadata=_qs_dims({"correctness": 5, "format": 3, "craft": 4}))
+
+    rows = await iter_sft(db_session, task_type="qa", min_score=4, label_dim="correctness")
+    assert len(rows) == 1
+    assert rows[0]["prompt"] == "b"
+    assert rows[0]["meta"]["score"] == 5.0  # the correctness dimension
+    assert rows[0]["meta"]["dimensions"] == {"correctness": 5.0, "format": 3.0, "craft": 4.0}
 
 
 async def test_sft_via_filter(db_session: AsyncSession, seeded_client) -> None:

@@ -34,14 +34,22 @@ def _pv(metadata: dict | None) -> int | None:
     return ((metadata or {}).get("prompt") or {}).get("version_id")
 
 
-def _scored(metadata: dict | None, via: str | None) -> tuple[float | None, int]:
-    """(avg, count) of a row's quality_scores, optionally filtered to one `via`
-    provenance (e.g. only judge-sourced scores)."""
+def _scored(
+    metadata: dict | None, via: str | None, label_dim: str | None = None
+) -> tuple[float | None, int, dict[str, float]]:
+    """(avg, count, dimensions) of a row's quality_scores, optionally filtered
+    to one `via` provenance. When `label_dim` is set, avg/count are for THAT
+    named dimension (#18); otherwise the overall score. `dimensions` always
+    carries every named dimension's average, for the row's meta."""
     scores = (metadata or {}).get("quality_scores") or []
     if via:
         scores = [s for s in scores if s.get("via") == via]
     st = score_state(scores)
-    return st["avg"], st["count"]
+    dims = {d: round(v["avg"], 2) for d, v in st["dimensions"].items()}
+    if label_dim:
+        d = st["dimensions"].get(label_dim)
+        return (d["avg"] if d else None), (d["count"] if d else 0), dims
+    return st["avg"], st["count"], dims
 
 
 async def _system_for_job(
@@ -106,12 +114,14 @@ async def iter_sft(
     task_type: str | None = None,
     min_score: float = 4.0,
     via: str | None = None,
+    label_dim: str | None = None,
     prompt_version: int | None = None,
     include_shadows: bool = False,
     limit: int = 1000,
 ) -> list[dict]:
     """High-scored (prompt, system, completion) examples. A row qualifies if the
-    average of its quality_scores (optionally filtered to `via`) is >= min_score."""
+    average of its quality_scores (optionally filtered to `via`, or to a single
+    `label_dim`) is >= min_score. All named dimensions ride in `meta`."""
     cache: dict[int, str] = {}
     rows: list[dict] = []
 
@@ -129,7 +139,7 @@ async def iter_sft(
         job_stmt = job_stmt.where(Job.task_type == task_type)
 
     for job in (await session.scalars(job_stmt)).all():
-        avg, n = _scored(job.job_metadata, via)
+        avg, n, dims = _scored(job.job_metadata, via, label_dim)
         if avg is None or avg < min_score:
             continue
         pv = _pv(job.job_metadata)
@@ -141,8 +151,9 @@ async def iter_sft(
             "completion": job.response,
             "meta": {
                 "task_type": job.task_type, "model": job.model_used or "",
-                "score": round(avg, 2), "n_scores": n, "prompt_version": pv,
-                "sensitivity": job.sensitivity, "source": "job", "id": str(job.id),
+                "score": round(avg, 2), "n_scores": n, "dimensions": dims,
+                "prompt_version": pv, "sensitivity": job.sensitivity,
+                "source": "job", "id": str(job.id),
             },
         })
         if len(rows) >= limit:
@@ -151,7 +162,7 @@ async def iter_sft(
     if include_shadows:
         await _append_sft_shadows(
             session, rows, cache,
-            task_type=task_type, min_score=min_score, via=via,
+            task_type=task_type, min_score=min_score, via=via, label_dim=label_dim,
             prompt_version=prompt_version, limit=limit,
         )
     return rows
@@ -159,7 +170,7 @@ async def iter_sft(
 
 async def _append_sft_shadows(
     session: AsyncSession, rows: list[dict], cache: dict[int, str],
-    *, task_type, min_score, via, prompt_version, limit,
+    *, task_type, min_score, via, label_dim, prompt_version, limit,
 ) -> None:
     stmt = (
         select(JobShadow)
@@ -174,7 +185,7 @@ async def _append_sft_shadows(
     for shadow in (await session.scalars(stmt)).all():
         if len(rows) >= limit:
             return
-        avg, n = _scored(shadow.shadow_metadata, via)
+        avg, n, dims = _scored(shadow.shadow_metadata, via, label_dim)
         if avg is None or avg < min_score:
             continue
         parent = await session.get(Job, shadow.parent_job_id)
@@ -189,8 +200,9 @@ async def _append_sft_shadows(
             "completion": shadow.response,
             "meta": {
                 "task_type": parent.task_type, "model": shadow.model,
-                "score": round(avg, 2), "n_scores": n, "prompt_version": pv,
-                "sensitivity": parent.sensitivity, "source": "shadow", "id": str(shadow.id),
+                "score": round(avg, 2), "n_scores": n, "dimensions": dims,
+                "prompt_version": pv, "sensitivity": parent.sensitivity,
+                "source": "shadow", "id": str(shadow.id),
             },
         })
 
@@ -206,15 +218,17 @@ async def iter_preferences(
     task_type: str | None = None,
     method: str = "pairwise",
     min_gap: float = 2.0,
+    label_dim: str | None = None,
     prompt_version: int | None = None,
     limit: int = 1000,
 ) -> list[dict]:
     """(prompt, system, chosen, rejected) pairs. method='pairwise' reads the
     pairwise judge's verdicts directly; method='score' derives pairs from
-    pointwise/panel score differentials on the same input."""
+    pointwise/panel score differentials on the same input (on `label_dim` if
+    given, else the overall score)."""
     if method == "score":
         return await _preferences_from_scores(
-            session, task_type=task_type, min_gap=min_gap,
+            session, task_type=task_type, min_gap=min_gap, label_dim=label_dim,
             prompt_version=prompt_version, limit=limit,
         )
     return await _preferences_from_pairwise(
@@ -283,7 +297,7 @@ async def _pairs_from_pairwise_job(
 
 
 async def _preferences_from_scores(
-    session: AsyncSession, *, task_type, min_gap, prompt_version, limit,
+    session: AsyncSession, *, task_type, min_gap, label_dim, prompt_version, limit,
 ) -> list[dict]:
     """For each parent job, gather the parent's own response + its shadows
     (all answers to the SAME input), score each, and pair the highest- vs
@@ -307,7 +321,7 @@ async def _preferences_from_scores(
         pv = _pv(parent.job_metadata)
         if prompt_version is not None and pv != prompt_version:
             continue
-        cands = await _scored_candidates(session, parent)
+        cands = await _scored_candidates(session, parent, label_dim)
         if len(cands) < 2:
             continue
         cands.sort(key=lambda c: c["score"])
@@ -329,10 +343,13 @@ async def _preferences_from_scores(
     return rows
 
 
-async def _scored_candidates(session: AsyncSession, parent: Job) -> list[dict]:
-    """The parent + its shadows that carry a score, as {response, model, score}."""
+async def _scored_candidates(
+    session: AsyncSession, parent: Job, label_dim: str | None = None
+) -> list[dict]:
+    """The parent + its shadows that carry a score, as {response, model, score}.
+    Scores on `label_dim` if given, else overall."""
     cands: list[dict] = []
-    avg, _n = _scored(parent.job_metadata, None)
+    avg, _n, _d = _scored(parent.job_metadata, None, label_dim)
     if avg is not None and parent.response:
         cands.append({"response": parent.response, "model": parent.model_used or "", "score": avg})
     shadows = (
@@ -341,7 +358,7 @@ async def _scored_candidates(session: AsyncSession, parent: Job) -> list[dict]:
         )
     ).all()
     for sh in shadows:
-        s_avg, _ = _scored(sh.shadow_metadata, None)
+        s_avg, _n2, _d2 = _scored(sh.shadow_metadata, None, label_dim)
         if s_avg is not None and sh.response:
             cands.append({"response": sh.response, "model": sh.model, "score": s_avg})
     return cands

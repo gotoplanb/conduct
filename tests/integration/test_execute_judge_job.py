@@ -93,12 +93,17 @@ async def _seed_target(
     return job
 
 
-async def _seed_judge(db, client_id, *, target_id, apply_to_target=False, mode="pointwise") -> Job:
+async def _seed_judge(
+    db, client_id, *, target_id, apply_to_target=False, mode="pointwise", dimensions=None
+) -> Job:
+    inputs = {"mode": mode, "target_job_id": str(target_id), "apply_to_target": apply_to_target}
+    if dimensions is not None:
+        inputs["dimensions"] = dimensions
     job = Job(
         client_app_id=client_id, task_type="judge", sensitivity="internal",
         prompt="(judge)", system_prompt="Score the response 1-5 against the prompt.",
         status=JobStatus.PENDING.value,
-        inputs={"mode": mode, "target_job_id": str(target_id), "apply_to_target": apply_to_target},
+        inputs=inputs,
     )
     db.add(job)
     await db.commit()
@@ -125,17 +130,32 @@ def test_is_judge_job() -> None:
 
 
 def test_parse_judge_verdict_plain() -> None:
-    score, rationale = _parse_judge_verdict('{"score": 4, "rationale": "solid"}')
-    assert score == 4
+    score, dims, rationale = _parse_judge_verdict('{"score": 4, "rationale": "solid"}')
+    assert score == 4 and dims is None
     assert rationale == "solid"
 
 
 def test_parse_judge_verdict_tolerates_fences_and_prose() -> None:
     # The exact failure mode we hit on gemma4:12b — fenced JSON with preamble.
     text = 'Here is my verdict:\n```json\n{"score": 5, "rationale": "great"}\n```'
-    score, rationale = _parse_judge_verdict(text)
-    assert score == 5
+    score, dims, rationale = _parse_judge_verdict(text)
+    assert score == 5 and dims is None
     assert rationale == "great"
+
+
+def test_parse_judge_verdict_dimensions() -> None:
+    # With named dimensions the judge returns a `scores` map; overall = mean.
+    text = '{"scores": {"correctness": 5, "format": 3, "craft": 4}, "rationale": "ok"}'
+    score, dims, rationale = _parse_judge_verdict(text, ["correctness", "format", "craft"])
+    assert dims == {"correctness": 5, "format": 3, "craft": 4}
+    assert score == 4  # round(mean(5,3,4))
+    assert rationale == "ok"
+
+
+def test_parse_judge_verdict_dimensions_missing_one_fails() -> None:
+    import pytest as _pytest
+    with _pytest.raises(KeyError):
+        _parse_judge_verdict('{"scores": {"correctness": 5}}', ["correctness", "format"])
 
 
 def test_parse_judge_verdict_rejects_out_of_range() -> None:
@@ -178,6 +198,35 @@ async def test_pointwise_judge_scores_and_applies_to_target(
     # Deterministic profile reached the provider (temp 0 + a derived seed).
     assert provider.last_call["temperature"] == 0.0
     assert isinstance(provider.last_call["seed"], int)
+
+
+async def test_pointwise_judge_named_dimensions(
+    db_session: AsyncSession, seeded_client
+) -> None:
+    client = seeded_client[0]
+    target = await _seed_target(db_session, client.id)
+    judge = await _seed_judge(
+        db_session, client.id, target_id=target.id, apply_to_target=True,
+        dimensions=["correctness", "format", "craft"],
+    )
+    provider = _StubJudgeProvider(
+        '{"scores": {"correctness": 5, "format": 3, "craft": 4}, "rationale": "mixed"}'
+    )
+
+    out = await _run(judge, _decision(), provider, client, db_session)
+
+    assert out.status == JobStatus.COMPLETE.value
+    meta = out.job_metadata["judge"]
+    assert meta["scores"] == {"correctness": 5, "format": 3, "craft": 4}
+    assert meta["score"] == 4  # round(mean)
+
+    # The named dimensions land on the target alongside the overall score.
+    await db_session.refresh(target)
+    qs = (target.job_metadata or {}).get("quality_scores") or []
+    assert len(qs) == 1
+    assert qs[0]["score"] == 4
+    assert qs[0]["scores"] == {"correctness": 5, "format": 3, "craft": 4}
+    assert qs[0]["via"] == "judge"
 
 
 async def test_verdict_only_does_not_touch_target(
@@ -402,6 +451,16 @@ def test_aggregate_panel_median_and_disagreement() -> None:
 
     tight = _aggregate_panel([{"model": "a", "score": 4}, {"model": "b", "score": 4}])
     assert tight["score"] == 4 and tight["disagreement"] is False
+
+
+def test_aggregate_panel_dimensions() -> None:
+    scored = [
+        {"model": "a", "score": 4, "scores": {"correctness": 5, "format": 3}},
+        {"model": "b", "score": 3, "scores": {"correctness": 4, "format": 2}},
+        {"model": "c", "score": 5, "scores": {"correctness": 5, "format": 5}},
+    ]
+    agg = _aggregate_panel(scored, ["correctness", "format"])
+    assert agg["dimensions"] == {"correctness": 5, "format": 3}  # per-dim medians
 
 
 def test_build_panel_excludes_self_preference_and_sensitivity() -> None:

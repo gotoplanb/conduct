@@ -115,6 +115,31 @@ async def test_score_job(client, admin_headers, db_session, seeded_client, task_
     assert body["scores"][-1]["score"] == 4
 
 
+async def test_score_job_named_dimensions(
+    client, admin_headers, db_session, seeded_client, task_type
+) -> None:
+    parent = await _seed_job(db_session, client_id=seeded_client[0].id, task_type=task_type)
+    r = await client.post(
+        f"/eval/jobs/{parent.id}/score",
+        json={"scores": {"correctness": 5, "format": 3, "craft": 4}, "reviewer": "dave"},
+        headers=admin_headers,
+    )
+    assert r.status_code == 200
+    entry = r.json()["scores"][-1]
+    assert entry["score"] == 4  # round(mean)
+    assert entry["scores"] == {"correctness": 5, "format": 3, "craft": 4}
+
+
+async def test_score_neither_score_nor_scores_is_400(
+    client, admin_headers, db_session, seeded_client, task_type
+) -> None:
+    parent = await _seed_job(db_session, client_id=seeded_client[0].id, task_type=task_type)
+    r = await client.post(
+        f"/eval/jobs/{parent.id}/score", json={"reviewer": "x"}, headers=admin_headers
+    )
+    assert r.status_code == 400
+
+
 async def test_score_shadow(client, admin_headers, db_session, seeded_client, task_type) -> None:
     parent = await _seed_job(db_session, client_id=seeded_client[0].id, task_type=task_type)
     shadow = JobShadow(

@@ -31,6 +31,7 @@ source) is `>= min_score`.
 | `task_type` | — | restrict to one task type |
 | `min_score` | `4` | minimum average quality score (1–5) |
 | `via` | — | only count scores from one source: `judge` / `judge-panel` / `admin` / `mcp` / `url` |
+| `label_dim` | — | score on one **named dimension** (e.g. `correctness`) instead of the overall |
 | `include_shadows` | `false` | also export high-scored **shadow** responses |
 | `prompt_version` | — | restrict to one resolved prompt version (comparability) |
 | `limit` | `1000` | max rows (cap 10000) |
@@ -67,6 +68,7 @@ the recorded prompt version's content), so examples are usable as-is.
 | `task_type` | — | restrict to one task type |
 | `method` | `pairwise` | `pairwise` or `score` |
 | `min_gap` | `2` | (score method) minimum score gap to form a pair |
+| `label_dim` | — | (score method) compare on one named dimension instead of the overall |
 | `prompt_version` | — | restrict to one prompt version |
 | `limit` | `1000` | max rows (cap 10000) |
 
@@ -97,6 +99,10 @@ conditions. The export keeps you honest:
 - **Score source.** `?via=judge` (or `judge-panel`) restricts to model-judged
   scores; useful when you want a clean automated signal without mixing in
   human/admin scores.
+- **Dimension.** Every row's `meta.dimensions` carries each named dimension's
+  average ([#18](https://github.com/gotoplanb/conduct/issues/18)). `?label_dim=correctness`
+  filters/pairs on one dimension instead of the overall — e.g. train on a clean
+  `correctness` signal and ignore `format`/`craft` noise.
 
 `meta.sensitivity` is on every row too — review before exporting
 `confidential` content into a downloadable file.
@@ -126,5 +132,6 @@ curl -s "$CONDUCT/datasets/preferences?method=pairwise" -H "Authorization: Beare
 - Admin auth required (these are bulk data pulls).
 - Each export scans a bounded window of recent rows (a runaway guard); raise
   `limit` to pull more, narrow with `task_type` to focus.
-- Multi-dimensional / named scores (e.g. separate `correctness` vs `format`) are
-  not exported yet — today a row's score is the average of its `quality_scores`.
+- Named multi-dimensional scores are supported (#18): a row's `score` is the
+  overall (or `label_dim`), and `meta.dimensions` carries every dimension's
+  average.

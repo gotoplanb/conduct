@@ -68,6 +68,23 @@ With `apply_to_target`, the score is appended to the **target's**
 use, so the [rollup](eval.md#reviewing-and-comparing) and the DPO export pick it
 up with no extra work.
 
+### Named dimensions
+
+Pass `inputs.dimensions` to score distinct qualities separately instead of one
+lumped number ([#18](https://github.com/gotoplanb/conduct/issues/18)) — the
+dimension names are yours (Conduct doesn't interpret them):
+
+```jsonc
+{ "mode": "pointwise", "target_job_id": "<uuid>", "apply_to_target": true,
+  "dimensions": ["correctness", "format", "craft"] }
+```
+
+The judge then returns `{"scores": {"correctness": 5, "format": 3, "craft": 4}, "rationale": "…"}`;
+the overall is their mean. Both the map and the overall land in `quality_scores`
+(`scores` + `score`), so the rollup shows per-dimension per-model averages and
+the export can train on a single clean dimension via `?label_dim=correctness`.
+The **panel** medians each dimension across the jury. (Pairwise stays winner-based.)
+
 ---
 
 ## Pairwise (order-swapped)
@@ -212,6 +229,6 @@ Tips:
 - Judge jobs always run **async** (on the worker), never the sync API path.
 - You can judge a **Job or a JobShadow** — shadows take their prompt + sensitivity
   from their parent.
-- Build status: pointwise, pairwise, and panel all shipped (#17), and the
-  `/datasets/sft` + `/datasets/preferences` JSONL export that consumes these
-  scores is built (#16).
+- Build status: pointwise, pairwise, and panel all shipped (#17); the
+  `/datasets/sft` + `/datasets/preferences` JSONL export is built (#16); and
+  named multi-dimensional scores are supported end to end (#18).

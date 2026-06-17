@@ -8,8 +8,10 @@ the append logic here means the two entry points can't drift apart.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import secrets
+from collections import defaultdict
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
@@ -32,32 +34,62 @@ class EvalTokenError(Exception):
         self.status = status
 
 
+def _normalize_scores(
+    score: int | None, scores: dict | None
+) -> tuple[int, dict[str, int] | None]:
+    """Resolve a single int and/or a named-dimension map into
+    (overall, dimensions). A bare int → (int, None). A dimension map (e.g.
+    {"correctness": 5, "format": 3}) → (round(mean), map). Raises ValueError
+    on an out-of-range value or when neither is given. Conduct doesn't know
+    what the dimension names mean — they're the caller's vocabulary (#18)."""
+    if scores:
+        dims = {str(k): int(v) for k, v in scores.items()}
+        for v in dims.values():
+            if not 1 <= v <= 5:
+                raise ValueError(f"dimension score {v} out of range 1-5")
+        overall = round(sum(dims.values()) / len(dims))
+        return overall, dims
+    if score is not None:
+        s = int(score)
+        if not 1 <= s <= 5:
+            raise ValueError(f"score {s} out of range 1-5")
+        return s, None
+    raise ValueError("a score or a non-empty scores map is required")
+
+
 def _score_entry(
-    score: int, reviewer: str | None, note: str | None, via: str | None = None
+    score: int, reviewer: str | None, note: str | None,
+    via: str | None = None, scores: dict | None = None,
 ) -> dict:
-    return {
+    entry = {
         "score": score,
         "reviewer": reviewer or "",
         "note": note or "",
         "via": via or "",
         "at": datetime.now(UTC).isoformat(),
     }
+    if scores:
+        entry["scores"] = scores
+    return entry
 
 
 async def apply_score(
     session: AsyncSession,
     target_id: UUID,
     *,
-    score: int,
+    score: int | None = None,
+    scores: dict | None = None,
     reviewer: str | None = None,
     note: str | None = None,
     via: str | None = None,
 ) -> tuple[str, list[dict]] | None:
     """Append a quality score to a Job or JobShadow, by id. Jobs are tried
     first, then shadows (UUIDs don't collide across the two tables). `via` tags
-    the score's provenance (e.g. "admin", "mcp", "url"). Returns
+    the score's provenance (e.g. "admin", "mcp", "url", "judge"). Pass `score`
+    (a 1-5 int) and/or `scores` (a named-dimension map, #18). Returns
     (kind, full_scores_list) or None if no row matches."""
-    entry = _score_entry(score, reviewer, note, via)
+    overall, dims = _normalize_scores(score, scores)
+    entry = _score_entry(overall, reviewer, note, via, dims)
 
     job = await session.get(Job, target_id)
     if job is not None:
@@ -117,14 +149,26 @@ async def apply_pairwise_preference(
 
 
 def score_state(scores: list[dict]) -> dict:
-    """Reduce a quality_scores list to {count, avg} for display."""
+    """Reduce a quality_scores list to {count, avg, dimensions} for display.
+    `avg`/`count` are over the overall score (back-compat); `dimensions` maps
+    each named dimension to its own {count, avg} (#18)."""
     vals: list[float] = []
+    dim_vals: dict[str, list[float]] = defaultdict(list)
     for s in scores or []:
-        try:
+        with contextlib.suppress(TypeError, ValueError):
             vals.append(float(s.get("score")))
-        except (TypeError, ValueError):
-            continue
-    return {"count": len(vals), "avg": (sum(vals) / len(vals)) if vals else None}
+        for dim, v in (s.get("scores") or {}).items():
+            try:
+                dim_vals[dim].append(float(v))
+            except (TypeError, ValueError):
+                continue
+    return {
+        "count": len(vals),
+        "avg": (sum(vals) / len(vals)) if vals else None,
+        "dimensions": {
+            d: {"count": len(vs), "avg": sum(vs) / len(vs)} for d, vs in dim_vals.items()
+        },
+    }
 
 
 # --- single-use eval tokens (credential-less scoring links) ---

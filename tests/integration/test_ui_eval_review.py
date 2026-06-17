@@ -57,13 +57,37 @@ async def _seed_job_with_shadow(
 
 
 def test_score_state_empty() -> None:
-    assert score_state([]) == {"count": 0, "avg": None}
+    assert score_state([]) == {"count": 0, "avg": None, "dimensions": {}}
 
 
 def test_score_state_averages() -> None:
     st = score_state([{"score": 4}, {"score": 2}, {"score": "bad"}])
     assert st["count"] == 2
     assert st["avg"] == 3.0
+    assert st["dimensions"] == {}
+
+
+def test_score_state_dimensions() -> None:
+    st = score_state([
+        {"score": 4, "scores": {"correctness": 5, "format": 3}},
+        {"score": 3, "scores": {"correctness": 3, "format": 1}},
+    ])
+    assert st["avg"] == 3.5  # overall
+    assert st["dimensions"]["correctness"] == {"count": 2, "avg": 4.0}
+    assert st["dimensions"]["format"] == {"count": 2, "avg": 2.0}
+
+
+async def test_apply_score_named_dimensions(db_session, seeded_client, task_type) -> None:
+    job, _ = await _seed_job_with_shadow(
+        db_session, client_id=seeded_client[0].id, task_type=task_type
+    )
+    result = await apply_score(
+        db_session, job.id, scores={"correctness": 5, "format": 3, "craft": 4}, reviewer="ui"
+    )
+    assert result is not None
+    _, scores = result
+    assert scores[-1]["score"] == 4  # round(mean)
+    assert scores[-1]["scores"] == {"correctness": 5, "format": 3, "craft": 4}
 
 
 async def test_apply_score_to_job(db_session, seeded_client, task_type) -> None:

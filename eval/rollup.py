@@ -48,26 +48,42 @@ def _add_row_to_accumulator(entry: dict, row: tuple) -> None:
         entry["tokens_count"] += successes_i
 
 
+def _accumulate_score(entry, model, sums, counts, dim_sums, dim_counts) -> None:
+    """Fold one quality_scores entry into the running per-model sums (overall +
+    per named dimension). Invalid / missing values are silently skipped."""
+    try:
+        sums[model] += float(entry.get("score"))
+        counts[model] += 1
+    except (TypeError, ValueError):
+        pass
+    for dim, raw in (entry.get("scores") or {}).items():
+        try:
+            dim_sums[model][dim] += float(raw)
+            dim_counts[model][dim] += 1
+        except (TypeError, ValueError):
+            continue
+
+
 def aggregate_scores(
     pairs: list[tuple[str, dict | None]],
-) -> tuple[dict[str, float], dict[str, int]]:
-    """Walk a list of (model, metadata) pairs; return per-model average score
-    and the count of scores that contributed. Invalid / missing score entries
-    are silently skipped."""
+) -> tuple[dict[str, float], dict[str, int], dict[str, dict[str, float]]]:
+    """Walk a list of (model, metadata) pairs; return per-model average score,
+    the count of scores that contributed, and per-model per-dimension averages
+    (#18). Invalid / missing score entries are silently skipped."""
     sums: dict[str, float] = defaultdict(float)
     counts: dict[str, int] = defaultdict(int)
+    dim_sums: dict[str, dict[str, float]] = defaultdict(lambda: defaultdict(float))
+    dim_counts: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
     for model, meta in pairs:
         if not model:
             continue
         for entry in (meta or {}).get("quality_scores", []):
-            try:
-                value = float(entry.get("score"))
-            except (TypeError, ValueError):
-                continue
-            sums[model] += value
-            counts[model] += 1
+            _accumulate_score(entry, model, sums, counts, dim_sums, dim_counts)
     avgs = {m: sums[m] / counts[m] for m in counts}
-    return avgs, dict(counts)
+    dim_avgs = {
+        m: {d: dim_sums[m][d] / dim_counts[m][d] for d in dim_sums[m]} for m in dim_sums
+    }
+    return avgs, dict(counts), dim_avgs
 
 
 async def _fetch_job_rollup(session: AsyncSession, task_type: str, since: datetime) -> list[tuple]:
@@ -162,7 +178,7 @@ async def compute_rollup(
             _add_row_to_accumulator(entry, row)
 
     score_pairs = await _fetch_score_pairs(session, task_type, since)
-    avg_scores, score_counts = aggregate_scores(score_pairs)
+    avg_scores, score_counts, dim_scores = aggregate_scores(score_pairs)
 
     out: list[dict] = []
     for model, e in sorted(rolled.items(), key=lambda kv: -kv[1]["attempts"]):
@@ -183,6 +199,7 @@ async def compute_rollup(
                 "cost_per_job_usd": (e["cost_total"] / successes) if successes else 0.0,
                 "avg_score": avg_scores.get(model),
                 "score_count": score_counts.get(model, 0),
+                "dimension_scores": dim_scores.get(model, {}),
             }
         )
     return out

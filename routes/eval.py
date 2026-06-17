@@ -39,6 +39,7 @@ class ModelEval(BaseModel):
     cost_per_job_usd: float
     avg_score: float | None = None
     score_count: int = 0
+    dimension_scores: dict[str, float] = {}
 
 
 class CompareOut(BaseModel):
@@ -62,7 +63,12 @@ async def compare(
 
 
 class ScoreIn(BaseModel):
-    score: int = Field(ge=1, le=5, description="Quality rating 1-5")
+    score: int | None = Field(default=None, ge=1, le=5, description="Overall 1-5 rating")
+    scores: dict[str, int] | None = Field(
+        default=None,
+        description='Named 1-5 dimensions, e.g. {"correctness": 5, "format": 3}. '
+        "Provide score and/or scores.",
+    )
     reviewer: str | None = Field(default=None, max_length=100)
     note: str | None = Field(default=None, max_length=500)
 
@@ -75,10 +81,14 @@ async def score_target(
 ) -> dict:
     """Score either a Job or a JobShadow. The URL stays the same; we look
     up by ID in jobs first, then job_shadows. (UUIDs don't collide across
-    tables.)"""
-    result = await apply_score(
-        session, target_id, score=body.score, reviewer=body.reviewer, note=body.note
-    )
+    tables.) Accepts an overall `score` and/or a named-dimension `scores` map."""
+    try:
+        result = await apply_score(
+            session, target_id, score=body.score, scores=body.scores,
+            reviewer=body.reviewer, note=body.note,
+        )
+    except ValueError as e:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e)) from e
     if result is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "no job or shadow with that id")
     kind, scores = result

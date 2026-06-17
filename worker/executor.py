@@ -409,6 +409,20 @@ _PAIRWISE_OUTPUT_INSTRUCTION = (
 )
 
 
+def _judge_output_instruction(dimensions: list[str] | None) -> str:
+    """The output-format instruction appended to the rubric. With explicit
+    dimensions (the caller's vocabulary, #18) the judge scores each one;
+    otherwise a single overall score."""
+    if not dimensions:
+        return _JUDGE_OUTPUT_INSTRUCTION
+    fields = ", ".join(f'"{d}": <integer 1-5>' for d in dimensions)
+    return (
+        "\n\nScore the response on each of these dimensions, then return ONLY a "
+        "JSON object — no prose, no markdown fences — of the form:\n"
+        '{"scores": {' + fields + '}, "rationale": "<one concise sentence>"}'
+    )
+
+
 def is_judge_job(inputs: dict | None) -> bool:
     """A job is a judge job iff its inputs name a target to evaluate. Keying on
     `target_job_id` keeps judging a pure primitive — any task_type with a
@@ -417,19 +431,36 @@ def is_judge_job(inputs: dict | None) -> bool:
     return bool((inputs or {}).get("target_job_id"))
 
 
-def _parse_judge_verdict(text: str) -> tuple[int, str]:
-    """Pull (score, rationale) out of the judge model's output. Tolerant of
-    surrounding prose and ```json fences: we take the outermost {...} block.
-    Raises ValueError on anything unparseable so the caller fails the job
-    loudly rather than recording a bogus score."""
+def _parse_judge_verdict(
+    text: str, dimensions: list[str] | None = None
+) -> tuple[int, dict[str, int] | None, str]:
+    """Pull (overall, dimension_scores, rationale) from the judge's output.
+    Tolerant of surrounding prose and ```json fences (outermost {...} block).
+    With `dimensions`, expects a `scores` map covering each named dimension and
+    derives the overall as their mean; without, expects a single `score`.
+    Raises ValueError/KeyError on anything unparseable so the caller fails the
+    job loudly rather than recording a bogus score."""
     start, end = text.find("{"), text.rfind("}")
     if start == -1 or end <= start:
         raise ValueError(f"no JSON object in judge output: {text[:200]!r}")
     obj = json.loads(text[start : end + 1])
+    rationale = str(obj.get("rationale", ""))
+
+    if dimensions:
+        raw = obj.get("scores") or {}
+        scores: dict[str, int] = {}
+        for d in dimensions:
+            v = int(raw[d])  # KeyError if the model omitted a dimension
+            if not 1 <= v <= 5:
+                raise ValueError(f"dimension {d} score {v} out of range 1-5")
+            scores[d] = v
+        overall = round(sum(scores.values()) / len(scores))
+        return overall, scores, rationale
+
     score = int(obj["score"])
     if not 1 <= score <= 5:
         raise ValueError(f"judge score {score} out of range 1-5")
-    return score, str(obj.get("rationale", ""))
+    return score, None, rationale
 
 
 def _parse_pairwise_verdict(text: str) -> tuple[str, str]:
@@ -641,6 +672,7 @@ async def _execute_pointwise_judge(
         started = perf_counter()
         inputs = job.inputs or {}
         apply_to_target = bool(inputs.get("apply_to_target", False))
+        dimensions = inputs.get("dimensions")  # optional named dimensions (#18)
 
         try:
             target_id = UUID(str(inputs.get("target_job_id")))
@@ -659,7 +691,7 @@ async def _execute_pointwise_judge(
 
         await _mark_judge_running(job, decision, session)
         rubric, _resolved = await _resolve_prompt_for_job(job, client_name, session)
-        system_prompt = rubric + _JUDGE_OUTPUT_INSTRUCTION
+        system_prompt = rubric + _judge_output_instruction(dimensions)
         user_prompt = (
             f"ORIGINAL PROMPT:\n{target_prompt}\n\n"
             f"RESPONSE TO EVALUATE:\n{target_response}\n\n"
@@ -673,7 +705,7 @@ async def _execute_pointwise_judge(
         except ProviderError as e:
             return await _fail_judge(job, session, f"judge provider error: {e}", client_name)
         try:
-            score, rationale = _parse_judge_verdict(response.response)
+            score, dim_scores, rationale = _parse_judge_verdict(response.response, dimensions)
         except (ValueError, KeyError) as e:  # JSONDecodeError is a ValueError subclass
             return await _fail_judge(
                 job, session, f"could not parse judge verdict: {e}", client_name
@@ -683,19 +715,19 @@ async def _execute_pointwise_judge(
         if apply_to_target:
             applied = (
                 await apply_score(
-                    session, target_id, score=score, reviewer=decision.model,
-                    note=rationale, via="judge",
+                    session, target_id, score=score, scores=dim_scores,
+                    reviewer=decision.model, note=rationale, via="judge",
                 )
                 is not None
             )
 
-        job.response = json.dumps({"score": score, "rationale": rationale})
+        job.response = json.dumps({"score": score, "scores": dim_scores, "rationale": rationale})
         job.job_metadata = {
             **(job.job_metadata or {}),
             "judge": {
                 "mode": "pointwise", "target_job_id": str(target_id),
-                "target_kind": target_kind, "score": score, "rationale": rationale,
-                "applied_to_target": applied,
+                "target_kind": target_kind, "score": score, "scores": dim_scores,
+                "rationale": rationale, "applied_to_target": applied,
             },
         }
         span.set_attribute("judge.score", score)
@@ -892,6 +924,7 @@ async def _run_panelist(
 async def _run_panel(
     eligible: list[str], decision: RoutingDecision, client: ClientApp,
     providers: ProviderRegistry, system_prompt: str, user_prompt: str,
+    dimensions: list[str] | None = None,
 ) -> tuple[list[dict], list[dict], list[ProviderResponse]]:
     """Run every eligible panelist; a panelist that errors or returns an
     unparseable verdict is recorded as a failure and skipped (a jury tolerates
@@ -908,25 +941,34 @@ async def _run_panel(
             failures.append({"model": m, "error": f"provider: {e}"[:160]})
             continue
         try:
-            score, rationale = _parse_judge_verdict(resp.response)
+            score, dim_scores, rationale = _parse_judge_verdict(resp.response, dimensions)
         except (ValueError, KeyError) as e:
             failures.append({"model": m, "error": f"parse: {e}"[:160]})
             continue
         responses.append(resp)
-        scored.append({"model": m, "score": score, "rationale": rationale})
+        scored.append({"model": m, "score": score, "scores": dim_scores, "rationale": rationale})
     return scored, failures, responses
 
 
-def _aggregate_panel(scored: list[dict]) -> dict:
+def _aggregate_panel(scored: list[dict], dimensions: list[str] | None = None) -> dict:
     """Aggregate panelist scores by MEDIAN (robust to an outlier juror). Spread
-    >= 2 flags a contested verdict worth a human's eyes."""
+    >= 2 flags a contested verdict worth a human's eyes. With dimensions, also
+    medians each named dimension across the jurors (#18)."""
     scores = [p["score"] for p in scored]
     spread = max(scores) - min(scores)
-    return {
+    agg = {
         "score": int(round(statistics.median(scores))),
         "n": len(scores), "min": min(scores), "max": max(scores),
         "spread": spread, "disagreement": spread >= 2, "scores": scores,
     }
+    if dimensions:
+        dim_medians: dict[str, int] = {}
+        for d in dimensions:
+            vals = [p["scores"][d] for p in scored if p.get("scores") and d in p["scores"]]
+            if vals:
+                dim_medians[d] = int(round(statistics.median(vals)))
+        agg["dimensions"] = dim_medians
+    return agg
 
 
 async def _execute_panel_judge(
@@ -943,6 +985,7 @@ async def _execute_panel_judge(
         started = perf_counter()
         inputs = job.inputs or {}
         apply_to_target = bool(inputs.get("apply_to_target", False))
+        dimensions = inputs.get("dimensions")  # optional named dimensions (#18)
 
         try:
             target_id = UUID(str(inputs.get("target_job_id")))
@@ -977,7 +1020,7 @@ async def _execute_panel_judge(
 
         await _mark_judge_running(job, decision, session)
         rubric, _resolved = await _resolve_prompt_for_job(job, client_name, session)
-        system_prompt = rubric + _JUDGE_OUTPUT_INSTRUCTION
+        system_prompt = rubric + _judge_output_instruction(dimensions)
         user_prompt = (
             f"ORIGINAL PROMPT:\n{target_prompt}\n\n"
             f"RESPONSE TO EVALUATE:\n{target_response}\n\n"
@@ -985,19 +1028,19 @@ async def _execute_panel_judge(
         )
 
         scored, failures, responses = await _run_panel(
-            eligible, decision, client, providers, system_prompt, user_prompt
+            eligible, decision, client, providers, system_prompt, user_prompt, dimensions
         )
         if not scored:
             return await _fail_judge(
                 job, session, f"all {len(eligible)} panelists failed: {failures}", client_name
             )
 
-        agg = _aggregate_panel(scored)
+        agg = _aggregate_panel(scored, dimensions)
         applied = False
         if apply_to_target:
             applied = (
                 await apply_score(
-                    session, target_id, score=agg["score"],
+                    session, target_id, score=agg["score"], scores=agg.get("dimensions"),
                     reviewer="panel:" + ",".join(p["model"] for p in scored),
                     note=f"panel median {agg['score']} of {agg['n']} {agg['scores']}",
                     via="judge-panel",
@@ -1005,16 +1048,18 @@ async def _execute_panel_judge(
                 is not None
             )
 
-        job.response = json.dumps(
-            {"score": agg["score"], "n": agg["n"], "disagreement": agg["disagreement"]}
-        )
+        job.response = json.dumps({
+            "score": agg["score"], "dimensions": agg.get("dimensions"),
+            "n": agg["n"], "disagreement": agg["disagreement"],
+        })
         job.job_metadata = {
             **(job.job_metadata or {}),
             "judge": {
                 "mode": "panel", "target_job_id": str(target_id), "target_kind": target_kind,
-                "score": agg["score"], "n": agg["n"], "spread": agg["spread"],
-                "disagreement": agg["disagreement"], "panelists": scored,
-                "failures": failures, "excluded": excluded, "applied_to_target": applied,
+                "score": agg["score"], "dimensions": agg.get("dimensions"),
+                "n": agg["n"], "spread": agg["spread"], "disagreement": agg["disagreement"],
+                "panelists": scored, "failures": failures, "excluded": excluded,
+                "applied_to_target": applied,
             },
         }
         span.set_attribute("judge.score", agg["score"])
