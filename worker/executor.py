@@ -15,6 +15,7 @@ import asyncio
 import json
 import logging
 from datetime import UTC, date, datetime
+from decimal import Decimal
 from time import perf_counter
 from uuid import UUID
 
@@ -22,7 +23,7 @@ from opentelemetry.trace import Status, StatusCode
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from eval.scoring import apply_score
+from eval.scoring import apply_pairwise_preference, apply_score
 from models.client import ClientApp, ClientAppUsage
 from models.job import Job
 from models.shadow import JobShadow
@@ -394,6 +395,13 @@ _JUDGE_OUTPUT_INSTRUCTION = (
     '{"score": <integer 1-5>, "rationale": "<one concise sentence>"}'
 )
 
+_PAIRWISE_OUTPUT_INSTRUCTION = (
+    "\n\nYou are comparing two responses, A and B, to the same prompt. Decide "
+    "which one better satisfies the rubric (or 'tie' if genuinely equal). Return "
+    "ONLY a JSON object — no prose, no markdown fences — of the form:\n"
+    '{"winner": "A" | "B" | "tie", "rationale": "<one concise sentence>"}'
+)
+
 
 def is_judge_job(inputs: dict | None) -> bool:
     """A job is a judge job iff its inputs name a target to evaluate. Keying on
@@ -416,6 +424,94 @@ def _parse_judge_verdict(text: str) -> tuple[int, str]:
     if not 1 <= score <= 5:
         raise ValueError(f"judge score {score} out of range 1-5")
     return score, str(obj.get("rationale", ""))
+
+
+def _parse_pairwise_verdict(text: str) -> tuple[str, str]:
+    """Pull (winner, rationale) from a pairwise verdict. winner ∈ {A, B, TIE}.
+    Same fence/prose tolerance as the pointwise parser."""
+    start, end = text.find("{"), text.rfind("}")
+    if start == -1 or end <= start:
+        raise ValueError(f"no JSON object in judge output: {text[:200]!r}")
+    obj = json.loads(text[start : end + 1])
+    winner = str(obj.get("winner", "")).strip().upper()
+    if winner not in {"A", "B", "TIE"}:
+        raise ValueError(f"pairwise winner {winner!r} not in A/B/tie")
+    return winner, str(obj.get("rationale", ""))
+
+
+def _reconcile_pairwise(
+    w1: str, w2: str, target_id: UUID, against_id: UUID
+) -> tuple[UUID | None, UUID | None, bool, bool]:
+    """Reconcile the two order-swapped verdicts into (chosen, rejected, tie,
+    position_consistent). Call 1 presented A=target, B=against; call 2 swapped
+    them (A=against, B=target). A confident result needs BOTH calls to name the
+    same job as winner — otherwise the judge has position bias on this pair and
+    we record a tie (no DPO pair)."""
+    win1 = {"A": target_id, "B": against_id}.get(w1)  # None on TIE
+    win2 = {"A": against_id, "B": target_id}.get(w2)
+    if win1 is not None and win1 == win2:
+        rejected = against_id if win1 == target_id else target_id
+        return win1, rejected, False, True
+    return None, None, True, False
+
+
+def _pairwise_user_prompt(original_prompt: str, resp_a: str, resp_b: str) -> str:
+    return (
+        f"ORIGINAL PROMPT:\n{original_prompt}\n\n"
+        f"RESPONSE A:\n{resp_a}\n\n"
+        f"RESPONSE B:\n{resp_b}\n\n"
+        "Which response better satisfies the rubric?"
+    )
+
+
+def _judge_sensitivity_block(decision: RoutingDecision, target_sensitivity: str) -> str | None:
+    """Return an error message if the judge resolved looser than the target it
+    must read (the judge sees the target's content); else None."""
+    target_sens = Sensitivity(target_sensitivity)
+    if stricter(target_sens, decision.effective_sensitivity) != decision.effective_sensitivity:
+        return (
+            f"target is {target_sens.value} but the judge resolved to "
+            f"{decision.effective_sensitivity.value}; submit the judge job with "
+            f"sensitivity>={target_sens.value} so it routes to an allowed model"
+        )
+    return None
+
+
+async def _resolve_and_guard_target(
+    target_id: UUID, decision: RoutingDecision, session: AsyncSession
+) -> tuple[str, str, str, str]:
+    """Resolve a judged target and apply the sensitivity guard in one step.
+    Returns (prompt, response, kind, error). A non-empty error means the caller
+    should fail the judge job (prompt/response are then unset)."""
+    prompt, response, sensitivity, kind = await _resolve_judge_target(target_id, session)
+    if prompt is None:
+        return "", "", "", f"target {target_id}: not found"
+    block = _judge_sensitivity_block(decision, sensitivity)
+    if block:
+        return "", "", "", block
+    return prompt, response, kind, ""
+
+
+async def _run_judge_model(
+    decision: RoutingDecision,
+    client: ClientApp,
+    providers: ProviderRegistry,
+    *,
+    system_prompt: str,
+    user_prompt: str,
+) -> ProviderResponse:
+    """Call the judge model under the decision's (deterministic) sampling."""
+    temperature, seed = _sampling_for(decision, user_prompt, system_prompt)
+    return await _call_provider(
+        providers.get_for_client(client, decision.provider),
+        prompt=user_prompt,
+        model=decision.model,
+        system_prompt=system_prompt,
+        max_tokens=decision.max_tokens,
+        is_local=decision.provider == "ollama",
+        temperature=temperature,
+        seed=seed,
+    )
 
 
 async def _resolve_judge_target(
@@ -451,6 +547,42 @@ async def _fail_judge(job: Job, session: AsyncSession, message: str, client_name
     return job
 
 
+async def _mark_judge_running(job: Job, decision: RoutingDecision, session: AsyncSession) -> None:
+    job.status = JobStatus.RUNNING.value
+    job.started_at = datetime.now(UTC)
+    job.model_requested = job.model_requested or decision.model
+    job.model_used = decision.model
+    await session.commit()
+
+
+async def _finish_judge(
+    job: Job,
+    responses: list[ProviderResponse],
+    session: AsyncSession,
+    client_name: str,
+    started: float,
+) -> None:
+    """Shared completion path: roll up tokens/cost across the judge's model
+    call(s), mark complete, bump usage, emit metrics. job.response +
+    job_metadata['judge'] must already be set by the caller."""
+    job.status = JobStatus.COMPLETE.value
+    job.model_used = responses[-1].model_used
+    job.tokens_in = sum(r.tokens_in for r in responses)
+    job.tokens_out = sum(r.tokens_out for r in responses)
+    job.cost_usd = sum((r.cost_usd for r in responses), Decimal("0"))
+    job.latency_ms = sum(r.latency_ms for r in responses)
+    job.completed_at = datetime.now(UTC)
+    await _bump_usage(session, job)
+    await session.commit()
+    await session.refresh(job)
+    record_job_completion(
+        status=job.status, task_type=job.task_type, model=job.model_used or "",
+        client_app=client_name, duration_s=perf_counter() - started,
+        tokens_in=job.tokens_in or 0, tokens_out=job.tokens_out or 0,
+        cost_usd=float(job.cost_usd or 0),
+    )
+
+
 async def execute_judge_job(
     *,
     job: Job,
@@ -459,28 +591,39 @@ async def execute_judge_job(
     providers: ProviderRegistry,
     session: AsyncSession,
 ) -> Job:
-    """Score the target named by job.inputs['target_job_id'] against the judge
-    task's rubric (its resolved prompt), using the routed model under the
-    rule's (deterministic) sampling. Stores the verdict on the judge job; if
-    inputs['apply_to_target'] is set, also appends the score to the target via
-    the normal quality-score lane (via='judge')."""
+    """Dispatch a judge job by inputs['mode'] (default 'pointwise'). A judge job
+    scores or compares other jobs' outputs through the routed (deterministic)
+    model; see GitHub issue #17."""
+    mode = (job.inputs or {}).get("mode", "pointwise")
+    if mode == "pointwise":
+        return await _execute_pointwise_judge(
+            job=job, decision=decision, client=client, providers=providers, session=session
+        )
+    if mode == "pairwise":
+        return await _execute_pairwise_judge(
+            job=job, decision=decision, client=client, providers=providers, session=session
+        )
+    return await _fail_judge(
+        job, session, f"judge mode {mode!r} not supported (use 'pointwise' or 'pairwise')",
+        client.name,
+    )
+
+
+async def _execute_pointwise_judge(
+    *, job: Job, decision: RoutingDecision, client: ClientApp,
+    providers: ProviderRegistry, session: AsyncSession,
+) -> Job:
+    """Score one target against the rubric → {score, rationale}. On
+    apply_to_target, append the score to the target via the quality-score lane
+    (via='judge')."""
     client_name = client.name
     with _tracer.start_as_current_span("conduct.judge") as span:
         span.set_attribute(_SPAN_JOB_ID, str(job.id))
         span.set_attribute(_SPAN_TASK_TYPE, job.task_type)
+        span.set_attribute("judge.mode", "pointwise")
         started = perf_counter()
-
         inputs = job.inputs or {}
-        mode = inputs.get("mode", "pointwise")
         apply_to_target = bool(inputs.get("apply_to_target", False))
-        span.set_attribute("judge.mode", mode)
-
-        if mode != "pointwise":
-            return await _fail_judge(
-                job, session,
-                f"judge mode {mode!r} not supported (Phase 1 is pointwise only)",
-                client_name,
-            )
 
         try:
             target_id = UUID(str(inputs.get("target_job_id")))
@@ -491,34 +634,13 @@ async def execute_judge_job(
                 client_name,
             )
 
-        resolved_target = await _resolve_judge_target(target_id, session)
-        target_prompt, target_response, target_sensitivity, target_kind = resolved_target
-        if target_prompt is None:
-            return await _fail_judge(
-                job, session, f"target_job_id={target_id}: not found", client_name
-            )
+        target_prompt, target_response, target_kind, err = await _resolve_and_guard_target(
+            target_id, decision, session
+        )
+        if err:
+            return await _fail_judge(job, session, err, client_name)
 
-        # Sensitivity guard: the judge sees the target's content, so the judge
-        # must have routed to a model at least as strict as the target requires.
-        # (The engine already vetted the judge's own sensitivity; this catches a
-        # judge job created looser than its target — e.g. a public judge over a
-        # confidential job, which could send that content to a cloud model.)
-        target_sens = Sensitivity(target_sensitivity)
-        if stricter(target_sens, decision.effective_sensitivity) != decision.effective_sensitivity:
-            return await _fail_judge(
-                job, session,
-                f"target is {target_sens.value} but the judge resolved to "
-                f"{decision.effective_sensitivity.value}; submit the judge job with "
-                f"sensitivity>={target_sens.value} so it routes to an allowed model",
-                client_name,
-            )
-
-        job.status = JobStatus.RUNNING.value
-        job.started_at = datetime.now(UTC)
-        job.model_requested = job.model_requested or decision.model
-        job.model_used = decision.model
-        await session.commit()
-
+        await _mark_judge_running(job, decision, session)
         rubric, _resolved = await _resolve_prompt_for_job(job, client_name, session)
         system_prompt = rubric + _JUDGE_OUTPUT_INSTRUCTION
         user_prompt = (
@@ -527,21 +649,12 @@ async def execute_judge_job(
             "Score the response per the rubric."
         )
 
-        temperature, seed = _sampling_for(decision, user_prompt, system_prompt)
         try:
-            response = await _call_provider(
-                providers.get_for_client(client, decision.provider),
-                prompt=user_prompt,
-                model=decision.model,
-                system_prompt=system_prompt,
-                max_tokens=decision.max_tokens,
-                is_local=decision.provider == "ollama",
-                temperature=temperature,
-                seed=seed,
+            response = await _run_judge_model(
+                decision, client, providers, system_prompt=system_prompt, user_prompt=user_prompt
             )
         except ProviderError as e:
             return await _fail_judge(job, session, f"judge provider error: {e}", client_name)
-
         try:
             score, rationale = _parse_judge_verdict(response.response)
         except (ValueError, KeyError) as e:  # JSONDecodeError is a ValueError subclass
@@ -559,37 +672,116 @@ async def execute_judge_job(
                 is not None
             )
 
-        job.status = JobStatus.COMPLETE.value
         job.response = json.dumps({"score": score, "rationale": rationale})
-        job.model_used = response.model_used
-        job.tokens_in = response.tokens_in
-        job.tokens_out = response.tokens_out
-        job.cost_usd = response.cost_usd
-        job.latency_ms = response.latency_ms
-        job.completed_at = datetime.now(UTC)
         job.job_metadata = {
             **(job.job_metadata or {}),
             "judge": {
-                "mode": mode,
-                "target_job_id": str(target_id),
-                "target_kind": target_kind,
-                "score": score,
-                "rationale": rationale,
+                "mode": "pointwise", "target_job_id": str(target_id),
+                "target_kind": target_kind, "score": score, "rationale": rationale,
                 "applied_to_target": applied,
             },
         }
-        await _bump_usage(session, job)
-        await session.commit()
-        await session.refresh(job)
-
         span.set_attribute("judge.score", score)
         span.set_attribute("judge.applied_to_target", applied)
-        record_job_completion(
-            status=job.status, task_type=job.task_type, model=job.model_used or "",
-            client_app=client_name, duration_s=perf_counter() - started,
-            tokens_in=job.tokens_in or 0, tokens_out=job.tokens_out or 0,
-            cost_usd=float(job.cost_usd or 0),
-        )
+        await _finish_judge(job, [response], session, client_name, started)
+        return job
+
+
+async def _execute_pairwise_judge(
+    *, job: Job, decision: RoutingDecision, client: ClientApp,
+    providers: ProviderRegistry, session: AsyncSession,
+) -> Job:
+    """Compare two targets against the rubric with ORDER-SWAP: judge A-vs-B and
+    B-vs-A, then require both calls to agree on the winner. Agreement →
+    chosen/rejected; disagreement → tie (position bias detected, no DPO pair).
+    On apply_to_target, record the preference on both participants."""
+    client_name = client.name
+    with _tracer.start_as_current_span("conduct.judge") as span:
+        span.set_attribute(_SPAN_JOB_ID, str(job.id))
+        span.set_attribute(_SPAN_TASK_TYPE, job.task_type)
+        span.set_attribute("judge.mode", "pairwise")
+        started = perf_counter()
+        inputs = job.inputs or {}
+        apply_to_target = bool(inputs.get("apply_to_target", False))
+
+        try:
+            target_id = UUID(str(inputs.get("target_job_id")))
+            against_id = UUID(str(inputs.get("against_job_id")))
+        except (ValueError, TypeError):
+            return await _fail_judge(
+                job, session,
+                "pairwise judging requires a valid target_job_id and against_job_id",
+                client_name,
+            )
+        if target_id == against_id:
+            return await _fail_judge(
+                job, session, "target_job_id and against_job_id must differ", client_name
+            )
+
+        tp, tr, tkind, err = await _resolve_and_guard_target(target_id, decision, session)
+        if err:
+            return await _fail_judge(job, session, err, client_name)
+        _ap, ar, akind, err = await _resolve_and_guard_target(against_id, decision, session)
+        if err:
+            return await _fail_judge(job, session, err, client_name)
+
+        await _mark_judge_running(job, decision, session)
+        rubric, _resolved = await _resolve_prompt_for_job(job, client_name, session)
+        system_prompt = rubric + _PAIRWISE_OUTPUT_INSTRUCTION
+
+        try:
+            # The two responses are compared against the target's prompt (for
+            # primary-vs-shadow both share it). Call 2 swaps A/B to cancel
+            # position bias.
+            r1 = await _run_judge_model(
+                decision, client, providers, system_prompt=system_prompt,
+                user_prompt=_pairwise_user_prompt(tp, tr, ar),
+            )
+            r2 = await _run_judge_model(
+                decision, client, providers, system_prompt=system_prompt,
+                user_prompt=_pairwise_user_prompt(tp, ar, tr),
+            )
+        except ProviderError as e:
+            return await _fail_judge(job, session, f"judge provider error: {e}", client_name)
+        try:
+            w1, rat1 = _parse_pairwise_verdict(r1.response)
+            w2, rat2 = _parse_pairwise_verdict(r2.response)
+        except (ValueError, KeyError) as e:
+            return await _fail_judge(
+                job, session, f"could not parse pairwise verdict: {e}", client_name
+            )
+
+        chosen, rejected, tie, consistent = _reconcile_pairwise(w1, w2, target_id, against_id)
+
+        applied = False
+        if apply_to_target and not tie:
+            await apply_pairwise_preference(
+                session, chosen, against_job_id=rejected, outcome="win", judge_job_id=job.id
+            )
+            await apply_pairwise_preference(
+                session, rejected, against_job_id=chosen, outcome="loss", judge_job_id=job.id
+            )
+            applied = True
+
+        job.response = json.dumps({
+            "chosen_job_id": str(chosen) if chosen else None,
+            "rejected_job_id": str(rejected) if rejected else None,
+            "tie": tie,
+        })
+        job.job_metadata = {
+            **(job.job_metadata or {}),
+            "judge": {
+                "mode": "pairwise", "target_job_id": str(target_id),
+                "against_job_id": str(against_id), "target_kind": tkind, "against_kind": akind,
+                "chosen_job_id": str(chosen) if chosen else None,
+                "rejected_job_id": str(rejected) if rejected else None,
+                "tie": tie, "position_consistent": consistent,
+                "rationale_ab": rat1, "rationale_ba": rat2, "applied_to_target": applied,
+            },
+        }
+        span.set_attribute("judge.tie", tie)
+        span.set_attribute("judge.position_consistent", consistent)
+        await _finish_judge(job, [r1, r2], session, client_name, started)
         return job
 
 

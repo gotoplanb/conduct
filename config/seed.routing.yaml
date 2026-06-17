@@ -170,7 +170,7 @@ rules:
     sensitivity: internal
     max_tokens: 400
     sampling: deterministic
-    notes: "Pointwise LLM-as-judge. Inputs require target_job_id; optional apply_to_target (bool) to append the score to the target via the quality-score lane."
+    notes: "LLM-as-judge. mode=pointwise (default): inputs require target_job_id; emits {score,rationale}; optional apply_to_target appends to the quality-score lane. mode=pairwise: inputs require target_job_id + against_job_id; order-swapped A/B comparison → {chosen,rejected,tie}; optional apply_to_target records the preference on both participants (pairwise_verdicts)."
 
   # ===== Media task primitives =====
   # These four are the wander scene-pipeline primitives. Each one is

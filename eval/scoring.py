@@ -76,6 +76,46 @@ async def apply_score(
     return None
 
 
+async def apply_pairwise_preference(
+    session: AsyncSession,
+    target_id: UUID,
+    *,
+    against_job_id: UUID,
+    outcome: str,
+    judge_job_id: UUID,
+) -> bool:
+    """Append a pairwise preference record to a Job or JobShadow's metadata
+    under `pairwise_verdicts` (a list distinct from the 1-5 `quality_scores`
+    lane, so relative win/loss judgements don't pollute pointwise averages).
+    Used by the pairwise judge; consumed by the DPO export (#16). Returns True
+    if a row matched."""
+    entry = {
+        "against_job_id": str(against_job_id),
+        "outcome": outcome,  # "win" | "loss"
+        "judge_job_id": str(judge_job_id),
+        "at": datetime.now(UTC).isoformat(),
+    }
+
+    job = await session.get(Job, target_id)
+    if job is not None:
+        prefs = [*(job.job_metadata or {}).get("pairwise_verdicts", []), entry]
+        job.job_metadata = {**(job.job_metadata or {}), "pairwise_verdicts": prefs}
+        await session.commit()
+        return True
+
+    shadow = await session.get(JobShadow, target_id)
+    if shadow is not None:
+        prefs = [*(shadow.shadow_metadata or {}).get("pairwise_verdicts", []), entry]
+        shadow.shadow_metadata = {
+            **(shadow.shadow_metadata or {}),
+            "pairwise_verdicts": prefs,
+        }
+        await session.commit()
+        return True
+
+    return False
+
+
 def score_state(scores: list[dict]) -> dict:
     """Reduce a quality_scores list to {count, avg} for display."""
     vals: list[float] = []

@@ -11,6 +11,7 @@ the normal quality-score lane.
 from __future__ import annotations
 
 from decimal import Decimal
+from uuid import uuid4
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -22,6 +23,8 @@ from providers.registry import ProviderRegistry
 from routing.engine import RoutingDecision
 from worker.executor import (
     _parse_judge_verdict,
+    _parse_pairwise_verdict,
+    _reconcile_pairwise,
     execute_judge_job,
     is_judge_job,
 )
@@ -30,10 +33,16 @@ from worker.executor import (
 class _StubJudgeProvider(BaseProvider):
     name = "ollama"
 
-    def __init__(self, text: str, *, raise_error: bool = False) -> None:
+    def __init__(
+        self, text: str = "", *, texts: list[str] | None = None, raise_error: bool = False
+    ) -> None:
+        # `texts` returns one response per call in order (for the two
+        # order-swapped pairwise calls); `text` repeats a single response.
+        self._texts = list(texts) if texts is not None else None
         self._text = text
         self._raise = raise_error
         self.last_call: dict = {}
+        self.call_count = 0
 
     async def complete(
         self, prompt="", model="", system_prompt="", max_tokens=1000,
@@ -41,12 +50,14 @@ class _StubJudgeProvider(BaseProvider):
     ) -> ProviderResponse:
         if self._raise:
             raise ProviderError("boom")
+        self.call_count += 1
         self.last_call = {
             "prompt": prompt, "system_prompt": system_prompt,
             "temperature": temperature, "seed": seed,
         }
+        out = self._texts.pop(0) if self._texts is not None else self._text
         return ProviderResponse(
-            response=self._text, tokens_in=10, tokens_out=5,
+            response=out, tokens_in=10, tokens_out=5,
             cost_usd=Decimal("0"), latency_ms=1, model_used=model, provider=self.name,
         )
 
@@ -230,3 +241,138 @@ async def test_sensitivity_guard_blocks_looser_judge(
     assert provider.last_call == {}  # never reached the model
     await db_session.refresh(target)
     assert (target.job_metadata or {}).get("quality_scores", []) == []
+
+
+# --- pairwise (Phase 2) ---------------------------------------------------
+
+
+def test_reconcile_pairwise_consistent_winner() -> None:
+    a, b = uuid4(), uuid4()
+    # call1 (A=a, B=b) → "A"=a; call2 (A=b, B=a) → "B"=a : both name a → consistent
+    chosen, rejected, tie, consistent = _reconcile_pairwise("A", "B", a, b)
+    assert chosen == a and rejected == b
+    assert tie is False and consistent is True
+
+
+def test_reconcile_pairwise_position_bias_is_tie() -> None:
+    a, b = uuid4(), uuid4()
+    # winner "A" both calls → call1=a, call2=b : disagree → tie
+    chosen, rejected, tie, consistent = _reconcile_pairwise("A", "A", a, b)
+    assert chosen is None and rejected is None
+    assert tie is True and consistent is False
+
+
+def test_reconcile_pairwise_explicit_tie() -> None:
+    a, b = uuid4(), uuid4()
+    chosen, _r, tie, consistent = _reconcile_pairwise("TIE", "B", a, b)
+    assert chosen is None and tie is True and consistent is False
+
+
+def test_parse_pairwise_verdict() -> None:
+    w, r = _parse_pairwise_verdict('{"winner": "B", "rationale": "B is sharper"}')
+    assert w == "B" and r == "B is sharper"
+    with pytest.raises(ValueError, match="not in A/B/tie"):
+        _parse_pairwise_verdict('{"winner": "C"}')
+
+
+async def _seed_pairwise_judge(
+    db, client_id, *, target_id, against_id, apply_to_target=False
+) -> Job:
+    job = Job(
+        client_app_id=client_id, task_type="judge", sensitivity="internal",
+        prompt="(judge)", system_prompt="Compare the two responses against the prompt.",
+        status=JobStatus.PENDING.value,
+        inputs={
+            "mode": "pairwise", "target_job_id": str(target_id),
+            "against_job_id": str(against_id), "apply_to_target": apply_to_target,
+        },
+    )
+    db.add(job)
+    await db.commit()
+    await db.refresh(job)
+    return job
+
+
+async def test_pairwise_consistent_winner_records_preference(
+    db_session: AsyncSession, seeded_client
+) -> None:
+    client = seeded_client[0]
+    a = await _seed_target(db_session, client.id, response="Paris is the capital.")
+    b = await _seed_target(db_session, client.id, response="Maybe London?")
+    judge = await _seed_pairwise_judge(
+        db_session, client.id, target_id=a.id, against_id=b.id, apply_to_target=True
+    )
+    # call1 (A=a) → "A"=a ; call2 (A=b) → "B"=a : a wins consistently.
+    provider = _StubJudgeProvider(texts=[
+        '{"winner": "A", "rationale": "A is correct"}',
+        '{"winner": "B", "rationale": "A is still correct"}',
+    ])
+
+    out = await _run(judge, _decision(), provider, client, db_session)
+
+    assert out.status == JobStatus.COMPLETE.value
+    assert provider.call_count == 2  # order-swapped: two calls
+    meta = out.job_metadata["judge"]
+    assert meta["mode"] == "pairwise"
+    assert meta["chosen_job_id"] == str(a.id)
+    assert meta["rejected_job_id"] == str(b.id)
+    assert meta["tie"] is False
+    assert meta["position_consistent"] is True
+    assert meta["applied_to_target"] is True
+
+    # Preference recorded on BOTH participants (not in the 1-5 quality lane).
+    await db_session.refresh(a)
+    await db_session.refresh(b)
+    av = (a.job_metadata or {}).get("pairwise_verdicts") or []
+    bv = (b.job_metadata or {}).get("pairwise_verdicts") or []
+    assert len(av) == 1 and av[0]["outcome"] == "win" and av[0]["against_job_id"] == str(b.id)
+    assert len(bv) == 1 and bv[0]["outcome"] == "loss"
+    assert (a.job_metadata or {}).get("quality_scores", []) == []  # pointwise lane untouched
+
+
+async def test_pairwise_position_bias_yields_tie(
+    db_session: AsyncSession, seeded_client
+) -> None:
+    client = seeded_client[0]
+    a = await _seed_target(db_session, client.id)
+    b = await _seed_target(db_session, client.id, response="other")
+    judge = await _seed_pairwise_judge(
+        db_session, client.id, target_id=a.id, against_id=b.id, apply_to_target=True
+    )
+    # Always picks "A" → favors whichever is shown first → disagreement → tie.
+    provider = _StubJudgeProvider(texts=[
+        '{"winner": "A", "rationale": "first one"}',
+        '{"winner": "A", "rationale": "first one"}',
+    ])
+
+    out = await _run(judge, _decision(), provider, client, db_session)
+
+    assert out.status == JobStatus.COMPLETE.value
+    meta = out.job_metadata["judge"]
+    assert meta["tie"] is True
+    assert meta["position_consistent"] is False
+    assert meta["chosen_job_id"] is None
+    assert meta["applied_to_target"] is False
+    await db_session.refresh(a)
+    assert (a.job_metadata or {}).get("pairwise_verdicts", []) == []
+
+
+async def test_pairwise_requires_against_job_id(
+    db_session: AsyncSession, seeded_client
+) -> None:
+    client = seeded_client[0]
+    a = await _seed_target(db_session, client.id)
+    judge = Job(
+        client_app_id=client.id, task_type="judge", sensitivity="internal",
+        prompt="(judge)", system_prompt="x", status=JobStatus.PENDING.value,
+        inputs={"mode": "pairwise", "target_job_id": str(a.id)},  # no against_job_id
+    )
+    db_session.add(judge)
+    await db_session.commit()
+    await db_session.refresh(judge)
+    provider = _StubJudgeProvider('{"winner": "A"}')
+
+    out = await _run(judge, _decision(), provider, client, db_session)
+    assert out.status == JobStatus.FAILED.value
+    assert "against_job_id" in out.error
+    assert provider.call_count == 0
