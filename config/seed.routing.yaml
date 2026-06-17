@@ -170,7 +170,15 @@ rules:
     sensitivity: internal
     max_tokens: 400
     sampling: deterministic
-    notes: "LLM-as-judge. mode=pointwise (default): inputs require target_job_id; emits {score,rationale}; optional apply_to_target appends to the quality-score lane. mode=pairwise: inputs require target_job_id + against_job_id; order-swapped A/B comparison → {chosen,rejected,tie}; optional apply_to_target records the preference on both participants (pairwise_verdicts)."
+    # For mode=panel, `eval_shadow_models` is repurposed as the JURY (judges
+    # don't fan out shadows). preferred_model + these form the candidate panel;
+    # the panel then drops the target's producer family (self-preference) and
+    # any juror the target's sensitivity disallows. Pick DIVERSE families and,
+    # ideally, RESIDENT_MODELS to avoid per-juror Ollama swaps.
+    eval_shadow_models:
+      - { model: llama3.2:3b, rate: 1.0 }   # llama family
+      - { model: qwen3.5:4b, rate: 1.0 }    # qwen family
+    notes: "LLM-as-judge (issue #17). mode=pointwise (default): target_job_id → {score,rationale}. mode=pairwise: target_job_id + against_job_id → order-swapped {chosen,rejected,tie}. mode=panel: jury (preferred + eval_shadow_models, minus producer-family + sensitivity-disallowed) each scores → median {score,n,disagreement}. optional apply_to_target writes back (quality-score lane for point/panel, pairwise_verdicts for pairwise)."
 
   # ===== Media task primitives =====
   # These four are the wander scene-pipeline primitives. Each one is

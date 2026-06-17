@@ -277,6 +277,7 @@ async def _run_async(job_id: UUID) -> None:
                     client=client,
                     providers=providers,
                     session=session,
+                    rule=rule,  # panel mode reads the jury from rule.eval_shadow_models
                 )
                 dispatch_span.set_attribute(_DISPATCH_OUTCOME, "judge_executed")
                 return

@@ -12,8 +12,11 @@ The executor:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
+import re
+import statistics
 from datetime import UTC, date, datetime
 from decimal import Decimal
 from time import perf_counter
@@ -26,13 +29,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from eval.scoring import apply_pairwise_preference, apply_score
 from models.client import ClientApp, ClientAppUsage
 from models.job import Job
+from models.routing import RoutingRule
 from models.shadow import JobShadow
 from models.types import JobStatus, Sensitivity, stricter
 from observability.metrics import record_fallback, record_job_completion
 from observability.tracing import get_tracer
 from prompt_loader import ResolvedPrompt, resolve_prompt
 from providers.base import BaseProvider, ProviderError, ProviderResponse
-from providers.registry import ProviderRegistry
+from providers.registry import ProviderRegistry, is_cloud, provider_for_model
 from retry.base import FailureContext, FailureHandler, HandlerAction
 from retry.static import StaticFailureHandler
 from routing.engine import RoutingDecision, derive_seed
@@ -48,6 +52,8 @@ _default_failure_handler: FailureHandler = StaticFailureHandler()
 _SPAN_MODEL_USED = "model.used"
 _SPAN_JOB_ID = "job.id"
 _SPAN_TASK_TYPE = "job.task_type"
+_SPAN_JUDGE = "conduct.judge"
+_SPAN_JUDGE_MODE = "judge.mode"
 
 log = logging.getLogger(__name__)
 
@@ -479,17 +485,19 @@ def _judge_sensitivity_block(decision: RoutingDecision, target_sensitivity: str)
 
 async def _resolve_and_guard_target(
     target_id: UUID, decision: RoutingDecision, session: AsyncSession
-) -> tuple[str, str, str, str]:
+) -> tuple[str, str, str, str, str]:
     """Resolve a judged target and apply the sensitivity guard in one step.
-    Returns (prompt, response, kind, error). A non-empty error means the caller
-    should fail the judge job (prompt/response are then unset)."""
-    prompt, response, sensitivity, kind = await _resolve_judge_target(target_id, session)
+    Returns (prompt, response, kind, producer_model, error). A non-empty error
+    means the caller should fail the judge job."""
+    prompt, response, sensitivity, kind, producer = await _resolve_judge_target(
+        target_id, session
+    )
     if prompt is None:
-        return "", "", "", f"target {target_id}: not found"
+        return "", "", "", "", f"target {target_id}: not found"
     block = _judge_sensitivity_block(decision, sensitivity)
     if block:
-        return "", "", "", block
-    return prompt, response, kind, ""
+        return "", "", "", "", block
+    return prompt, response, kind, producer, ""
 
 
 async def _run_judge_model(
@@ -516,22 +524,24 @@ async def _run_judge_model(
 
 async def _resolve_judge_target(
     target_id: UUID, session: AsyncSession
-) -> tuple[str | None, str, str, str]:
-    """Return (prompt, response, sensitivity, kind) for the judged target.
-    Tries Job first, then JobShadow (whose prompt + sensitivity come from its
-    parent). Returns (None, ...) if neither matches."""
+) -> tuple[str | None, str, str, str, str]:
+    """Return (prompt, response, sensitivity, kind, producer_model) for the
+    judged target. Tries Job first, then JobShadow (whose prompt + sensitivity
+    come from its parent). `producer_model` is the model that generated the
+    output — used by the panel to exclude self-preference. Returns (None, ...)
+    if neither matches."""
     job = await session.get(Job, target_id)
     if job is not None:
-        return job.prompt, job.response, job.sensitivity, "job"
+        return job.prompt, job.response, job.sensitivity, "job", job.model_used or ""
 
     shadow = await session.get(JobShadow, target_id)
     if shadow is not None:
         parent = await session.get(Job, shadow.parent_job_id)
         prompt = parent.prompt if parent else ""
         sensitivity = parent.sensitivity if parent else Sensitivity.CONFIDENTIAL.value
-        return prompt, shadow.response, sensitivity, "shadow"
+        return prompt, shadow.response, sensitivity, "shadow", shadow.model or ""
 
-    return None, "", "", ""
+    return None, "", "", "", ""
 
 
 async def _fail_judge(job: Job, session: AsyncSession, message: str, client_name: str) -> Job:
@@ -590,10 +600,11 @@ async def execute_judge_job(
     client: ClientApp,
     providers: ProviderRegistry,
     session: AsyncSession,
+    rule: RoutingRule | None = None,
 ) -> Job:
     """Dispatch a judge job by inputs['mode'] (default 'pointwise'). A judge job
     scores or compares other jobs' outputs through the routed (deterministic)
-    model; see GitHub issue #17."""
+    model; 'panel' fans out across a jury of models from the rule. See #17."""
     mode = (job.inputs or {}).get("mode", "pointwise")
     if mode == "pointwise":
         return await _execute_pointwise_judge(
@@ -603,8 +614,14 @@ async def execute_judge_job(
         return await _execute_pairwise_judge(
             job=job, decision=decision, client=client, providers=providers, session=session
         )
+    if mode == "panel":
+        return await _execute_panel_judge(
+            job=job, decision=decision, client=client, providers=providers,
+            session=session, rule=rule,
+        )
     return await _fail_judge(
-        job, session, f"judge mode {mode!r} not supported (use 'pointwise' or 'pairwise')",
+        job, session,
+        f"judge mode {mode!r} not supported (use 'pointwise', 'pairwise', or 'panel')",
         client.name,
     )
 
@@ -617,10 +634,10 @@ async def _execute_pointwise_judge(
     apply_to_target, append the score to the target via the quality-score lane
     (via='judge')."""
     client_name = client.name
-    with _tracer.start_as_current_span("conduct.judge") as span:
+    with _tracer.start_as_current_span(_SPAN_JUDGE) as span:
         span.set_attribute(_SPAN_JOB_ID, str(job.id))
         span.set_attribute(_SPAN_TASK_TYPE, job.task_type)
-        span.set_attribute("judge.mode", "pointwise")
+        span.set_attribute(_SPAN_JUDGE_MODE, "pointwise")
         started = perf_counter()
         inputs = job.inputs or {}
         apply_to_target = bool(inputs.get("apply_to_target", False))
@@ -634,8 +651,8 @@ async def _execute_pointwise_judge(
                 client_name,
             )
 
-        target_prompt, target_response, target_kind, err = await _resolve_and_guard_target(
-            target_id, decision, session
+        target_prompt, target_response, target_kind, _producer, err = (
+            await _resolve_and_guard_target(target_id, decision, session)
         )
         if err:
             return await _fail_judge(job, session, err, client_name)
@@ -696,10 +713,10 @@ async def _execute_pairwise_judge(
     chosen/rejected; disagreement → tie (position bias detected, no DPO pair).
     On apply_to_target, record the preference on both participants."""
     client_name = client.name
-    with _tracer.start_as_current_span("conduct.judge") as span:
+    with _tracer.start_as_current_span(_SPAN_JUDGE) as span:
         span.set_attribute(_SPAN_JOB_ID, str(job.id))
         span.set_attribute(_SPAN_TASK_TYPE, job.task_type)
-        span.set_attribute("judge.mode", "pairwise")
+        span.set_attribute(_SPAN_JUDGE_MODE, "pairwise")
         started = perf_counter()
         inputs = job.inputs or {}
         apply_to_target = bool(inputs.get("apply_to_target", False))
@@ -718,10 +735,10 @@ async def _execute_pairwise_judge(
                 job, session, "target_job_id and against_job_id must differ", client_name
             )
 
-        tp, tr, tkind, err = await _resolve_and_guard_target(target_id, decision, session)
+        tp, tr, tkind, _p1, err = await _resolve_and_guard_target(target_id, decision, session)
         if err:
             return await _fail_judge(job, session, err, client_name)
-        _ap, ar, akind, err = await _resolve_and_guard_target(against_id, decision, session)
+        _ap, ar, akind, _p2, err = await _resolve_and_guard_target(against_id, decision, session)
         if err:
             return await _fail_judge(job, session, err, client_name)
 
@@ -782,6 +799,228 @@ async def _execute_pairwise_judge(
         span.set_attribute("judge.tie", tie)
         span.set_attribute("judge.position_consistent", consistent)
         await _finish_judge(job, [r1, r2], session, client_name, started)
+        return job
+
+
+# --- panel / jury (Phase 3) -----------------------------------------------
+
+
+def _model_family(model: str) -> str:
+    """Coarse vendor/family key for self-preference exclusion. Strips cloud geo
+    prefixes + the version/size tail, leaving the leading name token:
+    gemma4:e4b→gemma, llama3.2:3b→llama, qwen3.5:9b→qwen,
+    us.anthropic.claude-haiku-4-5→claude, mistral-small3.2→mistral."""
+    name = re.sub(r"^(us|eu|apac)\.", "", model.lower())
+    name = re.sub(r"^anthropic\.", "", name)
+    m = re.match(r"[a-z]+", name)
+    return m.group(0) if m else name
+
+
+def _panelist_allowed(
+    model: str, sensitivity: Sensitivity, allow_cloud_for_internal: bool
+) -> bool:
+    """Mirror the routing engine's sensitivity gate for a single panelist (the
+    panelist will read the target's content, so a confidential target bars
+    cloud jurors)."""
+    if not is_cloud(model):
+        return True
+    if sensitivity == Sensitivity.CONFIDENTIAL:
+        return False
+    if sensitivity == Sensitivity.INTERNAL:
+        return allow_cloud_for_internal
+    return True
+
+
+def _rule_panel(rule: RoutingRule | None) -> list[str]:
+    """Default panel for a judge rule: its preferred model + its
+    eval_shadow_models (repurposed as the jury, since judges don't shadow)."""
+    if rule is None:
+        return []
+    panel = [rule.preferred_model]
+    panel += [
+        s["model"]
+        for s in (rule.eval_shadow_models or [])
+        if isinstance(s, dict) and s.get("model")
+    ]
+    return panel
+
+
+def _build_panel(
+    candidates: list[str], producer_model: str,
+    sensitivity: Sensitivity, allow_cloud_for_internal: bool,
+) -> tuple[list[str], dict[str, str]]:
+    """From candidate models, drop duplicates, the target's producer FAMILY
+    (self-preference), and any model the target's sensitivity disallows.
+    Returns (eligible, excluded={model: reason})."""
+    producer_fam = _model_family(producer_model) if producer_model else ""
+    eligible: list[str] = []
+    excluded: dict[str, str] = {}
+    seen: set[str] = set()
+    for m in candidates:
+        if m in seen:
+            continue
+        seen.add(m)
+        if producer_fam and _model_family(m) == producer_fam:
+            excluded[m] = f"self-preference (same family as producer: {producer_fam})"
+        elif not _panelist_allowed(m, sensitivity, allow_cloud_for_internal):
+            excluded[m] = f"sensitivity ({sensitivity.value})"
+        else:
+            eligible.append(m)
+    return eligible, excluded
+
+
+async def _run_panelist(
+    model: str, decision: RoutingDecision, client: ClientApp, providers: ProviderRegistry,
+    *, system_prompt: str, user_prompt: str,
+) -> ProviderResponse:
+    provider_name = provider_for_model(model)
+    is_local = provider_name == "ollama"
+    if is_local:
+        # Best-effort load (a no-op for resident models); a real failure
+        # surfaces on the call below and the panelist is skipped.
+        with contextlib.suppress(Exception):
+            await providers.get("ollama").load(model)
+    temperature, seed = _sampling_for(decision, user_prompt, system_prompt)
+    return await _call_provider(
+        providers.get_for_client(client, provider_name),
+        prompt=user_prompt, model=model, system_prompt=system_prompt,
+        max_tokens=decision.max_tokens, is_local=is_local,
+        temperature=temperature, seed=seed,
+    )
+
+
+async def _run_panel(
+    eligible: list[str], decision: RoutingDecision, client: ClientApp,
+    providers: ProviderRegistry, system_prompt: str, user_prompt: str,
+) -> tuple[list[dict], list[dict], list[ProviderResponse]]:
+    """Run every eligible panelist; a panelist that errors or returns an
+    unparseable verdict is recorded as a failure and skipped (a jury tolerates
+    a missing juror). Returns (scored, failures, responses)."""
+    scored: list[dict] = []
+    failures: list[dict] = []
+    responses: list[ProviderResponse] = []
+    for m in eligible:
+        try:
+            resp = await _run_panelist(
+                m, decision, client, providers, system_prompt=system_prompt, user_prompt=user_prompt
+            )
+        except ProviderError as e:
+            failures.append({"model": m, "error": f"provider: {e}"[:160]})
+            continue
+        try:
+            score, rationale = _parse_judge_verdict(resp.response)
+        except (ValueError, KeyError) as e:
+            failures.append({"model": m, "error": f"parse: {e}"[:160]})
+            continue
+        responses.append(resp)
+        scored.append({"model": m, "score": score, "rationale": rationale})
+    return scored, failures, responses
+
+
+def _aggregate_panel(scored: list[dict]) -> dict:
+    """Aggregate panelist scores by MEDIAN (robust to an outlier juror). Spread
+    >= 2 flags a contested verdict worth a human's eyes."""
+    scores = [p["score"] for p in scored]
+    spread = max(scores) - min(scores)
+    return {
+        "score": int(round(statistics.median(scores))),
+        "n": len(scores), "min": min(scores), "max": max(scores),
+        "spread": spread, "disagreement": spread >= 2, "scores": scores,
+    }
+
+
+async def _execute_panel_judge(
+    *, job: Job, decision: RoutingDecision, client: ClientApp,
+    providers: ProviderRegistry, session: AsyncSession, rule: RoutingRule | None,
+) -> Job:
+    """Jury of diverse models pointwise-scoring one target → median. Excludes
+    the producer's family (self-preference) and sensitivity-disallowed jurors."""
+    client_name = client.name
+    with _tracer.start_as_current_span(_SPAN_JUDGE) as span:
+        span.set_attribute(_SPAN_JOB_ID, str(job.id))
+        span.set_attribute(_SPAN_TASK_TYPE, job.task_type)
+        span.set_attribute(_SPAN_JUDGE_MODE, "panel")
+        started = perf_counter()
+        inputs = job.inputs or {}
+        apply_to_target = bool(inputs.get("apply_to_target", False))
+
+        try:
+            target_id = UUID(str(inputs.get("target_job_id")))
+        except (ValueError, TypeError):
+            return await _fail_judge(
+                job, session,
+                f"target_job_id={inputs.get('target_job_id')!r} is not a valid UUID",
+                client_name,
+            )
+
+        target_prompt, target_response, target_kind, producer, err = (
+            await _resolve_and_guard_target(target_id, decision, session)
+        )
+        if err:
+            return await _fail_judge(job, session, err, client_name)
+
+        candidates = inputs.get("panel") or _rule_panel(rule)
+        if not candidates:
+            return await _fail_judge(
+                job, session,
+                "panel mode needs panel models (inputs.panel or the judge "
+                "rule's eval_shadow_models)",
+                client_name,
+            )
+        eligible, excluded = _build_panel(
+            candidates, producer, decision.effective_sensitivity, client.allow_cloud_for_internal
+        )
+        if not eligible:
+            return await _fail_judge(
+                job, session, f"no eligible panelists after exclusions: {excluded}", client_name
+            )
+
+        await _mark_judge_running(job, decision, session)
+        rubric, _resolved = await _resolve_prompt_for_job(job, client_name, session)
+        system_prompt = rubric + _JUDGE_OUTPUT_INSTRUCTION
+        user_prompt = (
+            f"ORIGINAL PROMPT:\n{target_prompt}\n\n"
+            f"RESPONSE TO EVALUATE:\n{target_response}\n\n"
+            "Score the response per the rubric."
+        )
+
+        scored, failures, responses = await _run_panel(
+            eligible, decision, client, providers, system_prompt, user_prompt
+        )
+        if not scored:
+            return await _fail_judge(
+                job, session, f"all {len(eligible)} panelists failed: {failures}", client_name
+            )
+
+        agg = _aggregate_panel(scored)
+        applied = False
+        if apply_to_target:
+            applied = (
+                await apply_score(
+                    session, target_id, score=agg["score"],
+                    reviewer="panel:" + ",".join(p["model"] for p in scored),
+                    note=f"panel median {agg['score']} of {agg['n']} {agg['scores']}",
+                    via="judge-panel",
+                )
+                is not None
+            )
+
+        job.response = json.dumps(
+            {"score": agg["score"], "n": agg["n"], "disagreement": agg["disagreement"]}
+        )
+        job.job_metadata = {
+            **(job.job_metadata or {}),
+            "judge": {
+                "mode": "panel", "target_job_id": str(target_id), "target_kind": target_kind,
+                "score": agg["score"], "n": agg["n"], "spread": agg["spread"],
+                "disagreement": agg["disagreement"], "panelists": scored,
+                "failures": failures, "excluded": excluded, "applied_to_target": applied,
+            },
+        }
+        span.set_attribute("judge.score", agg["score"])
+        span.set_attribute("judge.panel_n", agg["n"])
+        span.set_attribute("judge.disagreement", agg["disagreement"])
+        await _finish_judge(job, responses, session, client_name, started)
         return job
 
 

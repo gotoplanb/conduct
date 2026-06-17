@@ -22,6 +22,9 @@ from providers.base import BaseProvider, ProviderError, ProviderResponse
 from providers.registry import ProviderRegistry
 from routing.engine import RoutingDecision
 from worker.executor import (
+    _aggregate_panel,
+    _build_panel,
+    _model_family,
     _parse_judge_verdict,
     _parse_pairwise_verdict,
     _reconcile_pairwise,
@@ -77,11 +80,11 @@ def _decision(sensitivity: Sensitivity = Sensitivity.INTERNAL) -> RoutingDecisio
 
 
 async def _seed_target(
-    db, client_id, *, sensitivity="internal", response="The capital is Paris."
+    db, client_id, *, sensitivity="internal", response="The capital is Paris.", model_used=""
 ) -> Job:
     job = Job(
         client_app_id=client_id, task_type="qa", sensitivity=sensitivity,
-        prompt="What is the capital of France?", response=response,
+        prompt="What is the capital of France?", response=response, model_used=model_used,
         status=JobStatus.COMPLETE.value,
     )
     db.add(job)
@@ -375,4 +378,130 @@ async def test_pairwise_requires_against_job_id(
     out = await _run(judge, _decision(), provider, client, db_session)
     assert out.status == JobStatus.FAILED.value
     assert "against_job_id" in out.error
+    assert provider.call_count == 0
+
+
+# --- panel / jury (Phase 3) -----------------------------------------------
+
+
+def test_model_family() -> None:
+    assert _model_family("gemma4:e4b") == "gemma"
+    assert _model_family("llama3.2:3b") == "llama"
+    assert _model_family("qwen3.5:9b") == "qwen"
+    assert _model_family("mistral-small3.2") == "mistral"
+    assert _model_family("claude-sonnet-4-6") == "claude"
+    assert _model_family("us.anthropic.claude-haiku-4-5-20251001-v1:0") == "claude"
+
+
+def test_aggregate_panel_median_and_disagreement() -> None:
+    agg = _aggregate_panel([
+        {"model": "a", "score": 4}, {"model": "b", "score": 2}, {"model": "c", "score": 5},
+    ])
+    assert agg["score"] == 4  # median(4, 2, 5)
+    assert agg["n"] == 3 and agg["spread"] == 3 and agg["disagreement"] is True
+
+    tight = _aggregate_panel([{"model": "a", "score": 4}, {"model": "b", "score": 4}])
+    assert tight["score"] == 4 and tight["disagreement"] is False
+
+
+def test_build_panel_excludes_self_preference_and_sensitivity() -> None:
+    # producer is gemma4:12b → the gemma juror is dropped (self-preference);
+    # the cloud juror is dropped because the target is confidential.
+    eligible, excluded = _build_panel(
+        ["gemma4:e4b", "llama3.2:3b", "claude-haiku-4-5"],
+        "gemma4:12b", Sensitivity.CONFIDENTIAL, allow_cloud_for_internal=False,
+    )
+    assert eligible == ["llama3.2:3b"]
+    assert "gemma4:e4b" in excluded
+    assert "claude-haiku-4-5" in excluded
+
+
+async def _seed_panel_judge(db, client_id, *, target_id, panel, apply_to_target=False) -> Job:
+    job = Job(
+        client_app_id=client_id, task_type="judge", sensitivity="internal",
+        prompt="(judge)", system_prompt="Score the response 1-5 against the prompt.",
+        status=JobStatus.PENDING.value,
+        inputs={
+            "mode": "panel", "target_job_id": str(target_id),
+            "panel": panel, "apply_to_target": apply_to_target,
+        },
+    )
+    db.add(job)
+    await db.commit()
+    await db.refresh(job)
+    return job
+
+
+async def test_panel_aggregates_and_excludes_producer_family(
+    db_session: AsyncSession, seeded_client
+) -> None:
+    client = seeded_client[0]
+    # Target was produced by gemma → gemma jurors excluded (self-preference).
+    target = await _seed_target(db_session, client.id, model_used="gemma4:e4b")
+    judge = await _seed_panel_judge(
+        db_session, client.id, target_id=target.id,
+        panel=["gemma4:e4b", "llama3.2:3b", "qwen3.5:4b"], apply_to_target=True,
+    )
+    # eligible = [llama, qwen] in order → scores 4 then 2 → median 3, spread 2.
+    provider = _StubJudgeProvider(texts=[
+        '{"score": 4, "rationale": "good"}',
+        '{"score": 2, "rationale": "meh"}',
+    ])
+
+    out = await _run(judge, _decision(), provider, client, db_session)
+
+    assert out.status == JobStatus.COMPLETE.value
+    assert provider.call_count == 2  # the gemma candidate was never called
+    meta = out.job_metadata["judge"]
+    assert meta["mode"] == "panel"
+    assert meta["n"] == 2
+    assert meta["score"] == 3
+    assert meta["disagreement"] is True  # spread 2
+    assert "gemma4:e4b" in meta["excluded"]
+    assert {p["model"] for p in meta["panelists"]} == {"llama3.2:3b", "qwen3.5:4b"}
+    assert meta["applied_to_target"] is True
+
+    # Median applied to the target under a distinct via tag.
+    await db_session.refresh(target)
+    qs = (target.job_metadata or {}).get("quality_scores") or []
+    assert len(qs) == 1 and qs[0]["score"] == 3 and qs[0]["via"] == "judge-panel"
+
+
+async def test_panel_skips_failed_juror(db_session: AsyncSession, seeded_client) -> None:
+    client = seeded_client[0]
+    target = await _seed_target(db_session, client.id, model_used="claude-sonnet-4-6")
+    judge = await _seed_panel_judge(
+        db_session, client.id, target_id=target.id,
+        panel=["llama3.2:3b", "qwen3.5:4b", "mistral-small3.2"],
+    )
+    # middle juror returns garbage → skipped; aggregate over the survivors.
+    provider = _StubJudgeProvider(texts=[
+        '{"score": 5, "rationale": "a"}',
+        "not json at all",
+        '{"score": 3, "rationale": "c"}',
+    ])
+
+    out = await _run(judge, _decision(), provider, client, db_session)
+
+    assert out.status == JobStatus.COMPLETE.value
+    meta = out.job_metadata["judge"]
+    assert meta["n"] == 2  # one of three failed
+    assert len(meta["failures"]) == 1
+    assert meta["score"] == 4  # median(5, 3)
+
+
+async def test_panel_empty_after_exclusion_fails(
+    db_session: AsyncSession, seeded_client
+) -> None:
+    client = seeded_client[0]
+    target = await _seed_target(db_session, client.id, model_used="gemma4:e4b")
+    judge = await _seed_panel_judge(
+        db_session, client.id, target_id=target.id,
+        panel=["gemma4:e4b", "gemma4:12b"],  # all same family as producer
+    )
+    provider = _StubJudgeProvider('{"score": 5}')
+
+    out = await _run(judge, _decision(), provider, client, db_session)
+    assert out.status == JobStatus.FAILED.value
+    assert "no eligible panelists" in out.error
     assert provider.call_count == 0
