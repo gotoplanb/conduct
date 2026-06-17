@@ -154,9 +154,19 @@ eyes. With `apply_to_target`, the median is written via `via="judge-panel"`.
 | pairwise | both participants' `pairwise_verdicts` | win / loss records |
 
 The `quality_scores` entries flow straight into the existing per-model rollup,
-and all of it (scores + pairwise verdicts) is what the
-[#16](https://github.com/gotoplanb/conduct/issues/16) preference/SFT export
-consumes — removing the human-labelling bottleneck.
+and all of it (scores + pairwise verdicts) is what the **dataset export**
+turns into training data — removing the human-labelling bottleneck:
+
+```bash
+# DPO pairs from the pairwise judge's verdicts (or method=score for differentials)
+curl -s "$CONDUCT/datasets/preferences?task_type=judge&method=pairwise" -H "Authorization: Bearer $ADMIN"
+# SFT examples from high-scored responses (judge-sourced only)
+curl -s "$CONDUCT/datasets/sft?min_score=4&via=judge&include_shadows=true" -H "Authorization: Bearer $ADMIN"
+```
+
+Both stream JSONL (`{prompt, system, chosen, rejected, meta}` /
+`{prompt, system, completion, meta}`) ready for TRL/unsloth. Admin-only; see
+`routes/datasets.py`.
 
 ## Safeguards (built in)
 
@@ -202,5 +212,6 @@ Tips:
 - Judge jobs always run **async** (on the worker), never the sync API path.
 - You can judge a **Job or a JobShadow** — shadows take their prompt + sensitivity
   from their parent.
-- Build status: pointwise, pairwise, and panel all shipped (#17). The export that
-  consumes these scores is tracked in #16.
+- Build status: pointwise, pairwise, and panel all shipped (#17), and the
+  `/datasets/sft` + `/datasets/preferences` JSONL export that consumes these
+  scores is built (#16).

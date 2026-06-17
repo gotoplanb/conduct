@@ -9,6 +9,7 @@ from mcp_server import build_mcp_app
 from routes import (
     clients,
     connectors,
+    datasets,
     health,
     jobs,
     metrics_json,
@@ -42,6 +43,7 @@ app.include_router(routing_route.router)
 app.include_router(metrics_prom.router)
 app.include_router(metrics_json.router)
 app.include_router(eval_route.router)
+app.include_router(datasets.router)
 app.include_router(prompts.router)
 app.include_router(oauth.router)
 app.include_router(tts.tts_router)
