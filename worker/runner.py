@@ -26,7 +26,7 @@ from providers.ollama import OllamaProvider
 from providers.registry import ProviderRegistry
 from routing.engine import SensitivityViolation, decide
 from worker.db import get_worker_session_maker
-from worker.executor import execute_job
+from worker.executor import execute_job, execute_judge_job, is_judge_job
 
 log = logging.getLogger(__name__)
 _tracer = get_tracer(__name__)
@@ -263,6 +263,22 @@ async def _run_async(job_id: UUID) -> None:
             if not await _swap_ollama_if_needed(
                 decision, providers, job, client.name, session, dispatch_span
             ):
+                return
+
+            # Judge branch: a job carrying a target_job_id scores another job's
+            # output. It still went through the routing engine (so it has a
+            # model + sensitivity + deterministic sampling), but runs the judge
+            # executor and does NOT fan out eval shadows (a judge isn't a thing
+            # we re-judge).
+            if is_judge_job(job.inputs):
+                await execute_judge_job(
+                    job=job,
+                    decision=decision,
+                    client=client,
+                    providers=providers,
+                    session=session,
+                )
+                dispatch_span.set_attribute(_DISPATCH_OUTCOME, "judge_executed")
                 return
 
             await execute_job(

@@ -157,6 +157,21 @@ rules:
     eval_shadow_models:
       - { model: gemma4:12b, rate: 1.0 }   # same-family step-up
 
+  # LLM-as-a-judge (Phase 1: single-model pointwise). A `judge` job carries a
+  # `target_job_id` in its inputs; the worker resolves that target's
+  # prompt+response, scores it against this task's rubric (prompts/shared/
+  # judge.md), and returns {score, rationale}. deterministic so the same target
+  # always gets the same ruling. Small local model + internal floor keeps judging
+  # cheap and keeps any internal/confidential target's content off cloud models.
+  # See GitHub issue #17.
+  - task_type: judge
+    preferred_model: gemma4:e4b
+    fallback_model: gemma4:e4b
+    sensitivity: internal
+    max_tokens: 400
+    sampling: deterministic
+    notes: "Pointwise LLM-as-judge. Inputs require target_job_id; optional apply_to_target (bool) to append the score to the target via the quality-score lane."
+
   # ===== Media task primitives =====
   # These four are the wander scene-pipeline primitives. Each one is
   # independent: the client orchestrates the chain by passing previous-job

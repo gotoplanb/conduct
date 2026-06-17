@@ -178,6 +178,25 @@ async def test_submit_async_when_explicitly_requested(
     assert r.json()["status"] == "pending"
 
 
+async def test_judge_job_forced_async(
+    client, db_session, cloud_client, fake_redis, task_type
+) -> None:
+    """A job carrying target_job_id is a judge job — it must enqueue (202) even
+    though the rule routes to a cloud model that would normally run sync, so it
+    only ever runs on the worker's judge executor (never the sync path)."""
+    await _seed_rule(db_session, task_type=task_type)  # cloud model → normally sync
+    r = await client.post(
+        "/jobs",
+        json={
+            "task_type": task_type, "prompt": "(judge)", "system_prompt": "rubric",
+            "inputs": {"mode": "pointwise", "target_job_id": str(uuid4())},
+        },
+        headers={"Authorization": f"Bearer {cloud_client[1]}"},
+    )
+    assert r.status_code == 202
+    assert r.json()["status"] == "pending"
+
+
 async def test_submit_local_model_goes_async(
     client, db_session, seeded_client, fake_redis, task_type
 ) -> None:

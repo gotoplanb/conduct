@@ -12,6 +12,7 @@ The executor:
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from datetime import UTC, date, datetime
 from time import perf_counter
@@ -21,9 +22,11 @@ from opentelemetry.trace import Status, StatusCode
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from eval.scoring import apply_score
 from models.client import ClientApp, ClientAppUsage
 from models.job import Job
-from models.types import JobStatus
+from models.shadow import JobShadow
+from models.types import JobStatus, Sensitivity, stricter
 from observability.metrics import record_fallback, record_job_completion
 from observability.tracing import get_tracer
 from prompt_loader import ResolvedPrompt, resolve_prompt
@@ -42,6 +45,8 @@ _tracer = get_tracer(__name__)
 _default_failure_handler: FailureHandler = StaticFailureHandler()
 
 _SPAN_MODEL_USED = "model.used"
+_SPAN_JOB_ID = "job.id"
+_SPAN_TASK_TYPE = "job.task_type"
 
 log = logging.getLogger(__name__)
 
@@ -268,8 +273,8 @@ async def execute_job(
     handler = failure_handler or _default_failure_handler
     client_name = client.name
     with _tracer.start_as_current_span("conduct.job") as job_span:
-        job_span.set_attribute("job.id", str(job.id))
-        job_span.set_attribute("job.task_type", job.task_type)
+        job_span.set_attribute(_SPAN_JOB_ID, str(job.id))
+        job_span.set_attribute(_SPAN_TASK_TYPE, job.task_type)
         job_span.set_attribute("job.sensitivity", job.sensitivity)
         job_span.set_attribute("job.client_app", client_name)
         job_span.set_attribute("job.priority", job.priority)
@@ -372,6 +377,222 @@ async def execute_job(
         return job
 
 
+# ----------------------------------------------------------------------------
+# LLM-as-a-judge (Phase 1: single-model pointwise) — see GitHub issue #17
+# ----------------------------------------------------------------------------
+# A judge job scores another job's output. It's an ordinary text task (routed
+# through the engine, so it gets a model + sensitivity + the deterministic
+# sampling profile from its rule) distinguished only by carrying a
+# `target_job_id` in its inputs. Conduct provides the PRIMITIVE (resolve the
+# target, build a rubric prompt, parse a structured verdict); the client
+# orchestrates (it submits the judge job and reads the verdict). Scores are
+# written to the target only on an explicit opt-in (`apply_to_target`), never
+# as a hidden lifecycle hook.
+
+_JUDGE_OUTPUT_INSTRUCTION = (
+    "\n\nReturn ONLY a JSON object — no prose, no markdown fences — of the form:\n"
+    '{"score": <integer 1-5>, "rationale": "<one concise sentence>"}'
+)
+
+
+def is_judge_job(inputs: dict | None) -> bool:
+    """A job is a judge job iff its inputs name a target to evaluate. Keying on
+    `target_job_id` keeps judging a pure primitive — any task_type with a
+    deterministic rule can be a judge — without a schema change. (A future
+    explicit `task_kind` on the rule could replace this sniff.)"""
+    return bool((inputs or {}).get("target_job_id"))
+
+
+def _parse_judge_verdict(text: str) -> tuple[int, str]:
+    """Pull (score, rationale) out of the judge model's output. Tolerant of
+    surrounding prose and ```json fences: we take the outermost {...} block.
+    Raises ValueError on anything unparseable so the caller fails the job
+    loudly rather than recording a bogus score."""
+    start, end = text.find("{"), text.rfind("}")
+    if start == -1 or end <= start:
+        raise ValueError(f"no JSON object in judge output: {text[:200]!r}")
+    obj = json.loads(text[start : end + 1])
+    score = int(obj["score"])
+    if not 1 <= score <= 5:
+        raise ValueError(f"judge score {score} out of range 1-5")
+    return score, str(obj.get("rationale", ""))
+
+
+async def _resolve_judge_target(
+    target_id: UUID, session: AsyncSession
+) -> tuple[str | None, str, str, str]:
+    """Return (prompt, response, sensitivity, kind) for the judged target.
+    Tries Job first, then JobShadow (whose prompt + sensitivity come from its
+    parent). Returns (None, ...) if neither matches."""
+    job = await session.get(Job, target_id)
+    if job is not None:
+        return job.prompt, job.response, job.sensitivity, "job"
+
+    shadow = await session.get(JobShadow, target_id)
+    if shadow is not None:
+        parent = await session.get(Job, shadow.parent_job_id)
+        prompt = parent.prompt if parent else ""
+        sensitivity = parent.sensitivity if parent else Sensitivity.CONFIDENTIAL.value
+        return prompt, shadow.response, sensitivity, "shadow"
+
+    return None, "", "", ""
+
+
+async def _fail_judge(job: Job, session: AsyncSession, message: str, client_name: str) -> Job:
+    job.status = JobStatus.FAILED.value
+    job.error = message
+    job.completed_at = datetime.now(UTC)
+    await session.commit()
+    await session.refresh(job)
+    record_job_completion(
+        status=job.status, task_type=job.task_type, model=job.model_used or "",
+        client_app=client_name,
+    )
+    return job
+
+
+async def execute_judge_job(
+    *,
+    job: Job,
+    decision: RoutingDecision,
+    client: ClientApp,
+    providers: ProviderRegistry,
+    session: AsyncSession,
+) -> Job:
+    """Score the target named by job.inputs['target_job_id'] against the judge
+    task's rubric (its resolved prompt), using the routed model under the
+    rule's (deterministic) sampling. Stores the verdict on the judge job; if
+    inputs['apply_to_target'] is set, also appends the score to the target via
+    the normal quality-score lane (via='judge')."""
+    client_name = client.name
+    with _tracer.start_as_current_span("conduct.judge") as span:
+        span.set_attribute(_SPAN_JOB_ID, str(job.id))
+        span.set_attribute(_SPAN_TASK_TYPE, job.task_type)
+        started = perf_counter()
+
+        inputs = job.inputs or {}
+        mode = inputs.get("mode", "pointwise")
+        apply_to_target = bool(inputs.get("apply_to_target", False))
+        span.set_attribute("judge.mode", mode)
+
+        if mode != "pointwise":
+            return await _fail_judge(
+                job, session,
+                f"judge mode {mode!r} not supported (Phase 1 is pointwise only)",
+                client_name,
+            )
+
+        try:
+            target_id = UUID(str(inputs.get("target_job_id")))
+        except (ValueError, TypeError):
+            return await _fail_judge(
+                job, session,
+                f"target_job_id={inputs.get('target_job_id')!r} is not a valid UUID",
+                client_name,
+            )
+
+        resolved_target = await _resolve_judge_target(target_id, session)
+        target_prompt, target_response, target_sensitivity, target_kind = resolved_target
+        if target_prompt is None:
+            return await _fail_judge(
+                job, session, f"target_job_id={target_id}: not found", client_name
+            )
+
+        # Sensitivity guard: the judge sees the target's content, so the judge
+        # must have routed to a model at least as strict as the target requires.
+        # (The engine already vetted the judge's own sensitivity; this catches a
+        # judge job created looser than its target — e.g. a public judge over a
+        # confidential job, which could send that content to a cloud model.)
+        target_sens = Sensitivity(target_sensitivity)
+        if stricter(target_sens, decision.effective_sensitivity) != decision.effective_sensitivity:
+            return await _fail_judge(
+                job, session,
+                f"target is {target_sens.value} but the judge resolved to "
+                f"{decision.effective_sensitivity.value}; submit the judge job with "
+                f"sensitivity>={target_sens.value} so it routes to an allowed model",
+                client_name,
+            )
+
+        job.status = JobStatus.RUNNING.value
+        job.started_at = datetime.now(UTC)
+        job.model_requested = job.model_requested or decision.model
+        job.model_used = decision.model
+        await session.commit()
+
+        rubric, _resolved = await _resolve_prompt_for_job(job, client_name, session)
+        system_prompt = rubric + _JUDGE_OUTPUT_INSTRUCTION
+        user_prompt = (
+            f"ORIGINAL PROMPT:\n{target_prompt}\n\n"
+            f"RESPONSE TO EVALUATE:\n{target_response}\n\n"
+            "Score the response per the rubric."
+        )
+
+        temperature, seed = _sampling_for(decision, user_prompt, system_prompt)
+        try:
+            response = await _call_provider(
+                providers.get_for_client(client, decision.provider),
+                prompt=user_prompt,
+                model=decision.model,
+                system_prompt=system_prompt,
+                max_tokens=decision.max_tokens,
+                is_local=decision.provider == "ollama",
+                temperature=temperature,
+                seed=seed,
+            )
+        except ProviderError as e:
+            return await _fail_judge(job, session, f"judge provider error: {e}", client_name)
+
+        try:
+            score, rationale = _parse_judge_verdict(response.response)
+        except (ValueError, KeyError) as e:  # JSONDecodeError is a ValueError subclass
+            return await _fail_judge(
+                job, session, f"could not parse judge verdict: {e}", client_name
+            )
+
+        applied = False
+        if apply_to_target:
+            applied = (
+                await apply_score(
+                    session, target_id, score=score, reviewer=decision.model,
+                    note=rationale, via="judge",
+                )
+                is not None
+            )
+
+        job.status = JobStatus.COMPLETE.value
+        job.response = json.dumps({"score": score, "rationale": rationale})
+        job.model_used = response.model_used
+        job.tokens_in = response.tokens_in
+        job.tokens_out = response.tokens_out
+        job.cost_usd = response.cost_usd
+        job.latency_ms = response.latency_ms
+        job.completed_at = datetime.now(UTC)
+        job.job_metadata = {
+            **(job.job_metadata or {}),
+            "judge": {
+                "mode": mode,
+                "target_job_id": str(target_id),
+                "target_kind": target_kind,
+                "score": score,
+                "rationale": rationale,
+                "applied_to_target": applied,
+            },
+        }
+        await _bump_usage(session, job)
+        await session.commit()
+        await session.refresh(job)
+
+        span.set_attribute("judge.score", score)
+        span.set_attribute("judge.applied_to_target", applied)
+        record_job_completion(
+            status=job.status, task_type=job.task_type, model=job.model_used or "",
+            client_app=client_name, duration_s=perf_counter() - started,
+            tokens_in=job.tokens_in or 0, tokens_out=job.tokens_out or 0,
+            cost_usd=float(job.cost_usd or 0),
+        )
+        return job
+
+
 async def execute_media_job(
     *,
     job: Job,
@@ -401,8 +622,8 @@ async def execute_media_job(
     client_name = (await session.get(ClientApp, job.client_app_id)).name
 
     with _tracer.start_as_current_span("conduct.media_job") as span:
-        span.set_attribute("job.id", str(job.id))
-        span.set_attribute("job.task_type", job.task_type)
+        span.set_attribute(_SPAN_JOB_ID, str(job.id))
+        span.set_attribute(_SPAN_TASK_TYPE, job.task_type)
         span.set_attribute("job.client_app", client_name)
         span.set_attribute("media.kind", media_kind)
         span.set_attribute("media.provider", media_provider_name)

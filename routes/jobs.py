@@ -32,7 +32,7 @@ from providers.registry import ProviderRegistry, is_cloud
 from providers.resident import is_resident
 from rate_limit import rate_limited_client
 from routing.engine import RoutingDecision, SensitivityViolation, decide
-from worker.executor import execute_job
+from worker.executor import execute_job, is_judge_job
 from worker.queue import DEFAULT_JOB_TIMEOUT_S, get_queue, get_redis
 from worker.runner import run_job
 
@@ -145,6 +145,11 @@ def _should_enqueue(body: JobCreateIn, decision: RoutingDecision) -> bool:
     so the parallel calls land in one request."""
     if body.fanout:
         return False
+    # Judge jobs (they carry a target_job_id) always go async: the judge
+    # executor only lives on the worker path, so we must not let the sync path
+    # run them as a plain completion. See worker.executor.execute_judge_job.
+    if is_judge_job(body.inputs):
+        return True
     if body.is_async:
         return True
     if decision.provider != "ollama":
