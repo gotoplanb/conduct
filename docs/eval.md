@@ -4,6 +4,9 @@ Conduct's eval loop helps you answer "which model is best for this task?" using
 **real production traffic** — measuring not just quality but cost and latency,
 so you can pick the cheapest/fastest model that's good enough.
 
+> **Related:** [judging.md](judging.md) automates the scoring (LLM-as-a-judge);
+> [datasets.md](datasets.md) exports the scored data as SFT/DPO training JSONL.
+
 ## How it works
 
 ```

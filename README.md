@@ -93,6 +93,8 @@ Setup:
 - **[docs/observability.md](docs/observability.md)** — wiring Conduct into the Watchtower LGTM stack (traces, logs, metrics, dashboard)
 - **[docs/mcp-connector.md](docs/mcp-connector.md)** — the Claude custom connector: OAuth setup, minting a connector, connecting from the Claude apps
 - **[docs/eval.md](docs/eval.md)** — comparing models for a task: shadows, review/scoring, the rollup, picking a model
+- **[docs/judging.md](docs/judging.md)** — LLM-as-a-judge: pointwise / pairwise / panel automated evaluation
+- **[docs/datasets.md](docs/datasets.md)** — exporting scored traffic as SFT / DPO training JSONL
 - **[docs/prompts.md](docs/prompts.md)** — DB-backed prompts, resolution order, versioning, and the `conduct` CLI
 - **[docs/auth.md](docs/auth.md)** — client API keys, admin auth, sensitivity tiers, and rate limits
 - **[docs/tts.md](docs/tts.md)** — text-to-speech (Piper) for audiobook-style workloads

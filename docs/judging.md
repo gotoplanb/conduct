@@ -165,8 +165,8 @@ curl -s "$CONDUCT/datasets/sft?min_score=4&via=judge&include_shadows=true" -H "A
 ```
 
 Both stream JSONL (`{prompt, system, chosen, rejected, meta}` /
-`{prompt, system, completion, meta}`) ready for TRL/unsloth. Admin-only; see
-`routes/datasets.py`.
+`{prompt, system, completion, meta}`) ready for TRL/unsloth. Admin-only — full
+reference in [datasets.md](datasets.md).
 
 ## Safeguards (built in)
 
