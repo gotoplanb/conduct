@@ -158,6 +158,15 @@ def test_parse_judge_verdict_dimensions_missing_one_fails() -> None:
         _parse_judge_verdict('{"scores": {"correctness": 5}}', ["correctness", "format"])
 
 
+def test_parse_judge_verdict_dimensions_case_insensitive() -> None:
+    # Local models routinely re-case / pad the dimension keys; match anyway,
+    # and surface the result under the caller's requested casing.
+    text = '{"scores": {"Humor": 4, " Originality ": 5, "CLARITY": 3}, "rationale": "x"}'
+    score, dims, _ = _parse_judge_verdict(text, ["humor", "originality", "clarity"])
+    assert dims == {"humor": 4, "originality": 5, "clarity": 3}
+    assert score == 4  # round(mean(4,5,3))
+
+
 def test_parse_judge_verdict_rejects_out_of_range() -> None:
     with pytest.raises(ValueError, match="out of range"):
         _parse_judge_verdict('{"score": 9}')

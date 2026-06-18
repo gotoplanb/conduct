@@ -416,9 +416,15 @@ def _judge_output_instruction(dimensions: list[str] | None) -> str:
     if not dimensions:
         return _JUDGE_OUTPUT_INSTRUCTION
     fields = ", ".join(f'"{d}": <integer 1-5>' for d in dimensions)
+    names = ", ".join(dimensions)
+    # The rubric above may name its own criteria; the caller's dimensions
+    # override them. Be emphatic so the model uses these exact keys, not the
+    # rubric's, otherwise the verdict parser rejects the mismatch.
     return (
-        "\n\nScore the response on each of these dimensions, then return ONLY a "
-        "JSON object — no prose, no markdown fences — of the form:\n"
+        "\n\nIMPORTANT: ignore any criteria named above. Score the response on "
+        "EXACTLY these dimensions and no others: " + names + ".\n"
+        "Return ONLY a JSON object — no prose, no markdown fences — using these "
+        "exact keys:\n"
         '{"scores": {' + fields + '}, "rationale": "<one concise sentence>"}'
     )
 
@@ -448,9 +454,16 @@ def _parse_judge_verdict(
 
     if dimensions:
         raw = obj.get("scores") or {}
+        # Match dimension keys case-/whitespace-insensitively — local models
+        # routinely re-case ("Humor") or pad keys. We still require every
+        # requested dimension to be present (never invent a score).
+        folded = {str(k).strip().lower(): v for k, v in raw.items()}
         scores: dict[str, int] = {}
         for d in dimensions:
-            v = int(raw[d])  # KeyError if the model omitted a dimension
+            key = d.strip().lower()
+            if key not in folded:
+                raise KeyError(d)  # model omitted a requested dimension
+            v = int(folded[key])
             if not 1 <= v <= 5:
                 raise ValueError(f"dimension {d} score {v} out of range 1-5")
             scores[d] = v
@@ -708,7 +721,9 @@ async def _execute_pointwise_judge(
             score, dim_scores, rationale = _parse_judge_verdict(response.response, dimensions)
         except (ValueError, KeyError) as e:  # JSONDecodeError is a ValueError subclass
             return await _fail_judge(
-                job, session, f"could not parse judge verdict: {e}", client_name
+                job, session,
+                f"could not parse judge verdict: {e} | raw: {(response.response or '')[:300]!r}",
+                client_name,
             )
 
         applied = False
