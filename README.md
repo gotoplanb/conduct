@@ -4,6 +4,15 @@
 
 Multi-tenant LLM dispatch service. Routes AI workloads to local (Ollama) or cloud (Anthropic) models based on `task_type`, sensitivity, and availability. FastAPI + Postgres + Redis + RQ. See [SPEC.md](SPEC.md) for the design.
 
+## Two purposes
+
+Conduct has a deliberate dual nature:
+
+1. **Primary — a local research & evaluation platform on hardware you own.** This is the heart of the project: dispatch a task across many models, run shadow evals, judge outputs (pointwise/pairwise/panel), and drive flywheels like the code-generation eval loop — using local models and local toolchains. Some capabilities are **local-only by design** and never ship to the cloud (the code-gen build sandbox, SonarQube, etc.), the same way you keep a workbench, not a storefront.
+2. **Also — deployable to the cloud to serve user-invoked tasks.** The same routing + eval engine runs in the cloud (ECS Fargate + Bedrock) to handle real, user-facing task types. What deploys is the dispatch/routing/eval core; the local-only research tooling is intentionally left behind.
+
+So: the local install is where research happens; the cloud deploy is where user traffic is routed and evaluated. A capability being local-only (code generation, for now) is a feature of that split, not a limitation.
+
 ## Quickstart
 
 ```bash
