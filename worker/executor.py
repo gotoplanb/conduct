@@ -26,6 +26,8 @@ from opentelemetry.trace import Status, StatusCode
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from codegen.artifact import ArtifactError, build_cargo_artifact
+from config.settings import get_settings
 from eval.scoring import apply_pairwise_preference, apply_score
 from models.client import ClientApp, ClientAppUsage
 from models.job import Job
@@ -268,6 +270,35 @@ async def _try_fallback(
         )
 
 
+def _store_code_artifact(job: Job, job_span) -> None:
+    """If the job opted into a code artifact (``inputs.artifact == "cargo"``),
+    parse its response into a Cargo project and store it as a tarball (#23).
+
+    Malformed output is a **structured failure**: the job flips to FAILED with a
+    stable reason under ``metadata['artifact']`` — never a crash, mirroring the
+    judge parser's "never record a bogus result" stance. A plain text job
+    (no opt-in) is untouched."""
+    if (job.inputs or {}).get("artifact") != "cargo":
+        return
+    output_dir = getattr(get_settings(), "tts_output_dir", "/app/output")
+    try:
+        meta = build_cargo_artifact(job.response, job_id=job.id, output_dir=output_dir)
+    except ArtifactError as e:
+        job.status = JobStatus.FAILED.value
+        job.error = f"artifact: {e.reason}"
+        job.job_metadata = {
+            **(job.job_metadata or {}),
+            "artifact": {"error": e.reason, "detail": e.detail},
+        }
+        job_span.set_status(Status(StatusCode.ERROR, f"artifact: {e.reason}"))
+        job_span.set_attribute("artifact.error", e.reason)
+        return
+    job.media_url = meta["url"]
+    job.job_metadata = {**(job.job_metadata or {}), "artifact": meta}
+    job_span.set_attribute("artifact.format", meta["format"])
+    job_span.set_attribute("artifact.file_count", meta["file_count"])
+
+
 async def execute_job(
     *,
     job: Job,
@@ -358,6 +389,7 @@ async def execute_job(
             job.cost_usd = response.cost_usd
             job.latency_ms = response.latency_ms
             await _bump_usage(session, job)
+            _store_code_artifact(job, job_span)
         else:
             job.status = JobStatus.FAILED.value
             job.error = error_message

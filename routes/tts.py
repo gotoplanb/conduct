@@ -51,10 +51,12 @@ async def _admin_via_bearer_or_cookie(
 log = logging.getLogger(__name__)
 
 # UUID-shaped filenames only — keeps the output path-safe even if a future
-# refactor lets clients pass names. Today the worker generates them.
+# refactor lets clients pass names. Today the worker generates them. `.tar` is
+# the code-generation Cargo artifact (#23); `.mp3` is TTS.
 _OUTPUT_FILENAME = re.compile(
-    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.mp3$"
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.(mp3|tar)$"
 )
+_OUTPUT_MEDIA_TYPES = {".mp3": "audio/mpeg", ".tar": "application/x-tar"}
 
 tts_router = APIRouter(prefix="/tts", tags=["tts"])
 output_router = APIRouter(prefix="/output", tags=["tts"])
@@ -125,7 +127,8 @@ async def submit_tts(
 
 @output_router.get("/{filename}", dependencies=[Depends(_admin_via_bearer_or_cookie)])
 async def get_output(filename: str) -> FileResponse:
-    """Serve a generated MP3. Admin-auth — these are private outputs."""
+    """Serve a generated output file (TTS .mp3 or code-gen .tar). Admin-auth —
+    these are private outputs."""
     if not _OUTPUT_FILENAME.match(filename):
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "invalid filename")
     settings = get_settings()
@@ -139,7 +142,8 @@ async def get_output(filename: str) -> FileResponse:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "invalid path") from e
     if not file_path.is_file():
         raise HTTPException(status.HTTP_404_NOT_FOUND, "not found")
-    return FileResponse(file_path, media_type="audio/mpeg", filename=filename)
+    media_type = _OUTPUT_MEDIA_TYPES.get(file_path.suffix, "application/octet-stream")
+    return FileResponse(file_path, media_type=media_type, filename=filename)
 
 
 # Combined router for main.py to mount as one symbol.
