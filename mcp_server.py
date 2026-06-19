@@ -36,7 +36,7 @@ from prompt_loader import PromptNotFoundError
 from providers.registry import ProviderRegistry
 from providers.resident import is_resident
 from routing.engine import RoutingDecision, SensitivityViolation, decide
-from worker.executor import execute_job
+from worker.executor import execute_job, is_judge_job
 from worker.queue import DEFAULT_JOB_TIMEOUT_S, get_queue
 from worker.runner import run_job
 
@@ -134,6 +134,9 @@ def _job_detail(job: Job) -> dict[str, Any]:
         "cost_usd": float(job.cost_usd) if isinstance(job.cost_usd, Decimal) else job.cost_usd,
         "latency_ms": job.latency_ms,
         "completed_at": job.completed_at.isoformat() if job.completed_at else None,
+        # Echo the typed-input bag so clients can confirm what the server
+        # received (e.g. that a judge's target_job_id actually arrived).
+        "inputs": job.inputs or None,
         # Media tasks return URLs instead of text. Clients render audio/video
         # by fetching `media_url` from the API's /output handler; text tasks
         # leave it null.
@@ -299,14 +302,22 @@ async def create_job(
     eval shadow for THIS request regardless of the rule's sampling rate —
     useful when you specifically want a side-by-side model comparison.
 
-    `inputs` is the typed-input bag for media tasks. Reference upstream jobs
-    by id — the worker resolves each id to a local file via the upstream
-    job's `media_url`, so no HTTP round-trip is needed. Examples by task
-    kind: image→video: `{"source_image_job_id": "<image_job_uuid>"}`.
-    video+audio→mux: `{"source_video_job_id": "<video_job_uuid>",
-    "source_audio_job_id": "<music_job_uuid>"}`. Text tasks ignore it.
-    The legacy `source_<kind>_url` form is still accepted but deprecated and
-    logs a warning; migrate to `_job_id` refs."""
+    `inputs` is the typed-input bag. It flows through for any task type — most
+    text tasks ignore it, but two consumers rely on it:
+
+    - **judge** (`task_type="judge"`): `{"mode": "pointwise"|"pairwise"|"panel",
+      "target_job_id": "<job_or_shadow_uuid>", "apply_to_target": true,
+      "dimensions": [...]}`. Carrying a `target_job_id` marks the job a judge —
+      it runs the judge executor on the async worker (status=pending, poll
+      get_job), not a plain inline completion. See judging.md.
+    - **media** (image/video/audio/mux): reference upstream jobs by id — the
+      worker resolves each id to a local file via the upstream job's
+      `media_url`, no HTTP round-trip. image→video:
+      `{"source_image_job_id": "<image_job_uuid>"}`. video+audio→mux:
+      `{"source_video_job_id": "<vid>", "source_audio_job_id": "<music>"}`.
+      The legacy `source_<kind>_url` form still works but is deprecated.
+
+    `get_job` echoes the stored `inputs` back so you can confirm what arrived."""
     client_app_id = _client_app_id()
     settings = get_settings()
     inputs = inputs or {}
@@ -371,7 +382,16 @@ async def create_job(
         job_id = str(job.id)
 
         registry = _provider_registry
-        if _sync_eligible(decision) and registry is not None and registry.has(decision.provider):
+        # Judge jobs (they carry a target_job_id) must go async: the judge
+        # executor only lives on the worker path. Running them inline would
+        # treat the bare rubric as a plain completion. Mirrors routes/jobs.py's
+        # _should_enqueue. See worker.executor.execute_judge_job.
+        if (
+            not is_judge_job(inputs)
+            and _sync_eligible(decision)
+            and registry is not None
+            and registry.has(decision.provider)
+        ):
             # Run inline (cloud or resident-local model) and return the answer
             # in one call. Eval shadows still fan out async afterward.
             try:

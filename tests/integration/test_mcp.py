@@ -412,6 +412,44 @@ async def test_create_job_async_when_not_sync_eligible(
     assert len(fake_queue.calls) == 1
 
 
+async def test_create_judge_job_always_enqueues_async(
+    db_session, seeded_client, task_type, mcp_sessionmaker, sync_registry, fake_queue, monkeypatch
+) -> None:
+    # Regression for #19: a judge job (inputs carry a target_job_id) must run on
+    # the worker even when the routed model is sync-eligible (resident) — the
+    # judge executor only lives on the async path. Running inline would treat
+    # the bare rubric as a plain completion.
+    monkeypatch.setattr(mcp_server, "is_resident", lambda m: True)
+    target = await _add_job(db_session, client_id=seeded_client[0].id, task_type=task_type)
+    # Judge-ness comes from inputs.target_job_id, not the task_type literal, so
+    # the per-test task_type keeps us off the seeded shared judge config.
+    db_session.add(
+        RoutingRule(
+            task_type=task_type,
+            preferred_model="gemma4:e4b",
+            fallback_model="gemma4:e4b",
+            sensitivity="internal",
+            sampling="deterministic",
+        )
+    )
+    db_session.add(Prompt(task_type=task_type, client_id=None, content="be a judge"))
+    await db_session.commit()
+
+    with principal(seeded_client[0]):
+        out = await create_job(
+            task_type=task_type,
+            prompt="(judge)",
+            inputs={"mode": "pointwise", "target_job_id": str(target.id)},
+        )
+
+    # Queued, not run inline — and the typed inputs are echoed back on get_job.
+    assert out["status"] == JobStatus.PENDING.value
+    assert len(fake_queue.calls) == 1
+    with principal(seeded_client[0]):
+        detail = await get_job(out["job_id"])
+    assert detail["inputs"]["target_job_id"] == str(target.id)
+
+
 # --- OAuth ASGI middleware ---
 
 
