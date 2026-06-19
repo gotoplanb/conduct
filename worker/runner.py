@@ -26,7 +26,12 @@ from providers.ollama import OllamaProvider
 from providers.registry import ProviderRegistry
 from routing.engine import SensitivityViolation, decide
 from worker.db import get_worker_session_maker
-from worker.executor import execute_job, execute_judge_job, is_judge_job
+from worker.executor import (
+    execute_code_eval_job,
+    execute_job,
+    execute_judge_job,
+    is_judge_job,
+)
 
 log = logging.getLogger(__name__)
 _tracer = get_tracer(__name__)
@@ -249,6 +254,16 @@ async def _run_async(job_id: UUID) -> None:
                 # Media tasks don't fan out eval shadows (yet) — comparing
                 # generated videos is a different problem from comparing
                 # text completions, and it's out of scope for this branch.
+                return
+
+            # code_eval branch: a deterministic evaluator that ships a target
+            # code_generation job's artifact to the local rust-build sandbox.
+            # No model, no routing — branch before decide() like media/tts.
+            if job.task_type == "code_eval":
+                await execute_code_eval_job(
+                    job=job, client=client, session=session
+                )
+                dispatch_span.set_attribute(_DISPATCH_OUTCOME, "code_eval_executed")
                 return
 
             decision = await _decide_or_fail(

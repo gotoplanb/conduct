@@ -50,17 +50,20 @@ async def test_build_sends_base64_tar_and_commands() -> None:
 
 async def test_compile_summary_failure_surfaces_errors() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
+        # Realistic cargo --message-format=short: path-prefixed diagnostics.
         return httpx.Response(200, json={"results": {"check": {
             "exit": 101, "timed_out": False, "ms": 800,
-            "stdout": "", "stderr": "error[E0308]: mismatched types\nwarning: unused var\n",
+            "stdout": "",
+            "stderr": "src/lib.rs:2:21: error[E0308]: mismatched types\n"
+                      "src/lib.rs:5: warning: unused variable: `x`\n",
         }}})
 
     report = await _client(handler).build(b"t", ["check"])
     assert report.compiled is False
     summary = compile_summary(report)
     assert summary["success"] is False
-    assert summary["errors"] == ["error[E0308]: mismatched types"]
-    assert summary["warnings"] == ["warning: unused var"]
+    assert summary["errors"] == ["src/lib.rs:2:21: error[E0308]: mismatched types"]
+    assert summary["warnings"] == ["src/lib.rs:5: warning: unused variable: `x`"]
     assert summary["timing_ms"] == 800
 
 

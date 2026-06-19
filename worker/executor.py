@@ -19,6 +19,7 @@ import re
 import statistics
 from datetime import UTC, date, datetime
 from decimal import Decimal
+from pathlib import Path
 from time import perf_counter
 from uuid import UUID
 
@@ -27,6 +28,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from codegen.artifact import ArtifactError, build_cargo_artifact
+from codegen.build_client import BuildServiceError, RustBuildClient, compile_summary
 from config.settings import get_settings
 from eval.scoring import apply_pairwise_preference, apply_score
 from models.client import ClientApp, ClientAppUsage
@@ -54,6 +56,7 @@ _default_failure_handler: FailureHandler = StaticFailureHandler()
 _SPAN_MODEL_USED = "model.used"
 _SPAN_JOB_ID = "job.id"
 _SPAN_TASK_TYPE = "job.task_type"
+_SPAN_CLIENT_APP = "job.client_app"
 _SPAN_JUDGE = "conduct.judge"
 _SPAN_JUDGE_MODE = "judge.mode"
 
@@ -314,7 +317,7 @@ async def execute_job(
         job_span.set_attribute(_SPAN_JOB_ID, str(job.id))
         job_span.set_attribute(_SPAN_TASK_TYPE, job.task_type)
         job_span.set_attribute("job.sensitivity", job.sensitivity)
-        job_span.set_attribute("job.client_app", client_name)
+        job_span.set_attribute(_SPAN_CLIENT_APP, client_name)
         job_span.set_attribute("job.priority", job.priority)
         job_span.set_attribute("model.requested", job.model_requested or "")
         job_span.set_attribute("routing.reason", decision.reason)
@@ -1125,6 +1128,110 @@ async def _execute_panel_judge(
         return job
 
 
+# --- code_eval: deterministic compile/test gate (P1.3, #25) ----------------
+
+_VIA_CODE_EVAL = "code-eval"
+# The compile dimension is binary; map onto the 1-5 quality lane so it rolls up
+# alongside human/judge scores (#18). Pass -> 5, fail -> 1.
+_COMPILE_PASS = 5
+_COMPILE_FAIL = 1
+
+
+def _resolve_code_eval_target(target: Job | None, output_dir: str) -> Path:
+    """Locate a target code_generation job's stored artifact tarball (#23) on
+    the shared output dir. Raises ValueError with a clear reason on any miss."""
+    if target is None:
+        raise ValueError("target job not found")
+    artifact = (target.job_metadata or {}).get("artifact") or {}
+    if not target.media_url or not artifact.get("url"):
+        raise ValueError(f"target {target.id} has no code artifact")
+    tar_path = Path(output_dir) / Path(target.media_url).name
+    if not tar_path.is_file():
+        raise ValueError(f"artifact file missing at {tar_path}")
+    return tar_path
+
+
+async def execute_code_eval_job(
+    *, job: Job, client: ClientApp, session: AsyncSession,
+    build_client: RustBuildClient | None = None,
+) -> Job:
+    """Deterministic code evaluator (#25). Mirrors the judge as a submittable
+    primitive — carries a `target_job_id`, runs async, writes back to the target
+    only on `apply_to_target` — but needs **no model**: it ships the target's
+    Cargo artifact to Watchtower's rust-build sandbox and records a `compile`
+    dimension under a distinct `via="code-eval"` so deterministic truth never
+    mixes with probabilistic LLM-judge scores."""
+    client_name = client.name
+    inputs = job.inputs or {}
+    apply_to_target = bool(inputs.get("apply_to_target"))
+    commands = inputs.get("commands") or ["check"]
+    job.model_used = _VIA_CODE_EVAL  # attribution for failed-job analytics
+
+    with _tracer.start_as_current_span("conduct.code_eval") as span:
+        span.set_attribute(_SPAN_JOB_ID, str(job.id))
+        span.set_attribute(_SPAN_TASK_TYPE, job.task_type)
+        span.set_attribute(_SPAN_CLIENT_APP, client_name)
+
+        try:
+            target_id = UUID(str(inputs.get("target_job_id")))
+        except (TypeError, ValueError):
+            return await _fail_judge(
+                job, session, f"code_eval: invalid target_job_id {inputs.get('target_job_id')!r}",
+                client_name,
+            )
+        settings = get_settings()
+        target = await session.get(Job, target_id)
+        try:
+            tar_path = _resolve_code_eval_target(target, settings.tts_output_dir)
+        except ValueError as e:
+            return await _fail_judge(job, session, f"code_eval: {e}", client_name)
+
+        job.status = JobStatus.RUNNING.value
+        job.started_at = datetime.now(UTC)
+        await session.commit()
+
+        bc = build_client or RustBuildClient(settings.rust_build_url)
+        started = perf_counter()
+        try:
+            report = await bc.build(tar_path.read_bytes(), commands)
+        except BuildServiceError as e:
+            return await _fail_judge(job, session, f"code_eval: {e}", client_name)
+
+        summary = compile_summary(report)
+        compile_score = _COMPILE_PASS if summary["success"] else _COMPILE_FAIL
+
+        applied = False
+        if apply_to_target:
+            note = "compiled" if summary["success"] else "; ".join(summary["errors"])[:300]
+            applied = (
+                await apply_score(
+                    session, target_id, scores={"compile": compile_score},
+                    reviewer=_VIA_CODE_EVAL, note=note, via=_VIA_CODE_EVAL,
+                )
+                is not None
+            )
+
+        verdict = {
+            "mode": "code_eval", "target_job_id": str(target_id), "commands": commands,
+            "compile": summary, "dimensions": {"compile": compile_score},
+            "applied_to_target": applied,
+        }
+        job.response = json.dumps(verdict)
+        job.job_metadata = {**(job.job_metadata or {}), "code_eval": verdict}
+        job.status = JobStatus.COMPLETE.value
+        job.completed_at = datetime.now(UTC)
+        job.latency_ms = int((perf_counter() - started) * 1000)
+        span.set_attribute("code_eval.compile_success", summary["success"])
+        span.set_attribute("code_eval.applied_to_target", applied)
+        await session.commit()
+        await session.refresh(job)
+        record_job_completion(
+            status=job.status, task_type=job.task_type, model=_VIA_CODE_EVAL,
+            client_app=client_name,
+        )
+        return job
+
+
 async def execute_media_job(
     *,
     job: Job,
@@ -1156,7 +1263,7 @@ async def execute_media_job(
     with _tracer.start_as_current_span("conduct.media_job") as span:
         span.set_attribute(_SPAN_JOB_ID, str(job.id))
         span.set_attribute(_SPAN_TASK_TYPE, job.task_type)
-        span.set_attribute("job.client_app", client_name)
+        span.set_attribute(_SPAN_CLIENT_APP, client_name)
         span.set_attribute("media.kind", media_kind)
         span.set_attribute("media.provider", media_provider_name)
         span.set_attribute("media.workflow_template", workflow_template or "")

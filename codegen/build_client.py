@@ -117,13 +117,19 @@ def _parse_report(body: dict) -> BuildReport:
 
 
 def _split_cargo_diagnostics(stderr: str) -> tuple[list[str], list[str]]:
-    """Split `cargo --message-format=short` stderr into error / warning lines."""
+    """Split `cargo --message-format=short` stderr into error / warning lines.
+
+    The short format prefixes the path, e.g. `src/lib.rs:2:21: error[E0308]: ...`
+    and `src/lib.rs:5: warning: ...`, plus bare summary lines like
+    `error: could not compile ...` — so match the diagnostic token anywhere,
+    not just at line start."""
     errors, warnings = [], []
     for line in stderr.splitlines():
         s = line.strip()
-        if s.startswith("error"):
+        low = s.lower()
+        if low.startswith("error") or "error[" in low or ": error" in low:
             errors.append(s)
-        elif s.startswith("warning"):
+        elif low.startswith("warning") or ": warning" in low or "warning:" in low:
             warnings.append(s)
     return errors, warnings
 
