@@ -414,6 +414,15 @@ async def test_pairwise_position_bias_yields_tie(
     assert meta["position_consistent"] is False
     assert meta["chosen_job_id"] is None
     assert meta["applied_to_target"] is False
+
+    # #20: the stored response must distinguish a true tie from a position flip
+    # and carry both swap rationales — not just {chosen, rejected, tie}.
+    import json as _json
+    resp = _json.loads(out.response)
+    assert resp["mode"] == "pairwise"
+    assert resp["tie"] is True and resp["position_consistent"] is False
+    assert resp["rationale_ab"] == "first one" and resp["rationale_ba"] == "first one"
+    assert resp["applied_to_target"] is False
     await db_session.refresh(a)
     assert (a.job_metadata or {}).get("pairwise_verdicts", []) == []
 
@@ -556,6 +565,16 @@ async def test_panel_skips_failed_juror(db_session: AsyncSession, seeded_client)
     assert meta["n"] == 2  # one of three failed
     assert len(meta["failures"]) == 1
     assert meta["score"] == 4  # median(5, 3)
+
+    # #20: the stored response (what get_job surfaces) must carry the full
+    # diagnostic shape so a juror drop is visible without metadata access.
+    import json as _json
+    resp = _json.loads(out.response)
+    assert resp["mode"] == "panel"
+    assert resp["n"] == 2 and resp["spread"] == 2
+    assert len(resp["failures"]) == 1
+    assert {p["model"] for p in resp["panelists"]} == {"llama3.2:3b", "mistral-small3.2"}
+    assert "excluded" in resp and "applied_to_target" in resp
 
 
 async def test_panel_empty_after_exclusion_fails(

@@ -736,13 +736,18 @@ async def _execute_pointwise_judge(
                 is not None
             )
 
-        job.response = json.dumps({"score": score, "scores": dim_scores, "rationale": rationale})
+        # Self-contained verdict (carries mode + applied_to_target) in both the
+        # response and metadata.judge, so a JSONL reader needn't cross-reference
+        # inputs to know what it's parsing (#20).
+        verdict = {
+            "mode": "pointwise", "score": score, "scores": dim_scores,
+            "rationale": rationale, "applied_to_target": applied,
+        }
+        job.response = json.dumps(verdict)
         job.job_metadata = {
             **(job.job_metadata or {}),
             "judge": {
-                "mode": "pointwise", "target_job_id": str(target_id),
-                "target_kind": target_kind, "score": score, "scores": dim_scores,
-                "rationale": rationale, "applied_to_target": applied,
+                **verdict, "target_job_id": str(target_id), "target_kind": target_kind,
             },
         }
         span.set_attribute("judge.score", score)
@@ -827,20 +832,22 @@ async def _execute_pairwise_judge(
             )
             applied = True
 
-        job.response = json.dumps({
+        # Full verdict in BOTH response and metadata.judge so a reader of the
+        # stored response can tell a true tie from a position flip, and read the
+        # two swap rationales (#20). metadata adds the target/against id+kind.
+        verdict = {
+            "mode": "pairwise",
             "chosen_job_id": str(chosen) if chosen else None,
             "rejected_job_id": str(rejected) if rejected else None,
-            "tie": tie,
-        })
+            "tie": tie, "position_consistent": consistent,
+            "rationale_ab": rat1, "rationale_ba": rat2, "applied_to_target": applied,
+        }
+        job.response = json.dumps(verdict)
         job.job_metadata = {
             **(job.job_metadata or {}),
             "judge": {
-                "mode": "pairwise", "target_job_id": str(target_id),
-                "against_job_id": str(against_id), "target_kind": tkind, "against_kind": akind,
-                "chosen_job_id": str(chosen) if chosen else None,
-                "rejected_job_id": str(rejected) if rejected else None,
-                "tie": tie, "position_consistent": consistent,
-                "rationale_ab": rat1, "rationale_ba": rat2, "applied_to_target": applied,
+                **verdict, "target_job_id": str(target_id), "against_job_id": str(against_id),
+                "target_kind": tkind, "against_kind": akind,
             },
         }
         span.set_attribute("judge.tie", tie)
@@ -1063,18 +1070,20 @@ async def _execute_panel_judge(
                 is not None
             )
 
-        job.response = json.dumps({
-            "score": agg["score"], "dimensions": agg.get("dimensions"),
-            "n": agg["n"], "disagreement": agg["disagreement"],
-        })
+        # One full verdict, written to BOTH response and metadata.judge so a
+        # downstream reader of the stored response can see why a juror dropped
+        # (#20) — panelists/failures/excluded/spread, not just the median.
+        verdict = {
+            "mode": "panel", "score": agg["score"], "dimensions": agg.get("dimensions"),
+            "n": agg["n"], "spread": agg["spread"], "disagreement": agg["disagreement"],
+            "panelists": scored, "failures": failures, "excluded": excluded,
+            "applied_to_target": applied,
+        }
+        job.response = json.dumps(verdict)
         job.job_metadata = {
             **(job.job_metadata or {}),
             "judge": {
-                "mode": "panel", "target_job_id": str(target_id), "target_kind": target_kind,
-                "score": agg["score"], "dimensions": agg.get("dimensions"),
-                "n": agg["n"], "spread": agg["spread"], "disagreement": agg["disagreement"],
-                "panelists": scored, "failures": failures, "excluded": excluded,
-                "applied_to_target": applied,
+                **verdict, "target_job_id": str(target_id), "target_kind": target_kind,
             },
         }
         span.set_attribute("judge.score", agg["score"])
