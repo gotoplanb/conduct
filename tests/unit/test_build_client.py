@@ -13,10 +13,20 @@ import httpx
 import pytest
 
 from codegen.build_client import (
+    BuildReport,
     BuildServiceError,
+    CommandResult,
     RustBuildClient,
     compile_summary,
+    counterexample,
+    summarize_tests,
 )
+
+
+def _test_report(stdout="", stderr="", exit_code=0, timed_out=False) -> BuildReport:
+    return BuildReport(results={
+        "test": CommandResult("test", exit_code, timed_out, 5, stdout, stderr),
+    })
 
 
 def _client(handler) -> RustBuildClient:
@@ -103,3 +113,66 @@ async def test_compile_summary_no_compile_command() -> None:
     summary = compile_summary(await _client(handler).build(b"t", ["clippy"]))
     assert summary["success"] is False
     assert "no compile command" in summary["errors"][0]
+
+
+async def test_build_sends_overlay_and_test_target() -> None:
+    seen: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.update(json.loads(request.content))
+        return httpx.Response(200, json={"results": {}})
+
+    await _client(handler).build(
+        b"t", ["test"], overlay_files={"tests/golden.rs": "..."}, test_target="golden"
+    )
+    assert seen["overlay_files"] == {"tests/golden.rs": "..."}
+    assert seen["test_target"] == "golden"
+
+
+# --- test_summary / counterexample (#26) -----------------------------------
+
+
+def test_test_summary_all_pass() -> None:
+    r = _test_report("test result: ok. 3 passed; 0 failed; 0 ignored; finished in 0.0s")
+    s = summarize_tests(r)
+    assert s["passed"] == 3 and s["failed"] == 0 and s["total"] == 3
+    assert s["pass_rate"] == 1.0 and s["ok"] is True
+
+
+def test_test_summary_some_fail() -> None:
+    r = _test_report("test result: FAILED. 1 passed; 2 failed; 0 ignored", exit_code=101)
+    s = summarize_tests(r)
+    assert s["passed"] == 1 and s["failed"] == 2 and s["total"] == 3
+    assert s["pass_rate"] == round(1 / 3, 4) and s["ok"] is False
+
+
+def test_test_summary_sums_multiple_result_lines() -> None:
+    r = _test_report(
+        "test result: ok. 2 passed; 0 failed; 0 ignored\n"
+        "test result: ok. 1 passed; 0 failed; 0 ignored"
+    )
+    s = summarize_tests(r)
+    assert s["passed"] == 3 and s["total"] == 3 and s["ok"] is True
+
+
+def test_test_summary_compile_failure_zero_total() -> None:
+    # A test binary that won't compile: nonzero exit, no result line.
+    r = _test_report("", "error[E0425]: cannot find value", exit_code=101)
+    s = summarize_tests(r)
+    assert s["total"] == 0 and s["ok"] is False
+
+
+def test_test_summary_timeout() -> None:
+    s = summarize_tests(_test_report(timed_out=True))
+    assert s["timed_out"] is True and s["ok"] is False
+
+
+def test_counterexample_extracted() -> None:
+    r = _test_report(
+        "test result: FAILED. 0 passed; 1 failed\nminimal failing input: n = 0\n"
+    )
+    assert counterexample(r) == "n = 0"
+
+
+def test_counterexample_absent() -> None:
+    assert counterexample(_test_report("test result: ok. 1 passed; 0 failed")) is None

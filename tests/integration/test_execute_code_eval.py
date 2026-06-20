@@ -44,6 +44,26 @@ def _report(exit_code: int, stderr: str = "") -> BuildReport:
     })
 
 
+class _ScriptedBuild:
+    """Returns the compile report for a `check`/`build`, and a per-test-target
+    report for a `test` run — so suite scoring can be driven deterministically."""
+
+    def __init__(self, compile_report: BuildReport, test_reports: dict | None = None) -> None:
+        self._compile = compile_report
+        self._tests = test_reports or {}
+        self.calls: list = []
+
+    async def build(self, tar_bytes, commands, *, overlay_files=None, test_target=None, **_kw):
+        self.calls.append((commands, test_target))
+        if "test" in commands:
+            return self._tests[test_target]
+        return self._compile
+
+
+def _test_report(stdout: str, exit_code: int = 0) -> BuildReport:
+    return BuildReport(results={"test": CommandResult("test", exit_code, False, 8, stdout, "")})
+
+
 async def _seed_target(db, client_id, tmp_path) -> Job:
     job = Job(
         client_app_id=client_id, task_type="code_generation", sensitivity="internal",
@@ -161,6 +181,73 @@ async def test_missing_target_fails_loudly(
     )
     assert out.status == JobStatus.FAILED.value
     assert "not found" in out.error
+
+
+async def test_golden_and_property_suites_record_independent_dimensions(
+    db_session: AsyncSession, seeded_client, tmp_path, monkeypatch
+) -> None:
+    _point_output_dir(monkeypatch, tmp_path)
+    client = seeded_client[0]
+    target = await _seed_target(db_session, client.id, tmp_path)
+    ce = await _seed_code_eval(db_session, client.id, target.id, apply_to_target=True)
+    ce.inputs = {
+        **ce.inputs,
+        "suites": [
+            {"dimension": "golden", "files": {"tests/golden.rs": "#[test] fn g(){}"}},
+            {"dimension": "property", "property": True,
+             "files": {"tests/props.rs": "// proptest"}},
+        ],
+    }
+    await db_session.commit()
+
+    scripted = _ScriptedBuild(
+        _report(0),  # compiles
+        {
+            "golden": _test_report("test result: ok. 4 passed; 0 failed; 0 ignored"),
+            "props": _test_report(
+                "test result: FAILED. 0 passed; 1 failed\nminimal failing input: n = 0",
+                exit_code=101,
+            ),
+        },
+    )
+    out = await execute_code_eval_job(
+        job=ce, client=client, session=db_session, build_client=scripted,
+    )
+
+    verdict = json.loads(out.response)
+    # compile + golden (all pass -> 5) + property (all fail -> 1), independent.
+    assert verdict["dimensions"] == {"compile": 5, "golden": 5, "property": 1}
+    assert verdict["suites"]["golden"]["pass_rate"] == 1.0
+    assert verdict["suites"]["property"]["counterexample"] == "n = 0"
+
+    await db_session.refresh(target)
+    qs = (target.job_metadata or {}).get("quality_scores") or []
+    assert qs[-1]["scores"] == {"compile": 5, "golden": 5, "property": 1}
+    assert qs[-1]["via"] == "code-eval"
+
+
+async def test_suites_skipped_when_compile_fails(
+    db_session: AsyncSession, seeded_client, tmp_path, monkeypatch
+) -> None:
+    _point_output_dir(monkeypatch, tmp_path)
+    client = seeded_client[0]
+    target = await _seed_target(db_session, client.id, tmp_path)
+    ce = await _seed_code_eval(db_session, client.id, target.id, apply_to_target=True)
+    ce.inputs = {
+        **ce.inputs,
+        "suites": [{"dimension": "golden", "files": {"tests/golden.rs": "x"}}],
+    }
+    await db_session.commit()
+
+    # Compile fails -> no test runs; only the compile dimension is recorded.
+    scripted = _ScriptedBuild(_report(101, "error[E0308]: boom"), {})
+    out = await execute_code_eval_job(
+        job=ce, client=client, session=db_session, build_client=scripted,
+    )
+    verdict = json.loads(out.response)
+    assert verdict["dimensions"] == {"compile": 1}
+    assert verdict["suites"] == {}
+    assert all("test" not in cmds for cmds, _ in scripted.calls)
 
 
 async def test_build_service_error_fails_loudly(

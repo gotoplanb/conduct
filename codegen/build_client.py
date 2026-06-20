@@ -20,6 +20,7 @@ service implements:
 from __future__ import annotations
 
 import base64
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -76,7 +77,8 @@ class RustBuildClient:
         self._transport = transport
 
     async def build(
-        self, tar_bytes: bytes, commands: list[str], *, timeout_s: int | None = None
+        self, tar_bytes: bytes, commands: list[str], *, timeout_s: int | None = None,
+        overlay_files: dict | None = None, test_target: str | None = None,
     ) -> BuildReport:
         payload: dict = {
             "project_tar_b64": base64.b64encode(tar_bytes).decode(),
@@ -84,6 +86,10 @@ class RustBuildClient:
         }
         if timeout_s is not None:
             payload["timeout_s"] = timeout_s
+        if overlay_files:
+            payload["overlay_files"] = overlay_files
+        if test_target:
+            payload["test_target"] = test_target
         try:
             async with httpx.AsyncClient(
                 base_url=self._base, timeout=self._timeout_s, transport=self._transport
@@ -132,6 +138,44 @@ def _split_cargo_diagnostics(stderr: str) -> tuple[list[str], list[str]]:
         elif low.startswith("warning") or ": warning" in low or "warning:" in low:
             warnings.append(s)
     return errors, warnings
+
+
+_TEST_RESULT_RE = re.compile(r"test result:\s+\w+\.\s+(\d+)\s+passed;\s+(\d+)\s+failed")
+_COUNTEREX_RE = re.compile(r"minimal failing input:\s*(.+)")
+
+
+def summarize_tests(report: BuildReport, command: str = "test") -> dict:
+    """Parse `cargo test` output into a pass-rate (#26). Sums all `test result:`
+    lines (a run can have several). `ok` requires a clean exit with >0 tests and
+    no failures; a test binary that won't compile yields total=0 → not ok."""
+    r = report.results.get(command)
+    if r is None:
+        return {"ran": False, "passed": 0, "failed": 0, "total": 0,
+                "pass_rate": 0.0, "ok": False, "timed_out": False}
+    if r.timed_out:
+        return {"ran": True, "passed": 0, "failed": 0, "total": 0,
+                "pass_rate": 0.0, "ok": False, "timed_out": True}
+    text = f"{r.stdout}\n{r.stderr}"
+    passed = failed = 0
+    for m in _TEST_RESULT_RE.finditer(text):
+        passed += int(m.group(1))
+        failed += int(m.group(2))
+    total = passed + failed
+    return {
+        "ran": True, "passed": passed, "failed": failed, "total": total,
+        "pass_rate": round(passed / total, 4) if total else 0.0,
+        "ok": r.exit_code == 0 and failed == 0 and total > 0,
+        "timed_out": False,
+    }
+
+
+def counterexample(report: BuildReport, command: str = "test") -> str | None:
+    """The proptest minimized failing input, if present in the test output."""
+    r = report.results.get(command)
+    if r is None:
+        return None
+    m = _COUNTEREX_RE.search(f"{r.stdout}\n{r.stderr}")
+    return m.group(1).strip() if m else None
 
 
 def compile_summary(report: BuildReport) -> dict:

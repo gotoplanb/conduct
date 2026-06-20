@@ -28,7 +28,13 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from codegen.artifact import ArtifactError, build_cargo_artifact
-from codegen.build_client import BuildServiceError, RustBuildClient, compile_summary
+from codegen.build_client import (
+    BuildServiceError,
+    RustBuildClient,
+    compile_summary,
+    counterexample,
+    summarize_tests,
+)
 from config.settings import get_settings
 from eval.scoring import apply_pairwise_preference, apply_score
 from models.client import ClientApp, ClientAppUsage
@@ -1151,6 +1157,62 @@ def _resolve_code_eval_target(target: Job | None, output_dir: str) -> Path:
     return tar_path
 
 
+def _rate_to_score(rate: float) -> int:
+    """Map a test pass-rate [0,1] onto the 1-5 quality lane: 0->1 ... 1.0->5."""
+    return max(1, min(5, round(1 + 4 * rate)))
+
+
+def _suite_test_target(files: dict) -> str | None:
+    """Derive the cargo integration-test target from a suite's single
+    tests/<name>.rs file, so its pass-rate is measured in isolation."""
+    stems = [Path(p).stem for p in files if p.startswith("tests/") and p.endswith(".rs")]
+    return stems[0] if len(stems) == 1 else None
+
+
+async def _run_suite(
+    bc: RustBuildClient, tar_bytes: bytes, suite: dict
+) -> tuple[str, int, dict]:
+    """Run one harness-authored suite (overlay its files, `cargo test` the
+    target) and return (dimension, score, detail). Property suites capture the
+    proptest counterexample on failure."""
+    dim = str(suite.get("dimension") or "tests")
+    files = suite.get("files") or {}
+    report = await bc.build(
+        tar_bytes, ["test"], overlay_files=files, test_target=_suite_test_target(files)
+    )
+    summ = summarize_tests(report, "test")
+    score = _rate_to_score(summ["pass_rate"]) if summ["total"] else _COMPILE_FAIL
+    detail = {k: summ[k] for k in ("passed", "failed", "total", "pass_rate", "ok", "timed_out")}
+    if suite.get("property") and not summ["ok"]:
+        ce = counterexample(report, "test")
+        if ce:
+            detail["counterexample"] = ce
+    return dim, score, detail
+
+
+async def _run_code_eval_builds(
+    bc: RustBuildClient, tar_bytes: bytes, commands: list[str], inputs: dict
+) -> tuple[dict, dict, dict]:
+    """Run the compile gate, then each harness suite (only if it compiled —
+    `cargo test` would just re-fail to compile otherwise). Returns
+    (compile_summary, dimensions, suites_detail)."""
+    summary = compile_summary(await bc.build(tar_bytes, commands))
+    dimensions = {"compile": _COMPILE_PASS if summary["success"] else _COMPILE_FAIL}
+    suites_detail: dict[str, dict] = {}
+    if summary["success"]:
+        for suite in inputs.get("suites") or []:
+            dim, score, detail = await _run_suite(bc, tar_bytes, suite)
+            dimensions[dim] = score
+            suites_detail[dim] = detail
+    return summary, dimensions, suites_detail
+
+
+def _code_eval_note(summary: dict, suites: dict) -> str:
+    parts = ["compiled" if summary["success"] else "compile failed"]
+    parts += [f"{dim} {d['passed']}/{d['total']}" for dim, d in suites.items()]
+    return "; ".join(parts)[:300]
+
+
 async def execute_code_eval_job(
     *, job: Job, client: ClientApp, session: AsyncSession,
     build_client: RustBuildClient | None = None,
@@ -1193,27 +1255,25 @@ async def execute_code_eval_job(
         bc = build_client or RustBuildClient(settings.rust_build_url)
         started = perf_counter()
         try:
-            report = await bc.build(tar_path.read_bytes(), commands)
+            summary, dimensions, suites_detail = await _run_code_eval_builds(
+                bc, tar_path.read_bytes(), commands, inputs
+            )
         except BuildServiceError as e:
             return await _fail_judge(job, session, f"code_eval: {e}", client_name)
 
-        summary = compile_summary(report)
-        compile_score = _COMPILE_PASS if summary["success"] else _COMPILE_FAIL
-
         applied = False
         if apply_to_target:
-            note = "compiled" if summary["success"] else "; ".join(summary["errors"])[:300]
             applied = (
                 await apply_score(
-                    session, target_id, scores={"compile": compile_score},
-                    reviewer=_VIA_CODE_EVAL, note=note, via=_VIA_CODE_EVAL,
+                    session, target_id, scores=dimensions, reviewer=_VIA_CODE_EVAL,
+                    note=_code_eval_note(summary, suites_detail), via=_VIA_CODE_EVAL,
                 )
                 is not None
             )
 
         verdict = {
             "mode": "code_eval", "target_job_id": str(target_id), "commands": commands,
-            "compile": summary, "dimensions": {"compile": compile_score},
+            "compile": summary, "suites": suites_detail, "dimensions": dimensions,
             "applied_to_target": applied,
         }
         job.response = json.dumps(verdict)
@@ -1222,6 +1282,7 @@ async def execute_code_eval_job(
         job.completed_at = datetime.now(UTC)
         job.latency_ms = int((perf_counter() - started) * 1000)
         span.set_attribute("code_eval.compile_success", summary["success"])
+        span.set_attribute("code_eval.dimensions", json.dumps(dimensions))
         span.set_attribute("code_eval.applied_to_target", applied)
         await session.commit()
         await session.refresh(job)
