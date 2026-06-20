@@ -250,6 +250,71 @@ async def test_suites_skipped_when_compile_fails(
     assert all("test" not in cmds for cmds, _ in scripted.calls)
 
 
+class _StubIndex:
+    """Stub crates.io index: name -> versions, or None for 'not found'."""
+
+    def __init__(self, mapping: dict) -> None:
+        self._mapping = mapping
+
+    async def versions(self, name):
+        if name not in self._mapping:
+            return None
+        return self._mapping[name]
+
+
+async def test_check_deps_flags_hallucinated_dependency(
+    db_session: AsyncSession, seeded_client, tmp_path, monkeypatch
+) -> None:
+    _point_output_dir(monkeypatch, tmp_path)
+    client = seeded_client[0]
+    # Target crate whose Cargo.toml references a fabricated crate.
+    cargo = '[package]\nname="x"\nversion="0.1.0"\nedition="2021"\n[dependencies]\nmadeup_xyz="1"\n'
+    text = f"```toml Cargo.toml\n{cargo}```\n```rust src/lib.rs\npub fn f() {{}}\n```\n"
+    target = Job(
+        client_app_id=client.id, task_type="code_generation", sensitivity="internal",
+        prompt="p", response="...", status=JobStatus.COMPLETE.value, model_used="m",
+    )
+    db_session.add(target)
+    await db_session.commit()
+    await db_session.refresh(target)
+    meta = build_cargo_artifact(text, job_id=target.id, output_dir=tmp_path)
+    target.media_url = meta["url"]
+    target.job_metadata = {"artifact": meta}
+    await db_session.commit()
+
+    ce = await _seed_code_eval(db_session, client.id, target.id, apply_to_target=True)
+    ce.inputs = {**ce.inputs, "check_deps": True}
+    await db_session.commit()
+
+    out = await execute_code_eval_job(
+        job=ce, client=client, session=db_session,
+        build_client=_FakeBuild(_report(0)), index_client=_StubIndex({}),  # madeup_xyz -> not found
+    )
+    verdict = json.loads(out.response)
+    assert verdict["dimensions"]["deps"] == 1
+    assert verdict["deps"]["offenders"][0]["name"] == "madeup_xyz"
+    assert verdict["deps"]["offenders"][0]["reason"] == "not_found"
+
+
+async def test_check_deps_clean_when_real(
+    db_session: AsyncSession, seeded_client, tmp_path, monkeypatch
+) -> None:
+    _point_output_dir(monkeypatch, tmp_path)
+    client = seeded_client[0]
+    target = await _seed_target(db_session, client.id, tmp_path)  # std-only, no deps
+    ce = await _seed_code_eval(db_session, client.id, target.id, apply_to_target=False)
+    ce.inputs = {**ce.inputs, "check_deps": True}
+    await db_session.commit()
+
+    out = await execute_code_eval_job(
+        job=ce, client=client, session=db_session,
+        build_client=_FakeBuild(_report(0)), index_client=_StubIndex({}),
+    )
+    verdict = json.loads(out.response)
+    assert verdict["dimensions"]["deps"] == 5  # no registry deps -> trivially clean
+    assert verdict["deps"]["checked"] == 0
+
+
 async def test_build_service_error_fails_loudly(
     db_session: AsyncSession, seeded_client, tmp_path, monkeypatch
 ) -> None:

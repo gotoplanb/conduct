@@ -35,6 +35,7 @@ from codegen.build_client import (
     counterexample,
     summarize_tests,
 )
+from codegen.deps import CratesIndexClient, run_deps_check
 from config.settings import get_settings
 from eval.scoring import apply_pairwise_preference, apply_score
 from models.client import ClientApp, ClientAppUsage
@@ -1213,9 +1214,21 @@ def _code_eval_note(summary: dict, suites: dict) -> str:
     return "; ".join(parts)[:300]
 
 
+async def _run_deps_dimension(
+    tar_bytes: bytes, inputs: dict, index_client: CratesIndexClient | None
+) -> dict | None:
+    """Opt-in (`inputs.check_deps`) hallucinated-dependency check (#27). Returns
+    the deps detail, or None when not requested / no Cargo.toml. Network issues
+    leave individual crates `unresolved` rather than failing the job."""
+    if not inputs.get("check_deps"):
+        return None
+    return await run_deps_check(tar_bytes, index_client or CratesIndexClient())
+
+
 async def execute_code_eval_job(
     *, job: Job, client: ClientApp, session: AsyncSession,
     build_client: RustBuildClient | None = None,
+    index_client: CratesIndexClient | None = None,
 ) -> Job:
     """Deterministic code evaluator (#25). Mirrors the judge as a submittable
     primitive — carries a `target_job_id`, runs async, writes back to the target
@@ -1253,13 +1266,18 @@ async def execute_code_eval_job(
         await session.commit()
 
         bc = build_client or RustBuildClient(settings.rust_build_url)
+        tar_bytes = tar_path.read_bytes()
         started = perf_counter()
+        deps_detail = await _run_deps_dimension(tar_bytes, inputs, index_client)
         try:
             summary, dimensions, suites_detail = await _run_code_eval_builds(
-                bc, tar_path.read_bytes(), commands, inputs
+                bc, tar_bytes, commands, inputs
             )
         except BuildServiceError as e:
             return await _fail_judge(job, session, f"code_eval: {e}", client_name)
+
+        if deps_detail is not None:
+            dimensions["deps"] = _COMPILE_PASS if deps_detail["ok"] else _COMPILE_FAIL
 
         applied = False
         if apply_to_target:
@@ -1273,8 +1291,8 @@ async def execute_code_eval_job(
 
         verdict = {
             "mode": "code_eval", "target_job_id": str(target_id), "commands": commands,
-            "compile": summary, "suites": suites_detail, "dimensions": dimensions,
-            "applied_to_target": applied,
+            "compile": summary, "suites": suites_detail, "deps": deps_detail,
+            "dimensions": dimensions, "applied_to_target": applied,
         }
         job.response = json.dumps(verdict)
         job.job_metadata = {**(job.job_metadata or {}), "code_eval": verdict}
