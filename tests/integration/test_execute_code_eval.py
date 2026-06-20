@@ -51,15 +51,18 @@ class _ScriptedBuild:
 
     def __init__(
         self, compile_report: BuildReport, test_reports: dict | None = None,
-        mutants_report: BuildReport | None = None,
+        mutants_report: BuildReport | None = None, clippy_report: BuildReport | None = None,
     ) -> None:
         self._compile = compile_report
         self._tests = test_reports or {}
         self._mutants = mutants_report
+        self._clippy = clippy_report
         self.calls: list = []
 
     async def build(self, tar_bytes, commands, *, overlay_files=None, test_target=None, **_kw):
         self.calls.append((commands, test_target))
+        if "clippy" in commands:
+            return self._clippy
         if "mutants" in commands:
             return self._mutants
         if "test" in commands:
@@ -69,6 +72,28 @@ class _ScriptedBuild:
 
 def _mutants_report(stdout: str) -> BuildReport:
     return BuildReport(results={"mutants": CommandResult("mutants", 0, False, 9, stdout, "")})
+
+
+def _clippy_report(exit_code: int = 0, stderr: str = "") -> BuildReport:
+    return BuildReport(results={"clippy": CommandResult("clippy", exit_code, False, 5, "", stderr)})
+
+
+async def _seed_target_with_source(db, client_id, tmp_path, src_lib: str) -> Job:
+    cargo = '[package]\nname="x"\nversion="0.1.0"\nedition="2021"\n'
+    text = f"```toml Cargo.toml\n{cargo}```\n```rust src/lib.rs\n{src_lib}\n```\n"
+    job = Job(
+        client_app_id=client_id, task_type="code_generation", sensitivity="internal",
+        prompt="p", response="...", status=JobStatus.COMPLETE.value, model_used="m",
+    )
+    db.add(job)
+    await db.commit()
+    await db.refresh(job)
+    meta = build_cargo_artifact(text, job_id=job.id, output_dir=tmp_path)
+    job.media_url = meta["url"]
+    job.job_metadata = {"artifact": meta}
+    await db.commit()
+    await db.refresh(job)
+    return job
 
 
 def _test_report(stdout: str, exit_code: int = 0) -> BuildReport:
@@ -390,6 +415,69 @@ async def test_mutation_skipped_when_no_model_tests(
     verdict = json.loads(out.response)
     assert "mutation" not in verdict["dimensions"]  # NA, not a bogus score
     assert verdict["mutation"]["skipped"] == "no model-authored tests"
+
+
+async def test_structural_flags_unsafe(
+    db_session: AsyncSession, seeded_client, tmp_path, monkeypatch
+) -> None:
+    _point_output_dir(monkeypatch, tmp_path)
+    client = seeded_client[0]
+    target = await _seed_target_with_source(
+        db_session, client.id, tmp_path, "pub fn f() { unsafe { } }"
+    )
+    ce = await _seed_code_eval(db_session, client.id, target.id, apply_to_target=True)
+    ce.inputs = {**ce.inputs, "check_structural": True}
+    await db_session.commit()
+
+    scripted = _ScriptedBuild(_report(0), clippy_report=_clippy_report(0))  # AST runs on real tar
+    out = await execute_code_eval_job(
+        job=ce, client=client, session=db_session, build_client=scripted,
+    )
+    verdict = json.loads(out.response)
+    assert verdict["dimensions"]["structural"] == 1
+    assert verdict["structural"]["ast"]["unsafe"][0]["kind"] == "unsafe_block"
+
+
+async def test_structural_clean_passes(
+    db_session: AsyncSession, seeded_client, tmp_path, monkeypatch
+) -> None:
+    _point_output_dir(monkeypatch, tmp_path)
+    client = seeded_client[0]
+    target = await _seed_target(db_session, client.id, tmp_path)  # clean add()
+    ce = await _seed_code_eval(db_session, client.id, target.id, apply_to_target=False)
+    ce.inputs = {**ce.inputs, "check_structural": True}
+    await db_session.commit()
+
+    out = await execute_code_eval_job(
+        job=ce, client=client, session=db_session,
+        build_client=_ScriptedBuild(_report(0), clippy_report=_clippy_report(0)),
+    )
+    verdict = json.loads(out.response)
+    assert verdict["dimensions"]["structural"] == 5
+    assert verdict["structural"]["clippy"]["ok"] is True
+
+
+async def test_structural_clippy_failure_flags(
+    db_session: AsyncSession, seeded_client, tmp_path, monkeypatch
+) -> None:
+    _point_output_dir(monkeypatch, tmp_path)
+    client = seeded_client[0]
+    target = await _seed_target(db_session, client.id, tmp_path)  # clean AST
+    ce = await _seed_code_eval(db_session, client.id, target.id, apply_to_target=False)
+    ce.inputs = {**ce.inputs, "check_structural": True}
+    await db_session.commit()
+
+    # AST clean but clippy denies a lint (exit != 0) -> structural fails.
+    out = await execute_code_eval_job(
+        job=ce, client=client, session=db_session,
+        build_client=_ScriptedBuild(
+            _report(0), clippy_report=_clippy_report(101, "warning: needless return")
+        ),
+    )
+    verdict = json.loads(out.response)
+    assert verdict["dimensions"]["structural"] == 1
+    assert verdict["structural"]["ast"]["ok"] is True
+    assert verdict["structural"]["clippy"]["ok"] is False
 
 
 async def test_build_service_error_fails_loudly(

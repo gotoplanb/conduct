@@ -30,6 +30,8 @@ dependencies = [
     "mcp>=1.2",
     "cryptography>=42.0",
     "aioboto3>=13.0",
+    "tree-sitter>=0.25.2",
+    "tree-sitter-rust>=0.24.2",
 ]
 
 [project.scripts]

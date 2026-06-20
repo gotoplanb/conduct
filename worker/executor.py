@@ -37,6 +37,7 @@ from codegen.build_client import (
     summarize_tests,
 )
 from codegen.deps import CratesIndexClient, run_deps_check
+from codegen.structural import analyze_tar
 from config.settings import get_settings
 from eval.scoring import apply_pairwise_preference, apply_score
 from models.client import ClientApp, ClientAppUsage
@@ -1236,6 +1237,26 @@ async def _run_mutation_dimension(
     return _rate_to_score(mut["kill_rate"]), {**mut, "model_tests": model_tests["total"]}
 
 
+async def _run_structural_dimension(
+    bc: RustBuildClient, tar_bytes: bytes, inputs: dict, compiled: bool
+) -> tuple[int, dict]:
+    """Structural / AST regression check (#29): an AST scan (unsafe, happy-path
+    panics, signature drift) plus clippy. Clean -> 5, any violation -> 1. The AST
+    scan runs even on non-compiling code (tree-sitter is error-tolerant); clippy
+    only runs when it compiled."""
+    ast = analyze_tar(tar_bytes, inputs.get("signatures") or [])
+    clippy_ok = True
+    clippy_detail: dict = {"ran": False}
+    if compiled:
+        report = await bc.build(tar_bytes, ["clippy"])
+        r = report.results.get("clippy")
+        clippy_ok = bool(r and r.ok)
+        diags = [ln.strip() for ln in ((r.stderr if r else "") or "").splitlines() if ln.strip()]
+        clippy_detail = {"ran": True, "ok": clippy_ok, "diagnostics": diags[:20]}
+    ok = ast["ok"] and clippy_ok
+    return (_COMPILE_PASS if ok else _COMPILE_FAIL), {"ast": ast, "clippy": clippy_detail}
+
+
 def _code_eval_note(summary: dict, suites: dict) -> str:
     parts = ["compiled" if summary["success"] else "compile failed"]
     parts += [f"{dim} {d['passed']}/{d['total']}" for dim, d in suites.items()]
@@ -1307,6 +1328,10 @@ async def execute_code_eval_job(
                 await _run_mutation_dimension(bc, tar_bytes, summary["success"])
                 if inputs.get("check_mutants") else (None, None)
             )
+            struct_score, structural_detail = (
+                await _run_structural_dimension(bc, tar_bytes, inputs, summary["success"])
+                if inputs.get("check_structural") else (None, None)
+            )
         except BuildServiceError as e:
             return await _fail_judge(job, session, f"code_eval: {e}", client_name)
 
@@ -1314,6 +1339,8 @@ async def execute_code_eval_job(
             dimensions["deps"] = _COMPILE_PASS if deps_detail["ok"] else _COMPILE_FAIL
         if mut_score is not None:
             dimensions["mutation"] = mut_score
+        if struct_score is not None:
+            dimensions["structural"] = struct_score
 
         applied = False
         if apply_to_target:
@@ -1328,7 +1355,8 @@ async def execute_code_eval_job(
         verdict = {
             "mode": "code_eval", "target_job_id": str(target_id), "commands": commands,
             "compile": summary, "suites": suites_detail, "deps": deps_detail,
-            "mutation": mutation_detail, "dimensions": dimensions, "applied_to_target": applied,
+            "mutation": mutation_detail, "structural": structural_detail,
+            "dimensions": dimensions, "applied_to_target": applied,
         }
         job.response = json.dumps(verdict)
         job.job_metadata = {**(job.job_metadata or {}), "code_eval": verdict}
