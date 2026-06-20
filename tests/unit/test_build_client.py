@@ -19,8 +19,15 @@ from codegen.build_client import (
     RustBuildClient,
     compile_summary,
     counterexample,
+    mutation_summary,
     summarize_tests,
 )
+
+
+def _mutants_report(stdout="", timed_out=False) -> BuildReport:
+    return BuildReport(results={
+        "mutants": CommandResult("mutants", 0, timed_out, 9, stdout, ""),
+    })
 
 
 def _test_report(stdout="", stderr="", exit_code=0, timed_out=False) -> BuildReport:
@@ -176,3 +183,35 @@ def test_counterexample_extracted() -> None:
 
 def test_counterexample_absent() -> None:
     assert counterexample(_test_report("test result: ok. 1 passed; 0 failed")) is None
+
+
+# --- mutation_summary (#28) — formats verified live against cargo-mutants -----
+
+
+def test_mutation_all_caught_is_thorough() -> None:
+    s = mutation_summary(_mutants_report("5 mutants tested in 0s: 5 caught"))
+    assert s["caught"] == 5 and s["missed"] == 0
+    assert s["mutants_tested"] == 5 and s["kill_rate"] == 1.0
+
+
+def test_mutation_all_missed_is_shallow() -> None:
+    s = mutation_summary(_mutants_report("5 mutants tested in 0s: 5 missed"))
+    assert s["caught"] == 0 and s["missed"] == 5 and s["kill_rate"] == 0.0
+
+
+def test_mutation_mixed_kill_rate() -> None:
+    s = mutation_summary(_mutants_report("2 mutants tested in 3s: 1 caught, 1 missed"))
+    assert s["caught"] == 1 and s["missed"] == 1 and s["kill_rate"] == 0.5
+
+
+def test_mutation_excludes_unviable_and_timeout() -> None:
+    s = mutation_summary(_mutants_report(
+        "6 mutants tested in 5s: 2 caught, 1 missed, 2 unviable, 1 timeout"
+    ))
+    assert s["unviable"] == 2 and s["timeout"] == 1
+    assert s["mutants_tested"] == 3 and s["kill_rate"] == round(2 / 3, 4)
+
+
+def test_mutation_timeout() -> None:
+    s = mutation_summary(_mutants_report(timed_out=True))
+    assert s["timed_out"] is True and s["mutants_tested"] == 0

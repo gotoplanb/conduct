@@ -45,19 +45,30 @@ def _report(exit_code: int, stderr: str = "") -> BuildReport:
 
 
 class _ScriptedBuild:
-    """Returns the compile report for a `check`/`build`, and a per-test-target
-    report for a `test` run — so suite scoring can be driven deterministically."""
+    """Returns the compile report for a `check`/`build`, a per-test-target report
+    for a `test` run (test_target None = the model's own tests), and a mutants
+    report for `mutants` — so dimension scoring can be driven deterministically."""
 
-    def __init__(self, compile_report: BuildReport, test_reports: dict | None = None) -> None:
+    def __init__(
+        self, compile_report: BuildReport, test_reports: dict | None = None,
+        mutants_report: BuildReport | None = None,
+    ) -> None:
         self._compile = compile_report
         self._tests = test_reports or {}
+        self._mutants = mutants_report
         self.calls: list = []
 
     async def build(self, tar_bytes, commands, *, overlay_files=None, test_target=None, **_kw):
         self.calls.append((commands, test_target))
+        if "mutants" in commands:
+            return self._mutants
         if "test" in commands:
             return self._tests[test_target]
         return self._compile
+
+
+def _mutants_report(stdout: str) -> BuildReport:
+    return BuildReport(results={"mutants": CommandResult("mutants", 0, False, 9, stdout, "")})
 
 
 def _test_report(stdout: str, exit_code: int = 0) -> BuildReport:
@@ -313,6 +324,72 @@ async def test_check_deps_clean_when_real(
     verdict = json.loads(out.response)
     assert verdict["dimensions"]["deps"] == 5  # no registry deps -> trivially clean
     assert verdict["deps"]["checked"] == 0
+
+
+async def test_mutation_shallow_tests_low_dimension(
+    db_session: AsyncSession, seeded_client, tmp_path, monkeypatch
+) -> None:
+    _point_output_dir(monkeypatch, tmp_path)
+    client = seeded_client[0]
+    target = await _seed_target(db_session, client.id, tmp_path)
+    ce = await _seed_code_eval(db_session, client.id, target.id, apply_to_target=True)
+    ce.inputs = {**ce.inputs, "check_mutants": True}
+    await db_session.commit()
+
+    scripted = _ScriptedBuild(
+        _report(0),
+        {None: _test_report("test result: ok. 1 passed; 0 failed")},  # model tests pass
+        mutants_report=_mutants_report("5 mutants tested in 0s: 5 missed"),  # all survive
+    )
+    out = await execute_code_eval_job(
+        job=ce, client=client, session=db_session, build_client=scripted,
+    )
+    verdict = json.loads(out.response)
+    assert verdict["dimensions"]["mutation"] == 1  # kill_rate 0 -> shallow
+    assert verdict["mutation"]["missed"] == 5 and verdict["mutation"]["kill_rate"] == 0.0
+
+
+async def test_mutation_thorough_tests_high_dimension(
+    db_session: AsyncSession, seeded_client, tmp_path, monkeypatch
+) -> None:
+    _point_output_dir(monkeypatch, tmp_path)
+    client = seeded_client[0]
+    target = await _seed_target(db_session, client.id, tmp_path)
+    ce = await _seed_code_eval(db_session, client.id, target.id, apply_to_target=False)
+    ce.inputs = {**ce.inputs, "check_mutants": True}
+    await db_session.commit()
+
+    scripted = _ScriptedBuild(
+        _report(0),
+        {None: _test_report("test result: ok. 3 passed; 0 failed")},
+        mutants_report=_mutants_report("5 mutants tested in 0s: 5 caught"),
+    )
+    out = await execute_code_eval_job(
+        job=ce, client=client, session=db_session, build_client=scripted,
+    )
+    assert json.loads(out.response)["dimensions"]["mutation"] == 5  # kill_rate 1.0
+
+
+async def test_mutation_skipped_when_no_model_tests(
+    db_session: AsyncSession, seeded_client, tmp_path, monkeypatch
+) -> None:
+    _point_output_dir(monkeypatch, tmp_path)
+    client = seeded_client[0]
+    target = await _seed_target(db_session, client.id, tmp_path)
+    ce = await _seed_code_eval(db_session, client.id, target.id, apply_to_target=False)
+    ce.inputs = {**ce.inputs, "check_mutants": True}
+    await db_session.commit()
+
+    scripted = _ScriptedBuild(
+        _report(0),
+        {None: _test_report("test result: ok. 0 passed; 0 failed")},  # no model tests
+    )
+    out = await execute_code_eval_job(
+        job=ce, client=client, session=db_session, build_client=scripted,
+    )
+    verdict = json.loads(out.response)
+    assert "mutation" not in verdict["dimensions"]  # NA, not a bogus score
+    assert verdict["mutation"]["skipped"] == "no model-authored tests"
 
 
 async def test_build_service_error_fails_loudly(

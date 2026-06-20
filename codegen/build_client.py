@@ -178,6 +178,35 @@ def counterexample(report: BuildReport, command: str = "test") -> str | None:
     return m.group(1).strip() if m else None
 
 
+def _count_outcome(text: str, word: str) -> int:
+    m = re.search(rf"(\d+)\s+{word}", text)
+    return int(m.group(1)) if m else 0
+
+
+def mutation_summary(report: BuildReport, command: str = "mutants") -> dict:
+    """Parse `cargo-mutants` output into a kill-rate (#28). `caught` mutants were
+    detected by the crate's own tests; `missed` ones survived (the shallow-test
+    signal). Unviable (didn't compile) / timeout mutants are excluded from the
+    rate. kill_rate = caught / (caught + missed)."""
+    r = report.results.get(command)
+    if r is None:
+        return {"ran": False, "caught": 0, "missed": 0, "unviable": 0, "timeout": 0,
+                "mutants_tested": 0, "kill_rate": 0.0, "timed_out": False}
+    if r.timed_out:
+        return {"ran": True, "caught": 0, "missed": 0, "unviable": 0, "timeout": 0,
+                "mutants_tested": 0, "kill_rate": 0.0, "timed_out": True}
+    text = f"{r.stdout}\n{r.stderr}"
+    caught, missed = _count_outcome(text, "caught"), _count_outcome(text, "missed")
+    tested = caught + missed
+    return {
+        "ran": True, "caught": caught, "missed": missed,
+        "unviable": _count_outcome(text, "unviable"), "timeout": _count_outcome(text, "timeout"),
+        "mutants_tested": tested,
+        "kill_rate": round(caught / tested, 4) if tested else 0.0,
+        "timed_out": False,
+    }
+
+
 def compile_summary(report: BuildReport) -> dict:
     """The compile gate as a flat result (#24 acceptance):
     ``{success, errors[], warnings[], timing_ms}``. Prefers `build` over `check`.

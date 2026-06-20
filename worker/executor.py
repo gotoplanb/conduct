@@ -33,6 +33,7 @@ from codegen.build_client import (
     RustBuildClient,
     compile_summary,
     counterexample,
+    mutation_summary,
     summarize_tests,
 )
 from codegen.deps import CratesIndexClient, run_deps_check
@@ -1142,6 +1143,10 @@ _VIA_CODE_EVAL = "code-eval"
 # alongside human/judge scores (#18). Pass -> 5, fail -> 1.
 _COMPILE_PASS = 5
 _COMPILE_FAIL = 1
+# cargo-mutants is slow (compiles+tests each mutant); give it room. The service
+# kills a run at _MUTANTS_TIMEOUT_S; the client waits a bit longer.
+_MUTANTS_TIMEOUT_S = 300
+_CODE_EVAL_CLIENT_TIMEOUT_S = 600.0
 
 
 def _resolve_code_eval_target(target: Job | None, output_dir: str) -> Path:
@@ -1208,6 +1213,29 @@ async def _run_code_eval_builds(
     return summary, dimensions, suites_detail
 
 
+async def _run_mutation_dimension(
+    bc: RustBuildClient, tar_bytes: bytes, compiled: bool
+) -> tuple[int | None, dict]:
+    """Mutation testing against the crate's OWN tests (#28). cargo-mutants needs
+    a passing baseline, so we skip (NA) when it didn't compile, has no
+    model-authored tests, or those tests fail. Returns (score|None, detail);
+    score is None when the dimension is NA (don't record a bogus number)."""
+    if not compiled:
+        return None, {"skipped": "did not compile"}
+    model_tests = summarize_tests(await bc.build(tar_bytes, ["test"]), "test")
+    if model_tests["total"] == 0:
+        return None, {"skipped": "no model-authored tests"}
+    if not model_tests["ok"]:
+        return None, {"skipped": "model tests failing", "passed": model_tests["passed"],
+                      "failed": model_tests["failed"]}
+    mut = mutation_summary(await bc.build(tar_bytes, ["mutants"], timeout_s=_MUTANTS_TIMEOUT_S))
+    if mut["timed_out"]:
+        return None, {"skipped": "mutants timed out", **mut}
+    if mut["mutants_tested"] == 0:
+        return None, {"skipped": "no viable mutants", **mut}
+    return _rate_to_score(mut["kill_rate"]), {**mut, "model_tests": model_tests["total"]}
+
+
 def _code_eval_note(summary: dict, suites: dict) -> str:
     parts = ["compiled" if summary["success"] else "compile failed"]
     parts += [f"{dim} {d['passed']}/{d['total']}" for dim, d in suites.items()]
@@ -1265,7 +1293,9 @@ async def execute_code_eval_job(
         job.started_at = datetime.now(UTC)
         await session.commit()
 
-        bc = build_client or RustBuildClient(settings.rust_build_url)
+        bc = build_client or RustBuildClient(
+            settings.rust_build_url, timeout_s=_CODE_EVAL_CLIENT_TIMEOUT_S
+        )
         tar_bytes = tar_path.read_bytes()
         started = perf_counter()
         deps_detail = await _run_deps_dimension(tar_bytes, inputs, index_client)
@@ -1273,11 +1303,17 @@ async def execute_code_eval_job(
             summary, dimensions, suites_detail = await _run_code_eval_builds(
                 bc, tar_bytes, commands, inputs
             )
+            mut_score, mutation_detail = (
+                await _run_mutation_dimension(bc, tar_bytes, summary["success"])
+                if inputs.get("check_mutants") else (None, None)
+            )
         except BuildServiceError as e:
             return await _fail_judge(job, session, f"code_eval: {e}", client_name)
 
         if deps_detail is not None:
             dimensions["deps"] = _COMPILE_PASS if deps_detail["ok"] else _COMPILE_FAIL
+        if mut_score is not None:
+            dimensions["mutation"] = mut_score
 
         applied = False
         if apply_to_target:
@@ -1292,7 +1328,7 @@ async def execute_code_eval_job(
         verdict = {
             "mode": "code_eval", "target_job_id": str(target_id), "commands": commands,
             "compile": summary, "suites": suites_detail, "deps": deps_detail,
-            "dimensions": dimensions, "applied_to_target": applied,
+            "mutation": mutation_detail, "dimensions": dimensions, "applied_to_target": applied,
         }
         job.response = json.dumps(verdict)
         job.job_metadata = {**(job.job_metadata or {}), "code_eval": verdict}
