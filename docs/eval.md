@@ -153,3 +153,28 @@ Goal: can `llama3.2:3b` replace `llama3.3:70b` for `bio_generation`?
 
 The point is the *combined* picture: quality **and** cost/latency, on your real
 prompts.
+
+## Registering a fine-tuned model
+
+A locally fine-tuned checkpoint (e.g. a DPO-tuned model from the code-gen
+flywheel, [#22](https://github.com/gotoplanb/conduct/issues/22)) is a **drop-in
+routing target** — there's no model registry to update. Conduct classifies any
+name that isn't a `claude-*` (Anthropic) or dotted Bedrock id as a **local
+Ollama** model: free pricing, dispatched via the worker's swap path.
+
+1. Register the checkpoint in Ollama under any tag, e.g. `code-gen-dpo:v2`
+   (`ollama create code-gen-dpo:v2 -f Modelfile`).
+2. Point a rule at it — as `preferred_model`, a `fallback_model`, an
+   `eval_shadow_models` entry, or a judge panel member — live via
+   `PUT /routing/<task_type>` or persisted in `config/seed.routing.yaml`.
+3. Its jobs + shadows roll up as their **own row** in `/eval/compare` (keyed on
+   `model_used`), so you can compare the fine-tune head-to-head against the base
+   model it improves — including the deterministic `composite` (#30).
+
+The cleanest A/B: add the fine-tune as a `rate: 1.0` shadow of its base model
+(above), let traffic flow, and read the rollup — same recipe as the worked
+example, now measuring *your* model against its parent.
+
+> **Naming caveat:** don't name a local checkpoint `claude-*` or with a Bedrock
+> vendor prefix (`anthropic.…`, `meta.…`) — it'd be misrouted to a cloud
+> provider. Any other tag is treated as local.

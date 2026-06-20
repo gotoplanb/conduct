@@ -220,6 +220,21 @@ async def test_compare_surfaces_composite(
     assert comp["components"]["golden"]["avg"] == 4.0
 
 
+async def test_finetuned_model_rolls_up_as_own_row(
+    client, admin_headers, db_session, seeded_client, task_type
+) -> None:
+    # A fine-tuned checkpoint (#32) is just another model_used string — it rolls
+    # up as its own row, comparable head-to-head with the base model it improves.
+    cid = seeded_client[0].id
+    await _seed_job(db_session, client_id=cid, task_type=task_type, model="gemma4:e4b")
+    await _seed_job(db_session, client_id=cid, task_type=task_type, model="code-gen-dpo:v2")
+
+    r = await client.get(f"/eval/compare?task_type={task_type}", headers=admin_headers)
+    assert r.status_code == 200
+    models = {m["model"] for m in r.json()["models"]}
+    assert {"gemma4:e4b", "code-gen-dpo:v2"} <= models
+
+
 async def test_eval_requires_admin(client) -> None:
     r = await client.get("/eval/compare?task_type=x")
     assert r.status_code == 403

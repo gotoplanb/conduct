@@ -47,6 +47,22 @@ def test_explicit_override_wins() -> None:
     assert d.reason == "explicit-override"
 
 
+def test_finetuned_local_model_is_selectable() -> None:
+    # A locally fine-tuned checkpoint (#32) is a drop-in routing target: set it
+    # as a rule's preferred_model and it dispatches as a local Ollama model —
+    # even at the confidential tier (local models never hit the cloud gate).
+    d = decide(
+        sensitivity=Sensitivity.CONFIDENTIAL,
+        model_requested=None,
+        allow_cloud_for_internal=False,
+        rule=_rule(preferred="code-gen-dpo:v2", sensitivity=Sensitivity.CONFIDENTIAL),
+        default_model="llama3.3:70b",
+        default_sensitive_model="llama3.3:70b",
+    )
+    assert d.model == "code-gen-dpo:v2"
+    assert d.provider == "ollama"
+
+
 def test_confidential_blocks_explicit_cloud_override() -> None:
     with pytest.raises(SensitivityViolation):
         decide(

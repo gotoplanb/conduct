@@ -43,10 +43,23 @@ from providers.registry import is_cloud, provider_for_model
         ("qwen3.5:9b", "ollama"),
         ("mistral-small3.2", "ollama"),
         ("mistral-medium-3.5", "ollama"),
+        # Locally fine-tuned checkpoints (#32) — registered in Ollama under any
+        # tag, must classify as local (free pricing, async swap), never cloud.
+        ("fibber-dpo:latest", "ollama"),
+        ("code-gen-dpo:v2", "ollama"),
+        ("gemma4-codetune:e4b", "ollama"),
+        ("wander-gen-ft", "ollama"),
     ],
 )
 def test_provider_for_model(model: str, expected: str) -> None:
     assert provider_for_model(model) == expected
+
+
+def test_finetuned_models_are_local_not_cloud() -> None:
+    # The guarantee #32 leans on: a custom local checkpoint is treated as local
+    # (Ollama, free) — so it's a drop-in routing target like any base model.
+    for name in ("fibber-dpo:latest", "code-gen-dpo:v2", "wander-gen-ft"):
+        assert is_cloud(name) is False
 
 
 @pytest.mark.parametrize(
