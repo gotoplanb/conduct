@@ -62,6 +62,12 @@ the recorded prompt version's content), so examples are usable as-is.
   on the *same input*: for each parent job, take its own response + its shadows
   (all answers to one prompt), and pair the highest- vs lowest-scored when the
   gap `>= min_gap`. Comparable by construction.
+- **`method=composite`** — same same-input differential, but ranks each
+  candidate by the deterministic **code-eval composite** ([#30](https://github.com/gotoplanb/conduct/issues/30))
+  — the weighted fold of compile/golden/property/deps/mutation/structural — so
+  the chosen/rejected pair reflects measured code quality, not an LLM judgement.
+  Each row's `meta` carries `chosen_id`/`rejected_id` (provenance back to the
+  originating jobs).
 
 | param | default | meaning |
 |-------|---------|---------|

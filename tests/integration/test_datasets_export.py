@@ -182,6 +182,46 @@ async def test_preferences_score_skips_small_gap(
     assert await iter_preferences(db_session, task_type="qa", method="score", min_gap=2) == []
 
 
+# --- preferences: composite (#31) ------------------------------------------
+
+
+async def test_preferences_from_composite(db_session: AsyncSession, seeded_client) -> None:
+    cid = seeded_client[0].id
+    # Two solutions to one spec, ranked by the deterministic composite (#30).
+    parent = await _job(
+        db_session, cid, prompt="P?", response="good", model="p",
+        metadata=_qs_dims({"compile": 5, "golden": 5}),  # composite 5.0
+    )
+    await _shadow(
+        db_session, parent.id, model="s", response="bad",
+        metadata=_qs_dims({"compile": 1, "golden": 1}),  # composite 1.0
+    )
+
+    rows = await iter_preferences(db_session, task_type="qa", method="composite", min_gap=2)
+    assert len(rows) == 1
+    r = rows[0]
+    assert r["chosen"] == "good" and r["rejected"] == "bad"
+    assert r["meta"]["method"] == "composite"
+    assert r["meta"]["chosen_score"] == 5.0 and r["meta"]["rejected_score"] == 1.0
+    # provenance back to the originating job + shadow
+    assert r["meta"]["chosen_id"] == str(parent.id)
+    assert r["meta"]["rejected_id"]
+
+
+async def test_preferences_composite_skips_small_gap(
+    db_session: AsyncSession, seeded_client
+) -> None:
+    cid = seeded_client[0].id
+    parent = await _job(
+        db_session, cid, response="a", metadata=_qs_dims({"compile": 5, "golden": 5}),  # 5.0
+    )
+    # composite (3*4+3*5)/6 = 4.5 -> gap 0.5 < min_gap 2
+    await _shadow(
+        db_session, parent.id, response="b", metadata=_qs_dims({"compile": 4, "golden": 5}),
+    )
+    assert await iter_preferences(db_session, task_type="qa", method="composite", min_gap=2) == []
+
+
 # --- route smoke (auth + JSONL) --------------------------------------------
 
 

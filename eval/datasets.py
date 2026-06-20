@@ -19,6 +19,7 @@ from uuid import UUID
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from eval.composite import compute_composite, load_weights
 from eval.scoring import score_state
 from models.job import Job
 from models.prompt import PromptVersion
@@ -226,10 +227,10 @@ async def iter_preferences(
     pairwise judge's verdicts directly; method='score' derives pairs from
     pointwise/panel score differentials on the same input (on `label_dim` if
     given, else the overall score)."""
-    if method == "score":
+    if method in ("score", "composite"):
         return await _preferences_from_scores(
             session, task_type=task_type, min_gap=min_gap, label_dim=label_dim,
-            prompt_version=prompt_version, limit=limit,
+            prompt_version=prompt_version, limit=limit, composite=method == "composite",
         )
     return await _preferences_from_pairwise(
         session, task_type=task_type, prompt_version=prompt_version, limit=limit,
@@ -298,11 +299,14 @@ async def _pairs_from_pairwise_job(
 
 async def _preferences_from_scores(
     session: AsyncSession, *, task_type, min_gap, label_dim, prompt_version, limit,
+    composite: bool = False,
 ) -> list[dict]:
     """For each parent job, gather the parent's own response + its shadows
     (all answers to the SAME input), score each, and pair the highest- vs
     lowest-scored when the gap >= min_gap. Comparable by construction (same
-    input → same prompt_version)."""
+    input → same prompt_version). `composite` scores each candidate by the
+    deterministic code-eval composite (#30) instead of the raw/label_dim avg."""
+    weights = load_weights() if composite else None
     cache: dict[int, str] = {}
     rows: list[dict] = []
     stmt = (
@@ -321,7 +325,7 @@ async def _preferences_from_scores(
         pv = _pv(parent.job_metadata)
         if prompt_version is not None and pv != prompt_version:
             continue
-        cands = await _scored_candidates(session, parent, label_dim)
+        cands = await _scored_candidates(session, parent, label_dim, composite, weights)
         if len(cands) < 2:
             continue
         cands.sort(key=lambda c: c["score"])
@@ -334,8 +338,10 @@ async def _preferences_from_scores(
             {
                 "task_type": parent.task_type, "chosen_model": high["model"],
                 "rejected_model": low["model"], "chosen_score": high["score"],
-                "rejected_score": low["score"], "prompt_version": pv,
-                "sensitivity": parent.sensitivity, "method": "score",
+                "rejected_score": low["score"], "chosen_id": high["id"],
+                "rejected_id": low["id"], "prompt_version": pv,
+                "sensitivity": parent.sensitivity,
+                "method": "composite" if composite else "score",
             },
         ))
         if len(rows) >= limit:
@@ -343,22 +349,38 @@ async def _preferences_from_scores(
     return rows
 
 
+def _candidate_scalar(metadata, label_dim, composite, weights):
+    """The scalar a candidate is ranked by: its composite (#30) when requested,
+    else its overall / label_dim average."""
+    if composite:
+        _avg, _n, dims = _scored(metadata, None, None)
+        return compute_composite(dims, weights)["score"]
+    avg, _n, _d = _scored(metadata, None, label_dim)
+    return avg
+
+
 async def _scored_candidates(
-    session: AsyncSession, parent: Job, label_dim: str | None = None
+    session: AsyncSession, parent: Job, label_dim: str | None = None,
+    composite: bool = False, weights: dict | None = None,
 ) -> list[dict]:
-    """The parent + its shadows that carry a score, as {response, model, score}.
-    Scores on `label_dim` if given, else overall."""
+    """The parent + its shadows that carry a score, as {id, response, model,
+    score}. Ranked by composite when `composite`, else label_dim/overall avg."""
     cands: list[dict] = []
-    avg, _n, _d = _scored(parent.job_metadata, None, label_dim)
-    if avg is not None and parent.response:
-        cands.append({"response": parent.response, "model": parent.model_used or "", "score": avg})
+    score = _candidate_scalar(parent.job_metadata, label_dim, composite, weights)
+    if score is not None and parent.response:
+        cands.append({
+            "id": str(parent.id), "response": parent.response,
+            "model": parent.model_used or "", "score": score,
+        })
     shadows = (
         await session.scalars(
             select(JobShadow).where(JobShadow.parent_job_id == parent.id)
         )
     ).all()
     for sh in shadows:
-        s_avg, _n2, _d2 = _scored(sh.shadow_metadata, None, label_dim)
-        if s_avg is not None and sh.response:
-            cands.append({"response": sh.response, "model": sh.model, "score": s_avg})
+        s = _candidate_scalar(sh.shadow_metadata, label_dim, composite, weights)
+        if s is not None and sh.response:
+            cands.append({
+                "id": str(sh.id), "response": sh.response, "model": sh.model, "score": s,
+            })
     return cands

@@ -65,7 +65,7 @@ async def export_sft(
 async def export_preferences(
     session: Annotated[AsyncSession, Depends(get_session)],
     task_type: Annotated[str | None, Query()] = None,
-    method: Annotated[str, Query(pattern="^(pairwise|score)$")] = "pairwise",
+    method: Annotated[str, Query(pattern="^(pairwise|score|composite)$")] = "pairwise",
     min_gap: Annotated[float, Query(ge=0, le=4)] = 2.0,
     label_dim: Annotated[
         str | None, Query(description="(score method) which named dimension to compare on")
@@ -76,7 +76,8 @@ async def export_preferences(
     """JSONL of DPO (prompt, system, chosen, rejected) pairs. method=pairwise
     reads the pairwise judge's verdicts; method=score derives pairs from
     pointwise/panel score differentials (min_gap) on the same input — on
-    `label_dim` if given."""
+    `label_dim` if given; method=composite pairs on the deterministic code-eval
+    composite (#30) instead."""
     rows = await iter_preferences(
         session, task_type=task_type, method=method, min_gap=min_gap, label_dim=label_dim,
         prompt_version=prompt_version, limit=limit,
