@@ -53,12 +53,41 @@ def test_fenced_preceding_bold_path() -> None:
     assert set(files) == {"Cargo.toml", "src/main.rs"}
 
 
-def test_prose_only_fences_skipped() -> None:
-    # A fence with no resolvable path (an example snippet) is ignored, leaving
-    # no files -> structured failure, not a crash.
+def test_untagged_toml_rust_use_conventional_paths() -> None:
+    # The common small-model shape: ```toml + ```rust with NO path tags.
+    text = f"```toml\n{_CARGO}```\n\n```rust\n{_MAIN}```\n"
+    files = parse_cargo_project(text)
+    assert set(files) == {"Cargo.toml", "src/main.rs"}  # _MAIN has fn main
+
+
+def test_untagged_rust_without_main_is_lib() -> None:
+    lib = "pub fn add(a: i64, b: i64) -> i64 { a + b }\n"
+    text = f"```toml\n{_CARGO}```\n```rust\n{lib}```\n"
+    files = parse_cargo_project(text)
+    assert set(files) == {"Cargo.toml", "src/lib.rs"}  # no fn main -> lib.rs
+
+
+def test_explicit_path_beats_convention() -> None:
+    # An explicit path tag wins over the language convention.
+    lib = "pub fn f() {}\n"
+    text = f"```toml Cargo.toml\n{_CARGO}```\n```rust src/thing.rs\n{lib}```\n"
+    files = parse_cargo_project(text)
+    assert set(files) == {"Cargo.toml", "src/thing.rs"}
+
+
+def test_lone_rust_snippet_fails_on_missing_cargo() -> None:
+    # A bare ```rust snippet becomes src/lib.rs by convention, then fails for
+    # lack of a Cargo.toml — still a structured failure, not a crash.
     text = "Here's a sketch:\n```rust\nfn foo() {}\n```\nNo project though.\n"
     with pytest.raises(ArtifactError) as e:
         parse_cargo_project(text)
+    assert e.value.reason == "missing_cargo_toml"
+
+
+def test_prose_with_no_code_is_no_files() -> None:
+    # Genuinely no code blocks at all -> no_files.
+    with pytest.raises(ArtifactError) as e:
+        parse_cargo_project("Just some prose, no code at all.")
     assert e.value.reason == "no_files"
 
 

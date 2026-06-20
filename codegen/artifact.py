@@ -117,9 +117,28 @@ def _try_json_manifest(text: str) -> dict[str, str] | None:
     return out
 
 
+def _conventional_path(info: str, body: str, assigned: set[str]) -> str | None:
+    """Infer a Cargo path from a fence's language alone, for the common case
+    where a small model emits ```toml / ```rust blocks with no path tag. A toml
+    block → Cargo.toml; the first rust block → src/main.rs if it has `fn main`,
+    else src/lib.rs. Each conventional path is assigned at most once so a second
+    untagged block of the same kind isn't clobbered (it just stays skipped)."""
+    lang = info.split()[0].lower() if info.split() else ""
+    if lang == "toml" and _CARGO_TOML not in assigned:
+        return _CARGO_TOML
+    if lang in ("rust", "rs"):
+        if "fn main" in body and "src/main.rs" not in assigned:
+            return "src/main.rs"
+        if "src/lib.rs" not in assigned:
+            return "src/lib.rs"
+    return None
+
+
 def _extract_fenced_files(text: str) -> dict[str, str]:
-    """Pull path-tagged fenced code blocks. Blocks with no resolvable path
-    (prose, examples) are skipped — only tagged files become artifact files."""
+    """Pull path-tagged fenced code blocks. An explicit path (fence info,
+    `// file:` marker, or a preceding path line) wins; failing that, a single
+    toml/rust block falls back to the conventional Cargo path. Blocks with no
+    resolvable path (prose, examples) are skipped."""
     files: dict[str, str] = {}
     for m in _FENCE_RE.finditer(text):
         info, body = m.group(1).strip(), m.group(2)
@@ -127,6 +146,7 @@ def _extract_fenced_files(text: str) -> dict[str, str]:
             _path_from_info(info)
             or _path_from_body(body)
             or _path_from_preceding(text, m.start())
+            or _conventional_path(info, body, set(files))
         )
         if path is None:
             continue

@@ -126,10 +126,14 @@ rules:
       - { model: mistral-small3.2, rate: 1.0 }   # step-down
 
   - task_type: code_generation
-    preferred_model: claude-sonnet-4-6
-    fallback_model: claude-opus-4-5
+    preferred_model: gemma4:e4b
+    fallback_model: gemma4:12b
     sensitivity: public
-    # TODO: add cloud shadows once ANTHROPIC_API_KEY is configured.
+    max_tokens: 4000
+    notes: "Rust code-gen for the eval flywheel (#22) — LOCAL-ONLY research, like the wander game tasks. Diverse-family local shadows so a spec fans out across models; each candidate (parent + shadows) stores a Cargo artifact and gets code_eval'd, feeding composite DPO pairs (#31/#35). Same model set as wander_gen / the judge jury."
+    eval_shadow_models:
+      - { model: qwen3.5:4b, rate: 1.0 }    # qwen family
+      - { model: llama3.2:3b, rate: 1.0 }   # llama family
 
   # The wander game splits work into two tasks: gen produces story scenarios,
   # eval judges the player's choices. Different model trade-offs per side —
