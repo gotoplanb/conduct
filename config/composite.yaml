@@ -1,0 +1,12 @@
+# Composite scoring weights (#30) — relative importance of each deterministic
+# code-eval dimension (each scored 1-5) when folding them into one ranked score.
+# Tunable without a redeploy: edit + the next /eval/compare picks it up. Only
+# these dimensions count toward the composite; LLM-judge dimensions are excluded
+# by construction (the composite stays a pure deterministic signal).
+weights:
+  compile: 3      # does it build (cargo check/build)
+  golden: 3       # harness-authored reference tests pass-rate
+  property: 2     # proptest invariants pass-rate
+  deps: 1         # no hallucinated / impossible dependencies
+  mutation: 1     # the model's own tests kill mutants (not shallow)
+  structural: 1   # no unsafe / happy-path panics / signature drift, clippy-clean

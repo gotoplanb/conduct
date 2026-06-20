@@ -14,6 +14,7 @@ from datetime import UTC, datetime, timedelta
 from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from eval.composite import compute_composite, load_weights
 from models.job import Job
 from models.shadow import JobShadow
 from models.types import JobStatus
@@ -179,6 +180,7 @@ async def compute_rollup(
 
     score_pairs = await _fetch_score_pairs(session, task_type, since)
     avg_scores, score_counts, dim_scores = aggregate_scores(score_pairs)
+    weights = load_weights()
 
     out: list[dict] = []
     for model, e in sorted(rolled.items(), key=lambda kv: -kv[1]["attempts"]):
@@ -200,6 +202,7 @@ async def compute_rollup(
                 "avg_score": avg_scores.get(model),
                 "score_count": score_counts.get(model, 0),
                 "dimension_scores": dim_scores.get(model, {}),
+                "composite": compute_composite(dim_scores.get(model, {}), weights),
             }
         )
     return out

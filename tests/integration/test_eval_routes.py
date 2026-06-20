@@ -200,6 +200,26 @@ async def test_review_returns_unscored_shadows(
     assert str(scored.id) not in shadow_ids
 
 
+async def test_compare_surfaces_composite(
+    client, admin_headers, db_session, seeded_client, task_type
+) -> None:
+    cid = seeded_client[0].id
+    # A code-eval'd job: per-dimension scores in the quality lane (#18/#30).
+    md = {"quality_scores": [
+        {"score": 4, "scores": {"compile": 5, "golden": 4}, "via": "code-eval"},
+    ]}
+    await _seed_job(db_session, client_id=cid, task_type=task_type, model="m1", metadata=md)
+
+    r = await client.get(f"/eval/compare?task_type={task_type}", headers=admin_headers)
+    assert r.status_code == 200
+    body = r.json()
+    assert body["composite_weights"]["compile"] == 3
+    comp = {m["model"]: m for m in body["models"]}["m1"]["composite"]
+    # (3*5 + 3*4) / (3+3) = 4.5, decomposable back to its parts
+    assert comp["score"] == 4.5
+    assert comp["components"]["golden"]["avg"] == 4.0
+
+
 async def test_eval_requires_admin(client) -> None:
     r = await client.get("/eval/compare?task_type=x")
     assert r.status_code == 403

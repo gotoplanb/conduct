@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from auth import admin_only
 from db.session import get_session
+from eval.composite import load_weights
 from eval.rollup import compute_rollup
 from eval.scoring import apply_score
 from models.job import Job
@@ -40,12 +41,16 @@ class ModelEval(BaseModel):
     avg_score: float | None = None
     score_count: int = 0
     dimension_scores: dict[str, float] = {}
+    # Deterministic composite (#30): a single ranked score + its decomposition.
+    composite: dict = {}
 
 
 class CompareOut(BaseModel):
     task_type: str
     period_days: int
     models: list[ModelEval]
+    # The weights the composite used, so the response is self-describing.
+    composite_weights: dict[str, float] = {}
 
 
 @router.get("/compare")
@@ -59,6 +64,7 @@ async def compare(
         task_type=task_type,
         period_days=days,
         models=[ModelEval(**row) for row in rows],
+        composite_weights=load_weights(),
     )
 
 
