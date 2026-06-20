@@ -306,12 +306,15 @@ async def _run_async(job_id: UUID) -> None:
             )
             dispatch_span.set_attribute(_DISPATCH_OUTCOME, "executed")
 
-            # Plan + enqueue shadow jobs after a successful original. Failed
-            # originals don't shadow — there's nothing meaningful to compare
-            # against if the primary couldn't produce a response.
-            if job.status == JobStatus.COMPLETE.value:
-                from eval.shadow_runner import enqueue_shadows_for_parent
+            # Plan + enqueue shadow jobs. Normally only after a successful
+            # original, but a force_shadows bench run fans out even on primary
+            # failure — the goal is the comparison (#36).
+            from eval.shadow_runner import (
+                enqueue_shadows_for_parent,
+                should_fan_out_shadows,
+            )
 
+            if should_fan_out_shadows(job):
                 shadow_ids = await enqueue_shadows_for_parent(
                     parent_job=job,
                     rule=rule,

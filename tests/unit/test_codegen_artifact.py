@@ -30,6 +30,32 @@ def test_json_manifest() -> None:
     assert files["src/main.rs"] == _MAIN
 
 
+def test_json_manifest_tolerates_trailing_comma() -> None:
+    # The qwen3.5:9b #36 case: valid manifest but a trailing comma after the
+    # last file. strict json.loads rejects it; we recover.
+    text = (
+        '{"files": {"Cargo.toml": ' + _q(_CARGO) + ', "src/main.rs": ' + _q(_MAIN) + ',}}'
+    )
+    files = parse_cargo_project(text)
+    assert set(files) == {"Cargo.toml", "src/main.rs"}
+
+
+def test_json_manifest_tolerates_multiple_trailing_commas() -> None:
+    text = (
+        '{"files": {"Cargo.toml": ' + _q(_CARGO) + ', "src/main.rs": ' + _q(_MAIN) + ',},}'
+    )
+    assert set(parse_cargo_project(text)) == {"Cargo.toml", "src/main.rs"}
+
+
+def test_trailing_comma_fix_preserves_commas_inside_strings() -> None:
+    # A literal ",}" inside a code string must survive — only the structural
+    # trailing comma is removed, never string content.
+    lib = 'fn f() -> &\'static str { "a,}b" }\n'
+    text = '{"files": {"Cargo.toml": ' + _q(_CARGO) + ', "src/lib.rs": ' + _q(lib) + ',}}'
+    files = parse_cargo_project(text)
+    assert files["src/lib.rs"] == lib  # the ",}" inside the string is intact
+
+
 def test_fenced_info_string_path() -> None:
     text = f"```toml Cargo.toml\n{_CARGO}```\n\n```rust src/main.rs\n{_MAIN}```\n"
     files = parse_cargo_project(text)

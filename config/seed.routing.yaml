@@ -126,13 +126,13 @@ rules:
       - { model: mistral-small3.2, rate: 1.0 }   # step-down
 
   - task_type: code_generation
-    preferred_model: gemma4:e4b
+    preferred_model: qwen3.5:9b
     fallback_model: gemma4:12b
     sensitivity: public
     max_tokens: 4000
-    notes: "Rust code-gen for the eval flywheel (#22) — LOCAL-ONLY research, like the wander game tasks. Diverse-family local shadows so a spec fans out across models; each candidate (parent + shadows) stores a Cargo artifact and gets code_eval'd, feeding composite DPO pairs (#31/#35). Same model set as wander_gen / the judge jury."
+    notes: "Rust code-gen for the eval flywheel (#22) — LOCAL-ONLY research. Primary is a JSON-reliable local model (qwen3.5:9b, proven on email_extraction/agenda_generation) so a flaky primary doesn't gate the shadow fan-out (#36). gemma4:e4b moves to a shadow — we still want to measure the small model, it just shouldn't be the anchor. Each candidate (parent + shadows) stores a Cargo artifact and gets code_eval'd, feeding composite DPO pairs (#31/#35)."
     eval_shadow_models:
-      - { model: qwen3.5:4b, rate: 1.0 }    # qwen family
+      - { model: gemma4:e4b, rate: 1.0 }    # gemma family (small)
       - { model: llama3.2:3b, rate: 1.0 }   # llama family
 
   # The wander game splits work into two tasks: gen produces story scenarios,

@@ -68,6 +68,17 @@ async def today_cost_by_model(session: AsyncSession) -> dict[str, Decimal]:
     return {model: Decimal(str(total)) for model, total in rows}
 
 
+def should_fan_out_shadows(job: Job) -> bool:
+    """Whether to fan out eval shadows for a finished primary. Normally we only
+    shadow a COMPLETE primary (nothing to compare against otherwise). But when
+    `force_shadows` was requested the goal is the cross-model comparison itself
+    (a bench run), so a FAILED primary must not take the whole fan-out with it
+    (#36) — the other candidates still need to run."""
+    if job.status == JobStatus.COMPLETE.value:
+        return True
+    return bool((job.job_metadata or {}).get("force_shadows", False))
+
+
 async def enqueue_shadows_for_parent(
     *,
     parent_job: Job,

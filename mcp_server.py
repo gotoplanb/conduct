@@ -25,7 +25,7 @@ from sqlalchemy import select
 from config.settings import get_settings
 from db.session import SessionLocal
 from eval.scoring import apply_score
-from eval.shadow_runner import enqueue_shadows_for_parent
+from eval.shadow_runner import enqueue_shadows_for_parent, should_fan_out_shadows
 from models.client import ClientApp
 from models.job import Job
 from models.routing import RoutingRule
@@ -406,7 +406,7 @@ async def create_job(
                 job.status = JobStatus.FAILED.value
                 job.error = f"prompt resolution failed: {e}"
                 await session.commit()
-            if job.status == JobStatus.COMPLETE.value:
+            if should_fan_out_shadows(job):
                 await enqueue_shadows_for_parent(
                     parent_job=job, rule=rule, client=client, session=session
                 )

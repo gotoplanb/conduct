@@ -96,16 +96,42 @@ def _strip_file_marker(body: str) -> str:
     return rest if (sep and _FILE_MARKER_RE.match(first)) else body
 
 
+def _loads_tolerant(blob: str, max_fixes: int = 16):
+    """json.loads, but tolerant of trailing commas — a very common LLM-JSON
+    quirk (``{"a": 1,}``). On a decode error we look at the exact offending
+    position; if the char before it is a comma (a trailing comma the parser
+    rejected), we drop just that comma and retry. Only the parser-flagged
+    position is touched, so commas inside string values are never corrupted.
+    Returns the parsed object, or None on any non-recoverable error."""
+    for _ in range(max_fixes + 1):
+        try:
+            return json.loads(blob)
+        except json.JSONDecodeError as e:
+            # Python may point AT the comma (3.13+: "Illegal trailing comma")
+            # or at the following } / ] (older). Check at e.pos, then walk back
+            # over whitespace to find the offending comma.
+            i = e.pos
+            if i < len(blob) and blob[i] == ",":
+                blob = blob[:i] + blob[i + 1 :]
+                continue
+            j = i - 1
+            while j >= 0 and blob[j] in " \t\r\n":
+                j -= 1
+            if j >= 0 and blob[j] == ",":
+                blob = blob[:j] + blob[j + 1 :]
+                continue
+            return None
+    return None
+
+
 def _try_json_manifest(text: str) -> dict[str, str] | None:
     """If the output's outermost ``{...}`` is a ``{"files": {path: content}}``
-    manifest, return it. Otherwise None (fall back to fenced extraction)."""
+    manifest, return it. Otherwise None (fall back to fenced extraction).
+    Tolerant of trailing commas (small models emit them often)."""
     start, end = text.find("{"), text.rfind("}")
     if start == -1 or end <= start:
         return None
-    try:
-        obj = json.loads(text[start : end + 1])
-    except (ValueError, TypeError):
-        return None
+    obj = _loads_tolerant(text[start : end + 1])
     files = obj.get("files") if isinstance(obj, dict) else None
     if not isinstance(files, dict) or not files:
         return None
