@@ -18,6 +18,7 @@ import worker.executor as executor
 from codegen.artifact import build_cargo_artifact
 from codegen.build_client import BuildReport, BuildServiceError, CommandResult
 from models.job import Job
+from models.shadow import JobShadow
 from models.types import JobStatus
 from worker.executor import execute_code_eval_job
 
@@ -478,6 +479,38 @@ async def test_structural_clippy_failure_flags(
     assert verdict["dimensions"]["structural"] == 1
     assert verdict["structural"]["ast"]["ok"] is True
     assert verdict["structural"]["clippy"]["ok"] is False
+
+
+async def test_code_eval_targets_a_shadow(
+    db_session: AsyncSession, seeded_client, tmp_path, monkeypatch
+) -> None:
+    # #35: a code_generation shadow with its own artifact can be code_eval'd,
+    # recording dimensions on the shadow (so composite preference pairs populate).
+    _point_output_dir(monkeypatch, tmp_path)
+    client = seeded_client[0]
+    parent = await _seed_target(db_session, client.id, tmp_path)
+    sh = JobShadow(
+        parent_job_id=parent.id, model="alt:1b", provider="ollama",
+        status=JobStatus.COMPLETE.value, response="...",
+    )
+    db_session.add(sh)
+    await db_session.commit()
+    await db_session.refresh(sh)
+    meta = build_cargo_artifact(_GOOD, job_id=sh.id, output_dir=tmp_path)
+    sh.shadow_metadata = {"artifact": meta}
+    await db_session.commit()
+
+    ce = await _seed_code_eval(db_session, client.id, sh.id, apply_to_target=True)
+    out = await execute_code_eval_job(
+        job=ce, client=client, session=db_session, build_client=_FakeBuild(_report(0)),
+    )
+
+    assert out.status == JobStatus.COMPLETE.value
+    assert json.loads(out.response)["dimensions"]["compile"] == 5
+    # the dimension landed on the SHADOW (not the parent), via the code-eval lane
+    await db_session.refresh(sh)
+    qs = (sh.shadow_metadata or {}).get("quality_scores") or []
+    assert qs[-1]["scores"] == {"compile": 5} and qs[-1]["via"] == "code-eval"
 
 
 async def test_build_service_error_fails_loudly(

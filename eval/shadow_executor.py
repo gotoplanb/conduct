@@ -17,6 +17,8 @@ from time import perf_counter
 from opentelemetry.trace import Status, StatusCode
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from codegen.artifact import ArtifactError, build_cargo_artifact
+from config.settings import get_settings
 from models.client import ClientApp
 from models.job import Job
 from models.shadow import JobShadow
@@ -28,6 +30,24 @@ from providers.registry import ProviderRegistry
 from routing.engine import derive_seed
 
 _tracer = get_tracer(__name__)
+
+
+def _store_shadow_artifact(shadow: JobShadow, parent: Job) -> dict | None:
+    """If the parent opted into a Cargo artifact (#23/#35), materialize the
+    shadow's response into a tarball at /output/{shadow.id}.tar so it can be
+    code_eval'd like the parent. Returns the artifact metadata, or an {error}
+    dict (flipping the shadow to FAILED) on malformed output, or None when not
+    opted in. Stored under shadow_metadata['artifact'] (shadows have no
+    media_url column)."""
+    if (parent.inputs or {}).get("artifact") != "cargo":
+        return None
+    output_dir = getattr(get_settings(), "tts_output_dir", "/app/output")
+    try:
+        return build_cargo_artifact(shadow.response, job_id=shadow.id, output_dir=output_dir)
+    except ArtifactError as e:
+        shadow.status = JobStatus.FAILED.value
+        shadow.error = f"artifact: {e.reason}"
+        return {"error": e.reason, "detail": e.detail}
 
 
 async def execute_shadow(
@@ -94,6 +114,10 @@ async def execute_shadow(
             span.record_exception(e)
             span.set_status(Status(StatusCode.ERROR, str(e)[:200]))
 
+        artifact = (
+            _store_shadow_artifact(shadow, parent)
+            if shadow.status == JobStatus.COMPLETE.value else None
+        )
         shadow.completed_at = datetime.now(UTC)
         shadow.shadow_metadata = {
             **(shadow.shadow_metadata or {}),
@@ -103,6 +127,7 @@ async def execute_shadow(
                 else {"source": resolved.source, "version_id": resolved.version_id}
             ),
             "duration_s": perf_counter() - started,
+            **({"artifact": artifact} if artifact is not None else {}),
         }
         await session.commit()
         await session.refresh(shadow)

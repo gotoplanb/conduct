@@ -1150,15 +1150,31 @@ _MUTANTS_TIMEOUT_S = 300
 _CODE_EVAL_CLIENT_TIMEOUT_S = 600.0
 
 
-def _resolve_code_eval_target(target: Job | None, output_dir: str) -> Path:
-    """Locate a target code_generation job's stored artifact tarball (#23) on
-    the shared output dir. Raises ValueError with a clear reason on any miss."""
+async def _load_code_eval_target(
+    session: AsyncSession, inputs: dict, output_dir: str
+) -> tuple[UUID, Path]:
+    """Parse inputs.target_job_id, resolve it to a Job or one of its shadows
+    (#35), and locate its artifact tarball. Raises ValueError on any miss
+    (caller turns it into a structured code_eval failure)."""
+    try:
+        target_id = UUID(str(inputs.get("target_job_id")))
+    except (TypeError, ValueError) as e:
+        raise ValueError(f"invalid target_job_id {inputs.get('target_job_id')!r}") from e
+    target = await session.get(Job, target_id) or await session.get(JobShadow, target_id)
+    return target_id, _resolve_code_eval_target(target, output_dir)
+
+
+def _resolve_code_eval_target(target: Job | JobShadow | None, output_dir: str) -> Path:
+    """Locate a target's stored Cargo artifact tarball (#23) on the shared output
+    dir. Works for a Job (job_metadata) or a JobShadow (shadow_metadata, #35),
+    keyed on the artifact's url. Raises ValueError with a clear reason on a miss."""
     if target is None:
         raise ValueError("target job not found")
-    artifact = (target.job_metadata or {}).get("artifact") or {}
-    if not target.media_url or not artifact.get("url"):
+    meta = getattr(target, "job_metadata", None) or getattr(target, "shadow_metadata", None) or {}
+    url = (meta.get("artifact") or {}).get("url")
+    if not url:
         raise ValueError(f"target {target.id} has no code artifact")
-    tar_path = Path(output_dir) / Path(target.media_url).name
+    tar_path = Path(output_dir) / Path(url).name
     if not tar_path.is_file():
         raise ValueError(f"artifact file missing at {tar_path}")
     return tar_path
@@ -1296,17 +1312,11 @@ async def execute_code_eval_job(
         span.set_attribute(_SPAN_TASK_TYPE, job.task_type)
         span.set_attribute(_SPAN_CLIENT_APP, client_name)
 
-        try:
-            target_id = UUID(str(inputs.get("target_job_id")))
-        except (TypeError, ValueError):
-            return await _fail_judge(
-                job, session, f"code_eval: invalid target_job_id {inputs.get('target_job_id')!r}",
-                client_name,
-            )
         settings = get_settings()
-        target = await session.get(Job, target_id)
         try:
-            tar_path = _resolve_code_eval_target(target, settings.tts_output_dir)
+            target_id, tar_path = await _load_code_eval_target(
+                session, inputs, settings.tts_output_dir
+            )
         except ValueError as e:
             return await _fail_judge(job, session, f"code_eval: {e}", client_name)
 

@@ -9,12 +9,14 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from decimal import Decimal
+from types import SimpleNamespace
 from typing import Any
 from uuid import uuid4
 
 import pytest
 import pytest_asyncio
 
+import eval.shadow_executor as shadow_executor
 from eval.fanout import (
     FanoutValidationError,
     run_fanout_secondaries,
@@ -83,6 +85,86 @@ async def parent_job(db_session, seeded_client):
     await db_session.commit()
     await db_session.refresh(job)
     return job, c
+
+
+class _CargoStub:
+    """Returns a Cargo project JSON manifest (for code-gen shadow artifacts)."""
+
+    def __init__(self, response: str) -> None:
+        self.name = "ollama"
+        self._response = response
+
+    async def complete(self, **kwargs: Any) -> ProviderResponse:
+        return ProviderResponse(
+            response=self._response, tokens_in=1, tokens_out=1,
+            cost_usd=Decimal("0"), latency_ms=1,
+            model_used=kwargs.get("model", ""), provider=self.name,
+        )
+
+
+_CARGO_MANIFEST = (
+    '{"files": {"Cargo.toml": "[package]\\nname=\\"x\\"\\nversion=\\"0.1.0\\"'
+    '\\nedition=\\"2021\\"\\n", "src/lib.rs": "pub fn f(){}\\n"}}'
+)
+
+
+async def test_execute_shadow_stores_cargo_artifact(
+    db_session, parent_job, tmp_path, monkeypatch
+) -> None:
+    # Parent opted into a Cargo artifact (#35): its shadows materialize one too,
+    # so they can be code_eval'd as candidates for composite preference pairs.
+    job, c = parent_job
+    job.inputs = {"artifact": "cargo"}
+    await db_session.commit()
+    monkeypatch.setattr(
+        shadow_executor, "get_settings", lambda: SimpleNamespace(tts_output_dir=str(tmp_path))
+    )
+    shadow = JobShadow(
+        parent_job_id=job.id, model="alt:1b", provider="ollama",
+        status=JobStatus.PENDING.value,
+    )
+    db_session.add(shadow)
+    await db_session.commit()
+    await db_session.refresh(shadow)
+
+    reg = ProviderRegistry()
+    reg.register(_CargoStub(_CARGO_MANIFEST))
+    result = await execute_shadow(
+        shadow=shadow, parent=job, client=c, max_tokens=100, providers=reg, session=db_session,
+    )
+
+    assert result.status == JobStatus.COMPLETE.value
+    art = (result.shadow_metadata or {}).get("artifact")
+    assert art and art["url"] == f"/output/{shadow.id}.tar"
+    assert art["files"] == ["Cargo.toml", "src/lib.rs"]
+    assert (tmp_path / f"{shadow.id}.tar").is_file()
+
+
+async def test_execute_shadow_malformed_artifact_marks_failed(
+    db_session, parent_job, tmp_path, monkeypatch
+) -> None:
+    job, c = parent_job
+    job.inputs = {"artifact": "cargo"}
+    await db_session.commit()
+    monkeypatch.setattr(
+        shadow_executor, "get_settings", lambda: SimpleNamespace(tts_output_dir=str(tmp_path))
+    )
+    shadow = JobShadow(
+        parent_job_id=job.id, model="alt:1b", provider="ollama",
+        status=JobStatus.PENDING.value,
+    )
+    db_session.add(shadow)
+    await db_session.commit()
+    await db_session.refresh(shadow)
+
+    reg = ProviderRegistry()
+    reg.register(_CargoStub("just prose, no project"))  # no parseable Cargo project
+    result = await execute_shadow(
+        shadow=shadow, parent=job, client=c, max_tokens=100, providers=reg, session=db_session,
+    )
+
+    assert result.status == JobStatus.FAILED.value
+    assert result.shadow_metadata["artifact"]["error"] == "no_files"
 
 
 def test_validate_fanout_targets_accepts_cloud() -> None:
