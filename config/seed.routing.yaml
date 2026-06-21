@@ -126,13 +126,14 @@ rules:
       - { model: mistral-small3.2, rate: 1.0 }   # step-down
 
   - task_type: code_generation
-    preferred_model: qwen3.5:9b
+    preferred_model: gemma4:e4b
     fallback_model: gemma4:12b
     sensitivity: public
     max_tokens: 4000
-    notes: "Rust code-gen for the eval flywheel (#22) — LOCAL-ONLY research. Primary is a JSON-reliable local model (qwen3.5:9b, proven on email_extraction/agenda_generation) so a flaky primary doesn't gate the shadow fan-out (#36). gemma4:e4b moves to a shadow — we still want to measure the small model, it just shouldn't be the anchor. Each candidate (parent + shadows) stores a Cargo artifact and gets code_eval'd, feeding composite DPO pairs (#31/#35)."
+    notes: "Rust code-gen for the eval flywheel (#22) — LOCAL-ONLY research. Primary is gemma4:e4b, the empirical winner of bench v1 (wander#6 / #37): 95% compile + 4.70 avg golden over 20 specs, vs qwen3.5:9b's 60% / 2.70. gemma4:12b added as a shadow to settle bigger-gemma; qwen3.5:9b demoted to shadow (kept on the bench to see if its failures persist). Fenced multi-file output is the reliable contract for local models (not the JSON manifest, #36). Each candidate stores a Cargo artifact and gets code_eval'd, feeding composite DPO pairs (#31/#35). Fallback stays local (no cloud) per the local-only principle."
     eval_shadow_models:
-      - { model: gemma4:e4b, rate: 1.0 }    # gemma family (small)
+      - { model: gemma4:12b, rate: 1.0 }    # NEW — e4b vs 12b head-to-head (#37)
+      - { model: qwen3.5:9b, rate: 1.0 }    # demoted from primary; stays on the bench
       - { model: llama3.2:3b, rate: 1.0 }   # llama family
 
   # The wander game splits work into two tasks: gen produces story scenarios,
