@@ -79,6 +79,32 @@ def test_fenced_preceding_bold_path() -> None:
     assert set(files) == {"Cargo.toml", "src/main.rs"}
 
 
+def test_bare_path_first_line_is_stripped() -> None:
+    # The #38 / gemma4:12b shape: untagged ```rust whose body line 1 is a bare
+    # path. The path must be used AND stripped, never left as line 1 of code.
+    lib = "pub fn whatever() -> usize { 1 }"
+    text = f"```toml Cargo.toml\n{_CARGO}```\n```rust\nsrc/lib.rs\n{lib}\n```\n"
+    files = parse_cargo_project(text)
+    assert set(files) == {"Cargo.toml", "src/lib.rs"}
+    assert files["src/lib.rs"].startswith("pub fn whatever")  # marker line gone
+    assert "src/lib.rs" not in files["src/lib.rs"]
+
+
+def test_bare_cargo_toml_first_line_is_stripped() -> None:
+    text = f"```toml\nCargo.toml\n{_CARGO}```\n```rust\nsrc/lib.rs\n{_MAIN}```\n"
+    files = parse_cargo_project(text)
+    assert files["Cargo.toml"].startswith("[package]")  # "Cargo.toml" line gone
+
+
+def test_real_code_first_line_not_stripped() -> None:
+    # A path tag in the info string + a pure-code body must NOT lose its first
+    # line (it isn't a marker).
+    lib = "use std::collections::HashMap;\npub fn f() {}"
+    text = f"```toml Cargo.toml\n{_CARGO}```\n```rust src/lib.rs\n{lib}\n```\n"
+    files = parse_cargo_project(text)
+    assert files["src/lib.rs"].startswith("use std::collections::HashMap;")
+
+
 def test_untagged_toml_rust_use_conventional_paths() -> None:
     # The common small-model shape: ```toml + ```rust with NO path tags.
     text = f"```toml\n{_CARGO}```\n\n```rust\n{_MAIN}```\n"

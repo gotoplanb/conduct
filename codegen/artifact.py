@@ -72,10 +72,18 @@ def _path_from_info(info: str) -> str | None:
     return None
 
 
-def _path_from_body(body: str) -> str | None:
-    first = body.split("\n", 1)[0]
+def _first_line_path(first: str) -> str | None:
+    """A path stated on a block's first line — either a ``// file:`` / ``# file:``
+    marker, or a **bare path on its own line** (e.g. ``src/lib.rs``, the style
+    gemma4:12b emits, #38). Returns the path, or None if line 1 isn't a marker."""
     m = _FILE_MARKER_RE.match(first)
-    return m.group(1).strip() if m else None
+    if m:
+        return m.group(1).strip()
+    return _looks_like_path(first)
+
+
+def _path_from_body(body: str) -> str | None:
+    return _first_line_path(body.split("\n", 1)[0])
 
 
 def _path_from_preceding(text: str, idx: int) -> str | None:
@@ -91,9 +99,11 @@ def _path_from_preceding(text: str, idx: int) -> str | None:
 
 
 def _strip_file_marker(body: str) -> str:
-    """Drop a leading ``// file:`` / ``# file:`` marker line from a block body."""
+    """Drop a leading path-marker line from a block body — a ``// file:`` /
+    ``# file:`` marker or a bare path on its own line (#38) — so the path never
+    ends up as line 1 of the source."""
     first, sep, rest = body.partition("\n")
-    return rest if (sep and _FILE_MARKER_RE.match(first)) else body
+    return rest if (sep and _first_line_path(first)) else body
 
 
 def _loads_tolerant(blob: str, max_fixes: int = 16):
