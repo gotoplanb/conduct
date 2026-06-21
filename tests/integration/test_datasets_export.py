@@ -4,10 +4,12 @@ See GitHub issue #16."""
 from __future__ import annotations
 
 import json
+from uuid import uuid4
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from eval.datasets import iter_preferences, iter_sft
+from models.client import ClientApp
 from models.job import Job
 from models.prompt import PromptVersion
 from models.shadow import JobShadow
@@ -242,8 +244,43 @@ async def test_export_routes_stream_jsonl(
     assert rp.status_code == 200
 
 
-async def test_export_requires_admin(client, seeded_client) -> None:
-    r = await client.get(
-        "/datasets/sft", headers={"Authorization": f"Bearer {seeded_client[1]}"}
-    )
+async def test_export_no_auth_forbidden(client) -> None:
+    r = await client.get("/datasets/sft")
     assert r.status_code in (401, 403)
+
+
+async def test_export_client_key_scopes_to_own_data(
+    client, db_session, seeded_client, client_headers
+) -> None:
+    """A client key pulls its OWN jobs only (the SaaS path, #41) — no admin
+    token needed, and it can't see another tenant's data."""
+    mine = seeded_client[0]
+    other = ClientApp(name=f"other-{uuid4().hex[:6]}", api_key_hash=uuid4().hex)
+    db_session.add(other)
+    await db_session.commit()
+    await db_session.refresh(other)
+
+    await _job(db_session, mine.id, prompt="mine?", response="ok", metadata=_qs(5))
+    await _job(db_session, other.id, prompt="theirs?", response="secret", metadata=_qs(5))
+
+    r = await client.get("/datasets/sft?task_type=qa&min_score=4", headers=client_headers)
+    assert r.status_code == 200
+    rows = [json.loads(ln) for ln in r.text.splitlines() if ln.strip()]
+    prompts = {row["prompt"] for row in rows}
+    assert "mine?" in prompts
+    assert "theirs?" not in prompts  # cross-tenant isolation
+
+
+async def test_export_admin_sees_all_clients(
+    client, db_session, seeded_client, admin_headers
+) -> None:
+    other = ClientApp(name=f"other-{uuid4().hex[:6]}", api_key_hash=uuid4().hex)
+    db_session.add(other)
+    await db_session.commit()
+    await db_session.refresh(other)
+    await _job(db_session, seeded_client[0].id, prompt="mine?", response="ok", metadata=_qs(5))
+    await _job(db_session, other.id, prompt="theirs?", response="ok", metadata=_qs(5))
+
+    r = await client.get("/datasets/sft?task_type=qa&min_score=4", headers=admin_headers)
+    prompts = {json.loads(ln)["prompt"] for ln in r.text.splitlines() if ln.strip()}
+    assert {"mine?", "theirs?"} <= prompts  # admin is unscoped

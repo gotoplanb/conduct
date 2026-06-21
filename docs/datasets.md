@@ -11,9 +11,16 @@ streamed JSONL ready for TRL / unsloth:
 | `GET /datasets/sft` | `{prompt, system, completion, meta}` | supervised fine-tuning |
 | `GET /datasets/preferences` | `{prompt, system, chosen, rejected, meta}` | DPO / preference tuning |
 
-Both are **admin-only** and stream `application/x-ndjson` (one JSON object per
-line). The flywheel: *judge scores accumulate → export → fine-tune → better
-models → more scores*, with no human labelling in the loop.
+Both accept a **client key OR the admin key**, and stream `application/x-ndjson`
+(one JSON object per line):
+
+- A **client key** pulls *its own* jobs' data only — the SaaS path: a tenant
+  consumes its training data with its normal credential, no admin token crossing
+  the service boundary, no other tenant's data visible.
+- The **admin key** is unscoped (all tenants) — for ops.
+
+The flywheel: *judge scores accumulate → export → fine-tune → better models →
+more scores*, with no human labelling in the loop.
 
 > Conduct stays **task-agnostic**: it exports `prompt` / `response` / `score`
 > and the lineage that makes them comparable. Domain-specific reshaping or
@@ -135,7 +142,7 @@ curl -s "$CONDUCT/datasets/preferences?method=pairwise" -H "Authorization: Beare
 
 ## Notes
 
-- Admin auth required (these are bulk data pulls).
+- Client-key (own data) or admin (all tenants) auth — see the top of this doc.
 - Each export scans a bounded window of recent rows (a runaway guard); raise
   `limit` to pull more, narrow with `task_type` to focus.
 - Named multi-dimensional scores are supported (#18): a row's `score` is the

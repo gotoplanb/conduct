@@ -119,10 +119,14 @@ async def iter_sft(
     prompt_version: int | None = None,
     include_shadows: bool = False,
     limit: int = 1000,
+    client_app_id: UUID | None = None,
 ) -> list[dict]:
     """High-scored (prompt, system, completion) examples. A row qualifies if the
     average of its quality_scores (optionally filtered to `via`, or to a single
-    `label_dim`) is >= min_score. All named dimensions ride in `meta`."""
+    `label_dim`) is >= min_score. All named dimensions ride in `meta`.
+
+    `client_app_id` scopes the export to one client's own jobs (a client key
+    pulling its own training data); None means unscoped (admin)."""
     cache: dict[int, str] = {}
     rows: list[dict] = []
 
@@ -138,6 +142,8 @@ async def iter_sft(
     )
     if task_type:
         job_stmt = job_stmt.where(Job.task_type == task_type)
+    if client_app_id is not None:
+        job_stmt = job_stmt.where(Job.client_app_id == client_app_id)
 
     for job in (await session.scalars(job_stmt)).all():
         avg, n, dims = _scored(job.job_metadata, via, label_dim)
@@ -164,14 +170,21 @@ async def iter_sft(
         await _append_sft_shadows(
             session, rows, cache,
             task_type=task_type, min_score=min_score, via=via, label_dim=label_dim,
-            prompt_version=prompt_version, limit=limit,
+            prompt_version=prompt_version, limit=limit, client_app_id=client_app_id,
         )
     return rows
 
 
+def _shadow_parent_ok(parent, task_type, client_app_id) -> bool:
+    """Whether a shadow's parent passes the task_type + client-ownership gates."""
+    if parent is None or (task_type and parent.task_type != task_type):
+        return False
+    return not (client_app_id is not None and parent.client_app_id != client_app_id)
+
+
 async def _append_sft_shadows(
     session: AsyncSession, rows: list[dict], cache: dict[int, str],
-    *, task_type, min_score, via, label_dim, prompt_version, limit,
+    *, task_type, min_score, via, label_dim, prompt_version, limit, client_app_id=None,
 ) -> None:
     stmt = (
         select(JobShadow)
@@ -190,7 +203,7 @@ async def _append_sft_shadows(
         if avg is None or avg < min_score:
             continue
         parent = await session.get(Job, shadow.parent_job_id)
-        if parent is None or (task_type and parent.task_type != task_type):
+        if not _shadow_parent_ok(parent, task_type, client_app_id):
             continue
         pv = _pv(parent.job_metadata)
         if prompt_version is not None and pv != prompt_version:
@@ -222,18 +235,23 @@ async def iter_preferences(
     label_dim: str | None = None,
     prompt_version: int | None = None,
     limit: int = 1000,
+    client_app_id: UUID | None = None,
 ) -> list[dict]:
     """(prompt, system, chosen, rejected) pairs. method='pairwise' reads the
     pairwise judge's verdicts directly; method='score' derives pairs from
     pointwise/panel score differentials on the same input (on `label_dim` if
-    given, else the overall score)."""
+    given, else the overall score).
+
+    `client_app_id` scopes to one client's own jobs (None = unscoped/admin)."""
     if method in ("score", "composite"):
         return await _preferences_from_scores(
             session, task_type=task_type, min_gap=min_gap, label_dim=label_dim,
             prompt_version=prompt_version, limit=limit, composite=method == "composite",
+            client_app_id=client_app_id,
         )
     return await _preferences_from_pairwise(
         session, task_type=task_type, prompt_version=prompt_version, limit=limit,
+        client_app_id=client_app_id,
     )
 
 
@@ -245,7 +263,7 @@ def _pair_row(prompt, system, chosen, rejected, meta) -> dict:
 
 
 async def _preferences_from_pairwise(
-    session: AsyncSession, *, task_type, prompt_version, limit,
+    session: AsyncSession, *, task_type, prompt_version, limit, client_app_id=None,
 ) -> list[dict]:
     """Each pairwise judge win recorded a {outcome:'win'} on the chosen side and
     'loss' on the rejected. Iterating 'win' entries yields each pair exactly
@@ -260,6 +278,8 @@ async def _preferences_from_pairwise(
     )
     if task_type:
         stmt = stmt.where(Job.task_type == task_type)
+    if client_app_id is not None:
+        stmt = stmt.where(Job.client_app_id == client_app_id)
 
     for job in (await session.scalars(stmt)).all():
         for pair in await _pairs_from_pairwise_job(session, job, prompt_version, cache):
@@ -299,7 +319,7 @@ async def _pairs_from_pairwise_job(
 
 async def _preferences_from_scores(
     session: AsyncSession, *, task_type, min_gap, label_dim, prompt_version, limit,
-    composite: bool = False,
+    composite: bool = False, client_app_id=None,
 ) -> list[dict]:
     """For each parent job, gather the parent's own response + its shadows
     (all answers to the SAME input), score each, and pair the highest- vs
@@ -320,6 +340,8 @@ async def _preferences_from_scores(
     )
     if task_type:
         stmt = stmt.where(Job.task_type == task_type)
+    if client_app_id is not None:
+        stmt = stmt.where(Job.client_app_id == client_app_id)
 
     for parent in (await session.scalars(stmt)).all():
         pv = _pv(parent.job_metadata)
