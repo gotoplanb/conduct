@@ -96,6 +96,36 @@ def _strip_file_marker(body: str) -> str:
     return rest if (sep and _FILE_MARKER_RE.match(first)) else body
 
 
+def _strip_leading_path_marker(body: str, resolved_path: str) -> str:
+    """Drop a leading bare-path line from a block body when it equals the
+    resolved path. This is the gemma4:12b shape surfaced by conduct#38:
+
+        ```rust
+        src/lib.rs
+        pub fn ...   <- actual source
+        ```
+
+    The fence is untagged, so the path is inferred from language convention
+    (or a preceding bold/backtick path). The model then ALSO echoes the path
+    as the body's first line, which — unlike the ``// file:`` / ``# file:``
+    marker — has no comment prefix, so the existing :func:`_strip_file_marker`
+    leaves it in place and rustc fails on ``src/lib.rs:1:4: expected one of
+    `!` or `::`, found `/` ``.
+
+    The strip is gated on the first line matching ``resolved_path`` exactly
+    so we never mangle source code whose first line merely looks like a
+    path. Comparison is whitespace-trimmed on both sides to absorb the
+    ``**path**`` / `` `path` `` bolding that sometimes survives into the
+    body when the model wraps the marker line in markdown emphasis.
+    """
+    if not resolved_path:
+        return body
+    first, sep, rest = body.partition("\n")
+    if not sep:
+        return body
+    return rest if first.strip() == resolved_path else body
+
+
 def _loads_tolerant(blob: str, max_fixes: int = 16):
     """json.loads, but tolerant of trailing commas — a very common LLM-JSON
     quirk (``{"a": 1,}``). On a decode error we look at the exact offending
@@ -176,7 +206,14 @@ def _extract_fenced_files(text: str) -> dict[str, str]:
         )
         if path is None:
             continue
-        files[path] = _strip_file_marker(body)
+        # Strip order: first any ``// file:`` / ``# file:`` marker (comment-style),
+        # then a leading bare path that matches the resolved path (the gemma4:12b
+        # untagged-fence shape from conduct#38). The second strip is gated on
+        # equality with the path we just inferred so it can't mangle a source
+        # whose first line merely happens to look like a path.
+        content = _strip_file_marker(body)
+        content = _strip_leading_path_marker(content, path)
+        files[path] = content
     return files
 
 

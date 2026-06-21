@@ -101,6 +101,49 @@ def test_explicit_path_beats_convention() -> None:
     assert set(files) == {"Cargo.toml", "src/thing.rs"}
 
 
+def test_untagged_rust_with_bare_path_first_line_lib() -> None:
+    # conduct#38: gemma4:12b emits an untagged ```rust fence whose first line
+    # is the bare path "src/lib.rs". Without stripping, that line ends up as
+    # line 1 of the source and rustc fails with "expected one of `!` or `::`,
+    # found `/`". The conventional-path inference already resolves the path;
+    # the body's leading path marker must be stripped.
+    # The fence regex consumes the trailing \n before the closing ```, so the
+    # body has no trailing newline once it's been captured.
+    lib_body = "src/lib.rs\npub fn whatever() -> usize { 1 }"
+    text = f"```toml\n{_CARGO}```\n```rust\n{lib_body}```\n"
+    files = parse_cargo_project(text)
+    assert set(files) == {"Cargo.toml", "src/lib.rs"}
+    assert files["src/lib.rs"] == "pub fn whatever() -> usize { 1 }"
+    # The path marker must not leak into the stored source.
+    assert files["src/lib.rs"].splitlines()[0] == "pub fn whatever() -> usize { 1 }"
+
+
+def test_untagged_rust_with_bare_path_first_line_main() -> None:
+    # Same shape as the lib variant but with fn main — the conventional-path
+    # fallback picks src/main.rs (via the fn-main detector) and the leading
+    # bare path line still needs to be stripped.
+    main_body = "src/main.rs\nfn main() { println!(\"hi\"); }"
+    text = f"```toml\n{_CARGO}```\n```rust\n{main_body}```\n"
+    files = parse_cargo_project(text)
+    assert set(files) == {"Cargo.toml", "src/main.rs"}
+    assert files["src/main.rs"] == "fn main() { println!(\"hi\"); }"
+    assert files["src/main.rs"].splitlines()[0] == "fn main() { println!(\"hi\"); }"
+
+
+def test_untagged_fence_path_marker_only_stripped_when_matches_resolved() -> None:
+    # Defensive: a leading line that LOOKS like a path but doesn't match the
+    # resolved path must NOT be stripped (it might be real code).
+    # Here the fence resolves to src/lib.rs (no fn main); the body's first line
+    # is "src/main.rs" which is a different path and must be preserved.
+    body = "src/main.rs\npub fn kept() {}"
+    text = f"```toml\n{_CARGO}```\n```rust\n{body}```\n"
+    files = parse_cargo_project(text)
+    assert set(files) == {"Cargo.toml", "src/lib.rs"}
+    # The body was stored verbatim — the line that happened to look like a
+    # path but didn't match the resolved path stayed.
+    assert files["src/lib.rs"] == body
+
+
 def test_lone_rust_snippet_fails_on_missing_cargo() -> None:
     # A bare ```rust snippet becomes src/lib.rs by convention, then fails for
     # lack of a Cargo.toml — still a structured failure, not a crash.
