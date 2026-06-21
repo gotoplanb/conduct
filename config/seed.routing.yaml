@@ -129,7 +129,7 @@ rules:
     preferred_model: gemma4:e4b
     fallback_model: gemma4:12b
     sensitivity: public
-    max_tokens: 4000
+    max_tokens: 8000
     notes: "Rust code-gen for the eval flywheel (#22) — LOCAL-ONLY research. GEMMA-ONLY fleet (#40): primary gemma4:e4b (bench v1 winner), shadow gemma4:12b (the ceiling we're chasing for the DPO run, wander#7). Non-Gemma shadows (qwen3.5:9b, llama3.2:3b) were retired after bench v2 — non-competitive (10%/30% compile) and wrong family for DPO: cross-family rejected examples teach the model to avoid THEIR failure modes, not e4b's. Fenced multi-file output is the reliable contract for local models (#36). Each candidate stores a Cargo artifact and gets code_eval'd, feeding same-family composite DPO pairs (#31/#35). Fallback stays local per the local-only principle."
     eval_shadow_models:
       - { model: gemma4:12b, rate: 1.0 }    # the ceiling; same family for clean DPO pairs (#40)
