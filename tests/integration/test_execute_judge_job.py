@@ -17,6 +17,7 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from models.job import Job
+from models.routing import RoutingRule
 from models.types import JobStatus, Sensitivity
 from providers.base import BaseProvider, ProviderError, ProviderResponse
 from providers.registry import ProviderRegistry
@@ -111,11 +112,11 @@ async def _seed_judge(
     return job
 
 
-async def _run(judge, decision, provider, client, session) -> Job:
+async def _run(judge, decision, provider, client, session, rule=None) -> Job:
     reg = ProviderRegistry()
     reg.register(provider)
     return await execute_judge_job(
-        job=judge, decision=decision, client=client, providers=reg, session=session
+        job=judge, decision=decision, client=client, providers=reg, session=session, rule=rule,
     )
 
 
@@ -493,15 +494,20 @@ def test_build_panel_excludes_self_preference_and_sensitivity() -> None:
     assert "claude-haiku-4-5" in excluded
 
 
-async def _seed_panel_judge(db, client_id, *, target_id, panel, apply_to_target=False) -> Job:
+async def _seed_panel_judge(
+    db, client_id, *, target_id, panel, apply_to_target=False, min_panel_n=None
+) -> Job:
+    inputs = {
+        "mode": "panel", "target_job_id": str(target_id),
+        "panel": panel, "apply_to_target": apply_to_target,
+    }
+    if min_panel_n is not None:
+        inputs["min_panel_n"] = min_panel_n
     job = Job(
         client_app_id=client_id, task_type="judge", sensitivity="internal",
         prompt="(judge)", system_prompt="Score the response 1-5 against the prompt.",
         status=JobStatus.PENDING.value,
-        inputs={
-            "mode": "panel", "target_job_id": str(target_id),
-            "panel": panel, "apply_to_target": apply_to_target,
-        },
+        inputs=inputs,
     )
     db.add(job)
     await db.commit()
@@ -575,6 +581,108 @@ async def test_panel_skips_failed_juror(db_session: AsyncSession, seeded_client)
     assert len(resp["failures"]) == 1
     assert {p["model"] for p in resp["panelists"]} == {"llama3.2:3b", "mistral-small3.2"}
     assert "excluded" in resp and "applied_to_target" in resp
+
+
+# --- panel quorum floor (#21) ---------------------------------------------
+
+
+async def test_panel_quorum_met_passes(db_session: AsyncSession, seeded_client) -> None:
+    # 3-model panel, one juror fails -> 2 survive; min_panel_n=2 is met -> writes.
+    client = seeded_client[0]
+    target = await _seed_target(db_session, client.id, model_used="claude-sonnet-4-6")
+    judge = await _seed_panel_judge(
+        db_session, client.id, target_id=target.id,
+        panel=["llama3.2:3b", "qwen3.5:4b", "mistral-small3.2"],
+        apply_to_target=True, min_panel_n=2,
+    )
+    provider = _StubJudgeProvider(texts=[
+        '{"score": 5, "rationale": "a"}', "garbage", '{"score": 3, "rationale": "c"}',
+    ])
+    out = await _run(judge, _decision(), provider, client, db_session)
+    assert out.status == JobStatus.COMPLETE.value
+    meta = out.job_metadata["judge"]
+    assert meta["n"] == 2 and meta["min_panel_n"] == 2
+    await db_session.refresh(target)
+    assert len((target.job_metadata or {}).get("quality_scores") or []) == 1
+
+
+async def test_panel_quorum_unmet_fails_no_writeback(
+    db_session: AsyncSession, seeded_client
+) -> None:
+    # Two of three jurors fail -> 1 survives; min_panel_n=2 unmet -> fail loudly,
+    # target untouched (no degraded 1-juror median lands in quality_scores).
+    client = seeded_client[0]
+    target = await _seed_target(db_session, client.id, model_used="claude-sonnet-4-6")
+    judge = await _seed_panel_judge(
+        db_session, client.id, target_id=target.id,
+        panel=["llama3.2:3b", "qwen3.5:4b", "mistral-small3.2"],
+        apply_to_target=True, min_panel_n=2,
+    )
+    provider = _StubJudgeProvider(texts=[
+        '{"score": 5, "rationale": "a"}', "garbage", "also garbage",
+    ])
+    out = await _run(judge, _decision(), provider, client, db_session)
+    assert out.status == JobStatus.FAILED.value
+    assert "quorum not met" in out.error and "1 of 2" in out.error
+    await db_session.refresh(target)
+    assert (target.job_metadata or {}).get("quality_scores", []) == []
+
+
+async def test_panel_unset_quorum_one_juror_still_writes(
+    db_session: AsyncSession, seeded_client
+) -> None:
+    # No min_panel_n -> today's behavior: a lone survivor still writes (no regression).
+    client = seeded_client[0]
+    target = await _seed_target(db_session, client.id, model_used="claude-sonnet-4-6")
+    judge = await _seed_panel_judge(
+        db_session, client.id, target_id=target.id,
+        panel=["llama3.2:3b", "qwen3.5:4b"], apply_to_target=True,
+    )
+    provider = _StubJudgeProvider(texts=['{"score": 4, "rationale": "a"}', "garbage"])
+    out = await _run(judge, _decision(), provider, client, db_session)
+    assert out.status == JobStatus.COMPLETE.value
+    assert out.job_metadata["judge"]["n"] == 1
+    await db_session.refresh(target)
+    assert len((target.job_metadata or {}).get("quality_scores") or []) == 1
+
+
+async def test_panel_quorum_from_rule_default(db_session: AsyncSession, seeded_client) -> None:
+    # min_panel_n on the judge RULE (no per-request value) is honored.
+    client = seeded_client[0]
+    target = await _seed_target(db_session, client.id, model_used="claude-sonnet-4-6")
+    judge = await _seed_panel_judge(
+        db_session, client.id, target_id=target.id, panel=["llama3.2:3b", "qwen3.5:4b"],
+    )
+    rule = RoutingRule(
+        task_type="judge", preferred_model="gemma4:e4b", fallback_model="gemma4:e4b",
+        sensitivity="internal", min_panel_n=2,
+    )
+    provider = _StubJudgeProvider(texts=['{"score": 4, "rationale": "a"}', "garbage"])
+    out = await _run(judge, _decision(), provider, client, db_session, rule=rule)
+    assert out.status == JobStatus.FAILED.value
+    assert "quorum not met" in out.error
+
+
+async def test_panel_request_min_panel_n_overrides_rule(
+    db_session: AsyncSession, seeded_client
+) -> None:
+    # Rule floor is 3, but the request asks for 2 and 2 survive -> request wins, passes.
+    client = seeded_client[0]
+    target = await _seed_target(db_session, client.id, model_used="claude-sonnet-4-6")
+    judge = await _seed_panel_judge(
+        db_session, client.id, target_id=target.id,
+        panel=["llama3.2:3b", "qwen3.5:4b"], min_panel_n=2,
+    )
+    rule = RoutingRule(
+        task_type="judge", preferred_model="gemma4:e4b", fallback_model="gemma4:e4b",
+        sensitivity="internal", min_panel_n=3,
+    )
+    provider = _StubJudgeProvider(texts=[
+        '{"score": 4, "rationale": "a"}', '{"score": 2, "rationale": "b"}',
+    ])
+    out = await _run(judge, _decision(), provider, client, db_session, rule=rule)
+    assert out.status == JobStatus.COMPLETE.value
+    assert out.job_metadata["judge"]["min_panel_n"] == 2
 
 
 async def test_panel_empty_after_exclusion_fails(

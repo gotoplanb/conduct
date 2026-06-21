@@ -929,6 +929,23 @@ def _panelist_allowed(
     return True
 
 
+def _resolve_min_panel_n(inputs: dict, rule: RoutingRule | None) -> int | None:
+    """The panel quorum floor (#21): per-request inputs.min_panel_n overrides the
+    rule-level default. Returns None when neither is set (no floor). A value of
+    <= 1 is treated as no floor (a single survivor is already the default-OK
+    case; the zero-survivor path fails on its own)."""
+    raw = inputs.get("min_panel_n")
+    if raw is None:
+        raw = rule.min_panel_n if rule is not None else None
+    if raw is None:
+        return None
+    try:
+        n = int(raw)
+    except (TypeError, ValueError):
+        return None
+    return n if n > 1 else None
+
+
 def _rule_panel(rule: RoutingRule | None) -> list[str]:
     """Default panel for a judge rule: its preferred model + its
     eval_shadow_models (repurposed as the jury, since judges don't shadow)."""
@@ -1101,6 +1118,18 @@ async def _execute_panel_judge(
                 job, session, f"all {len(eligible)} panelists failed: {failures}", client_name
             )
 
+        # Quorum floor (#21): when min_panel_n is set (request overrides rule),
+        # a jury that lost too many jurors fails loudly rather than writing a
+        # degraded low-n "median" to the target. Unset/<=1 = today's behavior.
+        min_panel_n = _resolve_min_panel_n(inputs, rule)
+        if min_panel_n is not None and len(scored) < min_panel_n:
+            return await _fail_judge(
+                job, session,
+                f"panel quorum not met: {len(scored)} of {min_panel_n} required jurors "
+                f"scored (failures: {failures}, excluded: {excluded})",
+                client_name,
+            )
+
         agg = _aggregate_panel(scored, dimensions)
         applied = False
         if apply_to_target:
@@ -1119,7 +1148,8 @@ async def _execute_panel_judge(
         # (#20) — panelists/failures/excluded/spread, not just the median.
         verdict = {
             "mode": "panel", "score": agg["score"], "dimensions": agg.get("dimensions"),
-            "n": agg["n"], "spread": agg["spread"], "disagreement": agg["disagreement"],
+            "n": agg["n"], "min_panel_n": min_panel_n,
+            "spread": agg["spread"], "disagreement": agg["disagreement"],
             "panelists": scored, "failures": failures, "excluded": excluded,
             "applied_to_target": applied,
         }

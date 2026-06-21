@@ -74,6 +74,35 @@ async def test_sampling_rejects_unknown_profile(client, admin_headers) -> None:
     assert r.status_code == 422
 
 
+async def test_min_panel_n_defaults_null_and_round_trips(client, admin_headers) -> None:
+    """min_panel_n (#21) defaults to null (no floor) and an explicit value
+    round-trips through PUT → GET."""
+    base = {
+        "preferred_model": "gemma4:e4b",
+        "fallback_model": "gemma4:e4b",
+        "sensitivity": "internal",
+    }
+    r = await client.put("/routing/quorum_default_task", json=base, headers=admin_headers)
+    assert r.status_code == 200 and r.json()["min_panel_n"] is None
+
+    r2 = await client.put(
+        "/routing/quorum_task", json={**base, "min_panel_n": 2}, headers=admin_headers
+    )
+    assert r2.status_code == 200 and r2.json()["min_panel_n"] == 2
+    g = await client.get("/routing/quorum_task", headers=admin_headers)
+    assert g.json()["min_panel_n"] == 2
+
+
+async def test_min_panel_n_rejects_below_two(client, admin_headers) -> None:
+    body = {
+        "preferred_model": "gemma4:e4b",
+        "fallback_model": "gemma4:e4b",
+        "min_panel_n": 1,  # a floor of 1 is meaningless; schema requires >= 2
+    }
+    r = await client.put("/routing/bad_quorum_task", json=body, headers=admin_headers)
+    assert r.status_code == 422
+
+
 async def test_upsert_validates_fanout_rate_bounds(client, admin_headers) -> None:
     body = {
         "preferred_model": "x",

@@ -160,6 +160,17 @@ fails, or the jury is empty after exclusions, the judge job fails loudly. A
 `spread >= 2` sets `disagreement: true` — a contested verdict worth a human's
 eyes. With `apply_to_target`, the median is written via `via="judge-panel"`.
 
+**Quorum floor (`min_panel_n`, #21).** By default a *single* surviving juror
+still produces a verdict (resilience). If you'd rather a thinned-out jury be
+rejected than write a low-confidence one-juror "median", set a floor — per
+request via `inputs.min_panel_n`, or as a standing default on the judge rule
+(`min_panel_n` in [`config/seed.routing.yaml`](../config/seed.routing.yaml) /
+`PUT /routing`; the request value wins). When fewer than `min_panel_n` jurors
+score, the judge job **fails loudly** (naming the shortfall + `failures`) and
+nothing is written back — the caller re-runs (a flaky juror usually parses on
+retry). Unset, or `<= 1`, is a no-op (only a zero-survivor jury fails). The
+verdict echoes `min_panel_n` so a quorum failure is self-describing.
+
 ---
 
 ## Where the scores go

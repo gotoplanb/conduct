@@ -36,6 +36,7 @@ class RoutingRuleOut(BaseModel):
     is_archived: bool = False
     media_kind: MediaKind = MediaKind.TEXT
     sampling: Sampling = Sampling.BALANCED
+    min_panel_n: int | None = None
 
 
 class RoutingRuleIn(BaseModel):
@@ -49,6 +50,9 @@ class RoutingRuleIn(BaseModel):
     # Generation profile: deterministic (temp 0 + input-derived seed),
     # balanced (temp 0.7, random), or creative (temp 1.0, random).
     sampling: Sampling = Sampling.BALANCED
+    # Panel-judge quorum floor (#21): a panel scoring fewer than this many
+    # jurors fails instead of writing a degraded low-n median. None = no floor.
+    min_panel_n: int | None = Field(default=None, ge=2, le=99)
 
 
 class RoutingListOut(BaseModel):
@@ -102,6 +106,7 @@ async def upsert_routing(
             eval_shadow_models=shadow_specs,
             media_kind=body.media_kind.value,
             sampling=body.sampling.value,
+            min_panel_n=body.min_panel_n,
         )
         session.add(rule)
     else:
@@ -113,6 +118,7 @@ async def upsert_routing(
         rule.eval_shadow_models = shadow_specs
         rule.media_kind = body.media_kind.value
         rule.sampling = body.sampling.value
+        rule.min_panel_n = body.min_panel_n
         # Revive an archived rule transparently — PUT means "make this the
         # current rule", so the operator shouldn't have to know the row is
         # archived to bring it back. Soft-delete is for cleanup hygiene,

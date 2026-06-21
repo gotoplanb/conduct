@@ -57,3 +57,8 @@ class RoutingRule(Base):
         default=Sampling.BALANCED.value,
         server_default=Sampling.BALANCED.value,
     )
+    # Panel-judge quorum floor (#21). NULL = no floor (only a zero-survivor jury
+    # fails); when set, a panel that scores fewer than this many jurors fails
+    # loudly instead of writing a degraded low-n "median" to the target. The
+    # per-request inputs.min_panel_n overrides this rule-level default.
+    min_panel_n: Mapped[int | None] = mapped_column(Integer, nullable=True)

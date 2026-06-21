@@ -93,6 +93,7 @@ async def _seed_routing(session, specs: list[dict]) -> tuple[list[str], list[str
                 eval_shadow_models=spec.get("eval_shadow_models") or [],
                 media_kind=media_kind.value,
                 sampling=sampling.value,
+                min_panel_n=spec.get("min_panel_n"),
             )
         )
         created.append(tt)
