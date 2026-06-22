@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from datetime import UTC, datetime
 from uuid import UUID
 
 from sqlalchemy import select
@@ -189,6 +190,35 @@ async def _swap_ollama_if_needed(
 
 
 async def _run_async(job_id: UUID) -> None:
+    """Dispatch wrapper with a safety net: if dispatch raises an exception that
+    no executor handled (e.g. PromptNotFoundError, an unknown task_type, a bug),
+    mark the job FAILED instead of leaving it silently PENDING forever. Then
+    re-raise so RQ records the failure too."""
+    try:
+        await _dispatch_job(job_id)
+    except Exception as exc:
+        await _mark_job_failed_safe(job_id, f"worker dispatch error: {exc}")
+        raise
+
+
+async def _mark_job_failed_safe(job_id: UUID, message: str) -> None:
+    """Flip a still-pending/running job to FAILED via a fresh session (the
+    dispatch session may be in a bad state). Best-effort; never raises."""
+    try:
+        async with get_worker_session_maker()() as session:
+            job = await session.get(Job, job_id)
+            if job is not None and job.status in (
+                JobStatus.PENDING.value, JobStatus.RUNNING.value
+            ):
+                job.status = JobStatus.FAILED.value
+                job.error = message[:2000]
+                job.completed_at = datetime.now(UTC)
+                await session.commit()
+    except Exception:
+        log.exception("failed to mark job %s failed after dispatch error", job_id)
+
+
+async def _dispatch_job(job_id: UUID) -> None:
     providers = _get_providers()
     settings = get_settings()
     SessionMaker = get_worker_session_maker()
