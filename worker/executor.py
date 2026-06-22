@@ -38,6 +38,7 @@ from codegen.build_client import (
 )
 from codegen.deps import CratesIndexClient, run_deps_check
 from codegen.structural import analyze_tar
+from codegen.train_client import DpoTrainClient, TrainServiceError
 from config.settings import get_settings
 from eval.scoring import apply_pairwise_preference, apply_score
 from models.client import ClientApp, ClientAppUsage
@@ -1411,6 +1412,86 @@ async def execute_code_eval_job(
         record_job_completion(
             status=job.status, task_type=job.task_type, model=_VIA_CODE_EVAL,
             client_app=client_name,
+        )
+        return job
+
+
+# --- dpo_fine_tune: thin provider over the external MLX training sidecar (#45) -
+
+_VIA_DPO = "dpo-fine-tune"
+
+
+async def execute_dpo_fine_tune_job(
+    *, job: Job, client: ClientApp, session: AsyncSession,
+    train_client: DpoTrainClient | None = None,
+) -> Job:
+    """DPO fine-tune as a thin Conduct task (#45). Like the media/code_eval
+    providers, Conduct carries no ML stack: it pulls the calling client's OWN
+    preference pairs (the #41 scoped export), POSTs them to the external MLX
+    training sidecar, and records the resulting servable tag + provenance. The
+    heavy training lives entirely in the sidecar (native on the M5).
+
+    Honors the declined-#44 line: Conduct dispatches + records; it does not
+    train. A missing/failed sidecar fails the job loudly — no phantom tag."""
+    from eval.datasets import iter_preferences  # noqa: PLC0415 - avoid import cycle
+
+    client_name = client.name
+    inputs = job.inputs or {}
+    base_model = inputs.get("base_model")
+    job.model_used = _VIA_DPO
+
+    with _tracer.start_as_current_span("conduct.dpo_fine_tune") as span:
+        span.set_attribute(_SPAN_JOB_ID, str(job.id))
+        span.set_attribute(_SPAN_TASK_TYPE, job.task_type)
+        span.set_attribute(_SPAN_CLIENT_APP, client_name)
+
+        if not base_model:
+            return await _fail_judge(job, session, "dpo_fine_tune: inputs.base_model is required",
+                                     client_name)
+
+        # Pull the caller's OWN preference pairs — same shape /datasets/preferences
+        # returns, scoped by client_app_id so a tenant only trains on its data.
+        pairs = await iter_preferences(
+            session,
+            task_type=inputs.get("source_task_type"),
+            method=inputs.get("method", "composite"),
+            min_gap=float(inputs.get("min_gap", 2.0)),
+            label_dim=inputs.get("label_dim"),
+            limit=int(inputs.get("limit", 1000)),
+            client_app_id=job.client_app_id,
+        )
+        if not pairs:
+            return await _fail_judge(
+                job, session, "dpo_fine_tune: no preference pairs to train on "
+                f"(source_task_type={inputs.get('source_task_type')!r})", client_name)
+
+        job.status = JobStatus.RUNNING.value
+        job.started_at = datetime.now(UTC)
+        await session.commit()
+
+        tc = train_client or DpoTrainClient(get_settings().dpo_train_url)
+        started = perf_counter()
+        try:
+            result = await tc.train(
+                base_model=base_model, pairs=pairs, training=inputs.get("training"),
+            )
+        except TrainServiceError as e:
+            return await _fail_judge(job, session, f"dpo_fine_tune: {e}", client_name)
+
+        job.model_used = result.tag  # the new servable tag is the job's result
+        job.status = JobStatus.COMPLETE.value
+        job.completed_at = datetime.now(UTC)
+        job.latency_ms = int((perf_counter() - started) * 1000)
+        training_meta = {**result.as_metadata(), "base_model": base_model,
+                         "pairs_submitted": len(pairs)}
+        job.response = json.dumps({"mode": "dpo_fine_tune", "tag": result.tag, **training_meta})
+        job.job_metadata = {**(job.job_metadata or {}), "training": training_meta}
+        span.set_attribute("dpo.tag", result.tag)
+        span.set_attribute("dpo.pairs", len(pairs))
+        await session.commit()
+        await session.refresh(job)
+        record_job_completion(
+            status=job.status, task_type=job.task_type, model=result.tag, client_app=client_name,
         )
         return job
 

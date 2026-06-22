@@ -58,6 +58,14 @@ class Settings(BaseSettings):
         default="http://host.docker.internal:8055", alias="RUST_BUILD_URL"
     )
 
+    # The external MLX DPO training sidecar (#45) — a native-macOS daemon on the
+    # M5 wrapping mlx-tune. host.docker.internal because, like ComfyUI/ACE-Step,
+    # it runs native (MLX needs Metal) beside the worker, not in Docker. Local-
+    # only: a cloud worker won't have this and dpo_fine_tune fails cleanly.
+    dpo_train_url: str = Field(
+        default="http://host.docker.internal:8077", alias="DPO_TRAIN_URL"
+    )
+
     # Grafana base URL used by the UI to build deep-links into Tempo for a
     # specific job's trace. Set to empty to suppress the link.
     grafana_base_url: str = Field(default="http://localhost:3000", alias="GRAFANA_BASE_URL")

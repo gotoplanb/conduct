@@ -28,6 +28,7 @@ from routing.engine import SensitivityViolation, decide
 from worker.db import get_worker_session_maker
 from worker.executor import (
     execute_code_eval_job,
+    execute_dpo_fine_tune_job,
     execute_job,
     execute_judge_job,
     is_judge_job,
@@ -264,6 +265,16 @@ async def _run_async(job_id: UUID) -> None:
                     job=job, client=client, session=session
                 )
                 dispatch_span.set_attribute(_DISPATCH_OUTCOME, "code_eval_executed")
+                return
+
+            # dpo_fine_tune branch: a thin provider over the external MLX
+            # training sidecar (#45). No model/routing — it pulls the client's
+            # preference pairs and POSTs them out, like code_eval/media.
+            if job.task_type == "dpo_fine_tune":
+                await execute_dpo_fine_tune_job(
+                    job=job, client=client, session=session
+                )
+                dispatch_span.set_attribute(_DISPATCH_OUTCOME, "dpo_fine_tune_executed")
                 return
 
             decision = await _decide_or_fail(
