@@ -78,7 +78,7 @@ async def test_dpo_fine_tune_trains_and_records_tag(
     await _seed_pair(db_session, client.id)
     job = await _seed_dpo_job(db_session, client.id)
     result = TrainResult(
-        tag="gemma4-e4b-dpo-abc123", gguf_path="/m5/out/x.gguf",
+        tag="gemma4-e4b-dpo-abc123", artifact_path="/m5/out/x.gguf",
         pairs_consumed=1, training_time_s=42.0, dataset_sha="deadbeef",
     )
     stub = _FakeTrain(result)

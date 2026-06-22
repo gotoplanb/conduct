@@ -17,7 +17,7 @@ def _client(handler) -> DpoTrainClient:
 
 
 _OK = {
-    "tag": "gemma4-e4b-dpo-abc", "gguf_path": "/m5/x.gguf",
+    "tag": "gemma4-e4b-dpo-abc", "artifact_path": "/m5/x.gguf",
     "pairs_consumed": 12, "training_time_s": 99.5, "dataset_sha": "deadbeef",
 }
 
@@ -77,7 +77,7 @@ async def test_train_unreachable_raises() -> None:
 
 async def test_train_missing_tag_raises() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json={"gguf_path": "/x"})  # no tag
+        return httpx.Response(200, json={"artifact_path": "/x"})  # no tag
 
     with pytest.raises(TrainServiceError, match="no tag"):
         await _client(handler).train(base_model="m", pairs=[])

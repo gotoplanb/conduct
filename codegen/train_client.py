@@ -15,7 +15,7 @@ Authoritative contract the sidecar implements:
     POST /train
       {"base_model", "pairs": [{prompt, system, chosen, rejected}, ...],
        "training": {epochs, lora_rank, lora_alpha, beta, learning_rate}?}
-    -> {"tag", "gguf_path", "pairs_consumed", "training_time_s", "dataset_sha"}
+    -> {"tag", "artifact_path", "pairs_consumed", "training_time_s", "dataset_sha"}
 """
 
 from __future__ import annotations
@@ -32,7 +32,7 @@ DEFAULT_TRAIN_TIMEOUT_S = 7200.0
 @dataclass
 class TrainResult:
     tag: str
-    gguf_path: str
+    artifact_path: str
     pairs_consumed: int
     training_time_s: float
     dataset_sha: str
@@ -40,7 +40,7 @@ class TrainResult:
     def as_metadata(self) -> dict:
         """The provenance block stored on the job (metadata.training)."""
         return {
-            "tag": self.tag, "gguf_path": self.gguf_path,
+            "tag": self.tag, "artifact_path": self.artifact_path,
             "pairs_consumed": self.pairs_consumed,
             "training_time_s": self.training_time_s, "dataset_sha": self.dataset_sha,
         }
@@ -89,7 +89,7 @@ def _parse_result(body: dict) -> TrainResult:
         raise TrainServiceError(f"training sidecar returned no tag: {body!r}"[:300])
     return TrainResult(
         tag=str(tag),
-        gguf_path=str(body.get("gguf_path") or ""),
+        artifact_path=str(body.get("artifact_path") or ""),
         pairs_consumed=int(body.get("pairs_consumed") or 0),
         training_time_s=float(body.get("training_time_s") or 0.0),
         dataset_sha=str(body.get("dataset_sha") or ""),
