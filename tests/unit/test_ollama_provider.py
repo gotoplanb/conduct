@@ -79,6 +79,63 @@ async def test_options_omit_temperature_and_seed_when_unset() -> None:
 
 
 @pytest.mark.asyncio
+async def test_num_ctx_lands_in_complete_options() -> None:
+    """A bounded num_ctx must reach Ollama on serve, so the request reuses the
+    pinned resident instance instead of reloading at the model's max context
+    (which would evict the rest of the resident set)."""
+    base = "http://localhost:11434"
+    captured: dict = {}
+    with respx.mock(base_url=base) as mock:
+        def _capture(request):
+            import json
+            captured.update(json.loads(request.content))
+            return httpx.Response(200, json={"response": "x", "done": True})
+
+        mock.post("/api/generate").mock(side_effect=_capture)
+        provider = OllamaProvider(base_url=base, num_ctx=16384)
+        await provider.complete(prompt="hi", model="m")
+
+    assert captured["options"]["num_ctx"] == 16384
+
+
+@pytest.mark.asyncio
+async def test_num_ctx_lands_in_load_options() -> None:
+    """load() must pin at the same bounded context complete() serves at."""
+    base = "http://localhost:11434"
+    captured: dict = {}
+    with respx.mock(base_url=base) as mock:
+        def _capture(request):
+            import json
+            captured.update(json.loads(request.content))
+            return httpx.Response(200, json={"response": "", "done": True})
+
+        mock.post("/api/generate").mock(side_effect=_capture)
+        provider = OllamaProvider(base_url=base, num_ctx=16384)
+        await provider.load("m", keep_alive=-1)
+
+    assert captured["options"]["num_ctx"] == 16384
+    assert captured["keep_alive"] == -1
+
+
+@pytest.mark.asyncio
+async def test_num_ctx_omitted_when_unset() -> None:
+    """Default (no num_ctx) must not inject the option — preserves prior behavior."""
+    base = "http://localhost:11434"
+    captured: dict = {}
+    with respx.mock(base_url=base) as mock:
+        def _capture(request):
+            import json
+            captured.update(json.loads(request.content))
+            return httpx.Response(200, json={"response": "x", "done": True})
+
+        mock.post("/api/generate").mock(side_effect=_capture)
+        provider = OllamaProvider(base_url=base)
+        await provider.complete(prompt="hi", model="m")
+
+    assert "num_ctx" not in captured["options"]
+
+
+@pytest.mark.asyncio
 async def test_404_raises_model_not_loaded() -> None:
     base = "http://localhost:11434"
     with respx.mock(base_url=base) as mock:

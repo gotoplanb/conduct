@@ -11,6 +11,14 @@ class Settings(BaseSettings):
     redis_url: str = Field(default="redis://localhost:6379/0", alias="REDIS_URL")
 
     ollama_base_url: str = Field(default="http://localhost:11434", alias="OLLAMA_BASE_URL")
+    # Context window Conduct requests when loading/serving every Ollama model.
+    # Ollama 0.30+ otherwise defaults num_ctx to each model's *max* trained
+    # context (e.g. 131k–262k), whose KV cache (~15GB for a 3B at 131k) blows
+    # up unified memory and evicts the rest of the resident set — only one model
+    # stays hot, breaking routing + shadow fan-out. Bounding it lets the whole
+    # resident set co-reside. Must be applied to both load() and complete() so a
+    # serve request doesn't reload at a different context and re-evict.
+    ollama_num_ctx: int = Field(default=16384, alias="OLLAMA_NUM_CTX")
     anthropic_api_key: str | None = Field(default=None, alias="ANTHROPIC_API_KEY")
 
     admin_key: str = Field(alias="CONDUCT_ADMIN_KEY")

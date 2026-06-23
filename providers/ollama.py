@@ -19,9 +19,17 @@ DEFAULT_TIMEOUT_S = 300.0
 class OllamaProvider(BaseProvider):
     name = "ollama"
 
-    def __init__(self, base_url: str, timeout_s: float = DEFAULT_TIMEOUT_S) -> None:
+    def __init__(
+        self,
+        base_url: str,
+        timeout_s: float = DEFAULT_TIMEOUT_S,
+        num_ctx: int | None = None,
+    ) -> None:
         self.base_url = base_url.rstrip("/")
         self.timeout_s = timeout_s
+        # Bounded context applied to every load + serve so the resident set
+        # co-resides (see Settings.ollama_num_ctx). None => let Ollama decide.
+        self.num_ctx = num_ctx
 
     async def complete(
         self,
@@ -41,6 +49,11 @@ class OllamaProvider(BaseProvider):
             options["temperature"] = temperature
         if seed is not None:
             options["seed"] = seed
+        # Pin the served context to the same value we load resident models with,
+        # so a serve request reuses the hot instance instead of triggering a
+        # full-context reload that evicts the rest of the resident set.
+        if self.num_ctx is not None:
+            options["num_ctx"] = self.num_ctx
         payload: dict = {
             "model": model,
             "prompt": prompt,
@@ -104,6 +117,10 @@ class OllamaProvider(BaseProvider):
         payload: dict = {"model": model, "prompt": "", "stream": False}
         if keep_alive is not None:
             payload["keep_alive"] = keep_alive
+        # Load at the bounded context so the pinned instance matches what
+        # complete() serves (otherwise the first real request reloads the model).
+        if self.num_ctx is not None:
+            payload["options"] = {"num_ctx": self.num_ctx}
         async with httpx.AsyncClient(timeout=self.timeout_s) as client:
             resp = await client.post(f"{self.base_url}/api/generate", json=payload)
             resp.raise_for_status()

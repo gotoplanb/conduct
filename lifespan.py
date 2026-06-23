@@ -43,7 +43,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     # Providers.
     registry = ProviderRegistry()
-    registry.register(OllamaProvider(base_url=settings.ollama_base_url))
+    registry.register(OllamaProvider(
+        base_url=settings.ollama_base_url, num_ctx=settings.ollama_num_ctx,
+    ))
     if settings.anthropic_api_key:
         registry.register(AnthropicProvider(api_key=settings.anthropic_api_key))
     else:
