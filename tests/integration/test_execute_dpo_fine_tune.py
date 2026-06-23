@@ -141,6 +141,77 @@ async def test_dpo_fine_tune_sidecar_error_fails_loudly(
     assert "dpo_fine_tune:" in out.error and "unreachable" in out.error
 
 
+class _StubOllama:
+    name = "ollama"
+
+    def __init__(self) -> None:
+        self.unloaded: list[str] = []
+        self.pinned: list[str] = []
+
+    async def unload(self, model) -> None:
+        self.unloaded.append(model)
+
+    async def load(self, model, keep_alive=None) -> None:
+        self.pinned.append(model)
+
+
+class _StubRegistry:
+    def __init__(self, ollama) -> None:
+        self._ollama = ollama
+
+    def has(self, name) -> bool:
+        return name == "ollama"
+
+    def get(self, name):
+        return self._ollama
+
+
+async def test_dpo_fine_tune_frees_and_repins_resident_models(
+    db_session: AsyncSession, seeded_client, monkeypatch
+) -> None:
+    # Conduct owns the GPU-memory dance: unload resident models before training,
+    # re-pin after (#45). Verify both happen around a successful train.
+    import providers.resident as resident
+    monkeypatch.setattr(resident, "resident_model_names", lambda: ["gemma4:e4b", "llama3.2:3b"])
+    client = seeded_client[0]
+    await _seed_pair(db_session, client.id)
+    job = await _seed_dpo_job(db_session, client.id)
+    ollama = _StubOllama()
+    result = TrainResult(
+        tag="t", artifact_path="/x", pairs_consumed=1, training_time_s=1.0, dataset_sha="s",
+    )
+
+    out = await execute_dpo_fine_tune_job(
+        job=job, client=client, session=db_session,
+        providers=_StubRegistry(ollama), train_client=_FakeTrain(result),
+    )
+
+    assert out.status == JobStatus.COMPLETE.value
+    assert ollama.unloaded == ["gemma4:e4b", "llama3.2:3b"]  # freed before train
+    assert ollama.pinned == ["gemma4:e4b", "llama3.2:3b"]    # re-pinned after
+
+
+async def test_dpo_fine_tune_repins_even_on_failure(
+    db_session: AsyncSession, seeded_client, monkeypatch
+) -> None:
+    # Serving must be restored even if training fails.
+    import providers.resident as resident
+    monkeypatch.setattr(resident, "resident_model_names", lambda: ["gemma4:e4b"])
+    client = seeded_client[0]
+    await _seed_pair(db_session, client.id)
+    job = await _seed_dpo_job(db_session, client.id)
+    ollama = _StubOllama()
+
+    out = await execute_dpo_fine_tune_job(
+        job=job, client=client, session=db_session,
+        providers=_StubRegistry(ollama), train_client=_FakeTrain(raise_error=True),
+    )
+
+    assert out.status == JobStatus.FAILED.value
+    assert ollama.unloaded == ["gemma4:e4b"]
+    assert ollama.pinned == ["gemma4:e4b"]  # re-pinned despite the failure
+
+
 async def test_dpo_fine_tune_scopes_to_caller(db_session: AsyncSession, seeded_client) -> None:
     """Pairs from ANOTHER client must not be trained on."""
     from uuid import uuid4

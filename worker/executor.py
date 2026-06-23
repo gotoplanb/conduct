@@ -51,6 +51,7 @@ from observability.tracing import get_tracer
 from prompt_loader import ResolvedPrompt, resolve_prompt
 from providers.base import BaseProvider, ProviderError, ProviderResponse
 from providers.registry import ProviderRegistry, is_cloud, provider_for_model
+from providers.resident import pin_resident_models, unload_resident_models
 from retry.base import FailureContext, FailureHandler, HandlerAction
 from retry.static import StaticFailureHandler
 from routing.engine import RoutingDecision, derive_seed
@@ -1423,6 +1424,7 @@ _VIA_DPO = "dpo-fine-tune"
 
 async def execute_dpo_fine_tune_job(
     *, job: Job, client: ClientApp, session: AsyncSession,
+    providers: ProviderRegistry | None = None,
     train_client: DpoTrainClient | None = None,
 ) -> Job:
     """DPO fine-tune as a thin Conduct task (#45). Like the media/code_eval
@@ -1469,31 +1471,47 @@ async def execute_dpo_fine_tune_job(
         job.started_at = datetime.now(UTC)
         await session.commit()
 
+        # Free the resident serving models (~37GB) so MLX training has the GPU
+        # memory it needs — the box can't hold the pinned set + a training peak
+        # at once. Conduct owns this (the client never stops Ollama). Re-pinned
+        # in `finally` so serving is restored whether training succeeds or not.
+        ollama = providers.get("ollama") if providers and providers.has("ollama") else None
+        if ollama is not None:
+            await unload_resident_models(ollama)
+
         tc = train_client or DpoTrainClient(get_settings().dpo_train_url)
         started = perf_counter()
         try:
-            result = await tc.train(
-                base_model=base_model, pairs=pairs, training=inputs.get("training"),
-            )
-        except TrainServiceError as e:
-            return await _fail_judge(job, session, f"dpo_fine_tune: {e}", client_name)
+            try:
+                result = await tc.train(
+                    base_model=base_model, pairs=pairs, training=inputs.get("training"),
+                )
+            except TrainServiceError as e:
+                return await _fail_judge(job, session, f"dpo_fine_tune: {e}", client_name)
 
-        job.model_used = result.tag  # the new servable tag is the job's result
-        job.status = JobStatus.COMPLETE.value
-        job.completed_at = datetime.now(UTC)
-        job.latency_ms = int((perf_counter() - started) * 1000)
-        training_meta = {**result.as_metadata(), "base_model": base_model,
-                         "pairs_submitted": len(pairs)}
-        job.response = json.dumps({"mode": "dpo_fine_tune", "tag": result.tag, **training_meta})
-        job.job_metadata = {**(job.job_metadata or {}), "training": training_meta}
-        span.set_attribute("dpo.tag", result.tag)
-        span.set_attribute("dpo.pairs", len(pairs))
-        await session.commit()
-        await session.refresh(job)
-        record_job_completion(
-            status=job.status, task_type=job.task_type, model=result.tag, client_app=client_name,
-        )
-        return job
+            job.model_used = result.tag  # the new servable tag is the job's result
+            job.status = JobStatus.COMPLETE.value
+            job.completed_at = datetime.now(UTC)
+            job.latency_ms = int((perf_counter() - started) * 1000)
+            training_meta = {**result.as_metadata(), "base_model": base_model,
+                             "pairs_submitted": len(pairs)}
+            job.response = json.dumps(
+                {"mode": "dpo_fine_tune", "tag": result.tag, **training_meta}
+            )
+            job.job_metadata = {**(job.job_metadata or {}), "training": training_meta}
+            span.set_attribute("dpo.tag", result.tag)
+            span.set_attribute("dpo.pairs", len(pairs))
+            await session.commit()
+            await session.refresh(job)
+            record_job_completion(
+                status=job.status, task_type=job.task_type, model=result.tag,
+                client_app=client_name,
+            )
+            return job
+        finally:
+            # Restore the resident serving set regardless of outcome.
+            if ollama is not None:
+                await pin_resident_models(ollama)
 
 
 async def execute_media_job(

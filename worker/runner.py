@@ -301,8 +301,10 @@ async def _dispatch_job(job_id: UUID) -> None:
             # training sidecar (#45). No model/routing — it pulls the client's
             # preference pairs and POSTs them out, like code_eval/media.
             if job.task_type == "dpo_fine_tune":
+                # providers passed so the executor can free/re-pin the resident
+                # Ollama set around training (GPU-memory contention, #45).
                 await execute_dpo_fine_tune_job(
-                    job=job, client=client, session=session
+                    job=job, client=client, session=session, providers=providers
                 )
                 dispatch_span.set_attribute(_DISPATCH_OUTCOME, "dpo_fine_tune_executed")
                 return

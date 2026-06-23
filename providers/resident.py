@@ -46,3 +46,20 @@ async def pin_resident_models(ollama: OllamaProvider) -> list[str]:
         except Exception as e:
             log.warning("failed to pin resident model %s: %s", name, e)
     return pinned
+
+
+async def unload_resident_models(ollama: OllamaProvider) -> list[str]:
+    """Evict every resident model from GPU memory (keep_alive=0). The inverse of
+    pin_resident_models — used to free unified memory for a heavy local job
+    (DPO training) on this shared box, since the ~37GB pinned set otherwise
+    contends with MLX and OOMs. Best-effort per model; a re-pin restores serving
+    afterward. Returns the names unloaded."""
+    unloaded: list[str] = []
+    for name in resident_model_names():
+        try:
+            await ollama.unload(name)
+            unloaded.append(name)
+            log.info("unloaded resident model: %s", name)
+        except Exception as e:
+            log.warning("failed to unload resident model %s: %s", name, e)
+    return unloaded
