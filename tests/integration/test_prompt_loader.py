@@ -7,6 +7,7 @@ in conftest.py rolls everything back after each test.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from uuid import uuid4
 
 import pytest
@@ -114,11 +115,21 @@ async def test_version_id_returns_most_recent(
     db_session.add(
         Prompt(task_type=unique_task_type, client_id=None, content="v2 content")
     )
+    # Force the tie the resolver must break: both versions share edited_at, so
+    # ordering by edited_at alone is undefined. The row added second (higher PK)
+    # is the genuine "most recent" and must win deterministically (conduct#48).
+    same_ts = datetime(2026, 1, 1, tzinfo=UTC)
     db_session.add(
-        PromptVersion(task_type=unique_task_type, client_id=None, content="v1 content")
+        PromptVersion(
+            task_type=unique_task_type, client_id=None,
+            content="v1 content", edited_at=same_ts,
+        )
     )
     db_session.add(
-        PromptVersion(task_type=unique_task_type, client_id=None, content="v2 content")
+        PromptVersion(
+            task_type=unique_task_type, client_id=None,
+            content="v2 content", edited_at=same_ts,
+        )
     )
     await db_session.commit()
 

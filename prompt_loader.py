@@ -92,5 +92,12 @@ async def _latest_version_id(
         stmt = stmt.where(PromptVersion.client_id.is_(None))
     else:
         stmt = stmt.where(PromptVersion.client_id == client_id)
-    stmt = stmt.order_by(PromptVersion.edited_at.desc()).limit(1)
+    # id is the tie-breaker: edited_at is a per-row datetime.now() that can
+    # collide when versions are written in the same tick, and ORDER BY a
+    # non-unique column has no defined order on ties. The monotonic PK reflects
+    # true insertion order, so "highest id" is unambiguously the most recent
+    # (conduct#48).
+    stmt = stmt.order_by(
+        PromptVersion.edited_at.desc(), PromptVersion.id.desc()
+    ).limit(1)
     return await session.scalar(stmt)
