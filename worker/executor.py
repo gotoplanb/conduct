@@ -51,7 +51,12 @@ from observability.tracing import get_tracer
 from prompt_loader import ResolvedPrompt, resolve_prompt
 from providers.base import BaseProvider, ProviderError, ProviderResponse
 from providers.registry import ProviderRegistry, is_cloud, provider_for_model
-from providers.resident import pin_resident_models, unload_resident_models
+from providers.resident import (
+    pin_resident_models,
+    resume_residency,
+    suspend_residency,
+    unload_resident_models,
+)
 from retry.base import FailureContext, FailureHandler, HandlerAction
 from retry.static import StaticFailureHandler
 from routing.engine import RoutingDecision, derive_seed
@@ -1477,6 +1482,9 @@ async def execute_dpo_fine_tune_job(
         # in `finally` so serving is restored whether training succeeds or not.
         ollama = providers.get("ollama") if providers and providers.has("ollama") else None
         if ollama is not None:
+            # Pause the reconcile loop before unloading, so it doesn't re-pin the
+            # set mid-training and undo the memory we just freed (conduct#47).
+            suspend_residency()
             await unload_resident_models(ollama)
 
         tc = train_client or DpoTrainClient(get_settings().dpo_train_url)
@@ -1509,9 +1517,12 @@ async def execute_dpo_fine_tune_job(
             )
             return job
         finally:
-            # Restore the resident serving set regardless of outcome.
+            # Restore the resident serving set regardless of outcome, then let
+            # the reconcile loop resume guarding it (re-pin first, so there's no
+            # window where reconcile sees the set down and races us).
             if ollama is not None:
                 await pin_resident_models(ollama)
+                resume_residency()
 
 
 async def execute_media_job(

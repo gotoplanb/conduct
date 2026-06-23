@@ -12,6 +12,7 @@ Callers consult `is_resident(model)` rather than re-deriving from settings.
 from __future__ import annotations
 
 import logging
+import threading
 
 from config.settings import get_settings
 from providers.ollama import OllamaProvider
@@ -20,6 +21,30 @@ log = logging.getLogger(__name__)
 
 # Sentinel value Ollama interprets as "never unload."
 PIN_FOREVER = -1
+
+# When set, residency reconciliation is paused: a dpo_fine_tune job is
+# intentionally holding the resident set unloaded to free GPU memory for MLX
+# training (see execute_dpo_fine_tune_job). The reconcile loop must NOT re-pin
+# during that window — doing so would re-contend the memory the unload exists to
+# free and risk the Metal OOM. The DPO executor sets it around train and clears
+# it after re-pinning. Cross-thread: the reconcile runs in a daemon thread while
+# the DPO job runs in the worker's main thread, so a threading.Event is the
+# right primitive.
+_residency_suspended = threading.Event()
+
+
+def suspend_residency() -> None:
+    """Pause resident reconciliation (a heavy local job is freeing the GPU)."""
+    _residency_suspended.set()
+
+
+def resume_residency() -> None:
+    """Resume resident reconciliation after the resident set is restored."""
+    _residency_suspended.clear()
+
+
+def residency_suspended() -> bool:
+    return _residency_suspended.is_set()
 
 
 def resident_model_names() -> list[str]:
@@ -63,3 +88,41 @@ async def unload_resident_models(ollama: OllamaProvider) -> list[str]:
         except Exception as e:
             log.warning("failed to unload resident model %s: %s", name, e)
     return unloaded
+
+
+async def reconcile_resident_models(ollama: OllamaProvider) -> list[str]:
+    """Re-pin any resident model that's no longer loaded.
+
+    The worker pins residents once at boot, but the Ollama server can restart
+    independently (crash, OOM-abort, KeepAlive respawn, manual restart, binary
+    update) and evict the whole set — leaving residents cold with no recovery
+    until the worker restarts (conduct#47). A periodic reconcile makes the
+    resident guarantee self-healing: it compares the configured set against
+    what's actually loaded (`/api/ps`) and re-pins the gaps. Recovers from any
+    eviction cause, not just restarts.
+
+    No-op while residency is suspended (a dpo_fine_tune job holds the set down).
+    Best-effort and fully logged; never raises. Returns the names re-pinned."""
+    if residency_suspended():
+        return []
+    wanted = resident_model_names()
+    if not wanted:
+        return []
+    try:
+        loaded = await ollama.list_loaded()
+        loaded_names = {m["name"] for m in loaded}
+    except Exception as e:
+        log.warning("resident reconcile: could not list loaded models: %s", e)
+        return []
+
+    repinned: list[str] = []
+    for name in wanted:
+        if name in loaded_names:
+            continue
+        try:
+            await ollama.load(name, keep_alive=PIN_FOREVER)
+            repinned.append(name)
+            log.info("resident reconcile: re-pinned evicted model %s", name)
+        except Exception as e:
+            log.warning("resident reconcile: failed to re-pin %s: %s", name, e)
+    return repinned

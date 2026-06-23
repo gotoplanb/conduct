@@ -116,6 +116,10 @@ def main() -> None:
             ollama = providers.get("ollama")
             pinned = asyncio.run(pin_resident_models(ollama))
             log.info("pinned %d resident model(s): %s", len(pinned), pinned)
+            # Boot-time pinning is one-shot; an Ollama restart later would evict
+            # the set with no recovery. A background loop re-pins evicted
+            # residents so the guarantee self-heals (conduct#47).
+            _start_resident_reconcile(ollama, settings.resident_reconcile_interval_s, log)
 
     _install_sigusr1_pricing_reload(log)
 
@@ -128,6 +132,38 @@ def main() -> None:
     # can block another media job (we only run one worker process per pod).
     worker = SimpleWorker([main_queue, media_queue, shadow_queue], connection=redis)
     worker.work(with_scheduler=False)
+
+
+def _start_resident_reconcile(ollama, interval_s: int, log: logging.Logger) -> None:
+    """Spawn a daemon thread that periodically re-pins evicted resident models.
+
+    SimpleWorker.work() blocks the main thread, so the reconcile runs in its own
+    daemon thread with a fresh event loop per tick (a cheap /api/ps + any
+    re-pins). Daemon => dies with the worker; never blocks shutdown. interval_s
+    <= 0 disables it. The reconcile itself no-ops while a dpo_fine_tune job has
+    suspended residency, so it won't fight the training memory dance."""
+    if interval_s <= 0:
+        log.info("resident reconcile disabled (interval=%ds)", interval_s)
+        return
+
+    import asyncio  # noqa: PLC0415
+    import threading  # noqa: PLC0415
+    import time  # noqa: PLC0415
+
+    from providers.resident import reconcile_resident_models  # noqa: PLC0415
+
+    def _loop() -> None:
+        while True:
+            time.sleep(interval_s)
+            try:
+                repinned = asyncio.run(reconcile_resident_models(ollama))
+                if repinned:
+                    log.warning("resident reconcile re-pinned %s", repinned)
+            except Exception:  # noqa: BLE001
+                log.exception("resident reconcile tick failed")
+
+    threading.Thread(target=_loop, name="resident-reconcile", daemon=True).start()
+    log.info("resident reconcile loop started (every %ds)", interval_s)
 
 
 def _install_sigusr1_pricing_reload(log: logging.Logger) -> None:

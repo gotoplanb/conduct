@@ -47,6 +47,13 @@ class Settings(BaseSettings):
     # through the worker queue, enabling parallel fan-out for real-time eval.
     resident_models_raw: str = Field(default="", alias="RESIDENT_MODELS")
 
+    # How often (seconds) the worker reconciles the resident set against what's
+    # actually loaded in Ollama, re-pinning any model evicted by an Ollama
+    # restart or memory pressure (conduct#47). 0 disables the reconcile loop.
+    resident_reconcile_interval_s: int = Field(
+        default=30, alias="RESIDENT_RECONCILE_INTERVAL_S"
+    )
+
     # TTS — directory holding Piper voice files (.onnx + .onnx.json) and the
     # output directory where generated MP3s land. Both default to repo-relative
     # paths suitable for local dev; in containers, mount these as volumes.
