@@ -535,3 +535,38 @@ async def test_mcp_middleware_passes_non_http(mcp_sessionmaker) -> None:
 
     await OAuthMiddleware(inner)({"type": "lifespan"}, None, None)
     assert called["v"] is True
+
+
+@pytest.mark.parametrize(
+    ("scope_in", "path_out"),
+    [
+        ({"type": "http", "path": "/mcp", "raw_path": b"/mcp"}, "/mcp/"),
+        ({"type": "http", "path": "/mcp/", "raw_path": b"/mcp/"}, "/mcp/"),
+        ({"type": "http", "path": "/mcpx", "raw_path": b"/mcpx"}, "/mcpx"),
+        ({"type": "http", "path": "/jobs", "raw_path": b"/jobs"}, "/jobs"),
+    ],
+)
+async def test_mcp_trailing_slash_rewrite(scope_in: dict, path_out: str) -> None:
+    from main import MCPTrailingSlashRewrite
+
+    seen: dict = {}
+
+    async def inner(scope, receive, send) -> None:
+        seen["path"] = scope["path"]
+        seen["raw_path"] = scope["raw_path"]
+
+    await MCPTrailingSlashRewrite(inner)(scope_in, None, None)
+    assert seen["path"] == path_out
+    assert seen["raw_path"] == path_out.encode()
+
+
+async def test_mcp_trailing_slash_rewrite_ignores_non_http() -> None:
+    from main import MCPTrailingSlashRewrite
+
+    called = {"v": False}
+
+    async def inner(scope, receive, send) -> None:
+        called["v"] = True
+
+    await MCPTrailingSlashRewrite(inner)({"type": "lifespan"}, None, None)
+    assert called["v"] is True

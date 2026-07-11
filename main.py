@@ -55,6 +55,26 @@ app.include_router(ui.router)
 app.mount("/mcp", build_mcp_app())
 
 
+class MCPTrailingSlashRewrite:
+    """Treat /mcp as /mcp/ so MCP clients aren't bounced through a 307.
+
+    Claude's connector POSTs to /mcp; Starlette's Mount would otherwise
+    redirect, doubling every MCP call into two HTTP requests.
+    """
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "http" and scope["path"] == "/mcp":
+            scope["path"] = "/mcp/"
+            scope["raw_path"] = b"/mcp/"
+        await self.app(scope, receive, send)
+
+
+app.add_middleware(MCPTrailingSlashRewrite)
+
+
 @app.get("/", include_in_schema=False)
 async def root() -> RedirectResponse:
     return RedirectResponse(url="/ui/jobs")
