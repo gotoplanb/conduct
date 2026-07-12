@@ -26,6 +26,7 @@ from models.job import Job
 from models.routing import RoutingRule
 from models.shadow import JobShadow
 from models.types import JobStatus, Sampling, Sensitivity
+from observability.tracing import rq_trace_meta
 from prompt_loader import PromptNotFoundError
 from providers.base import ProviderError
 from providers.registry import ProviderRegistry, is_cloud
@@ -240,6 +241,7 @@ async def _enqueue_for_media_async(job: Job, session: AsyncSession) -> JSONRespo
             str(job.id),
             job_id=str(job.id),
             job_timeout=DEFAULT_MEDIA_JOB_TIMEOUT_S,
+            meta=rq_trace_meta(),
         )
     except Exception as e:
         log.exception("failed to enqueue media job %s", job.id)
@@ -266,6 +268,7 @@ async def _enqueue_for_async(job: Job, session: AsyncSession) -> JSONResponse:
             str(job.id),
             job_id=str(job.id),
             job_timeout=DEFAULT_JOB_TIMEOUT_S,
+            meta=rq_trace_meta(),
         )
     except Exception as e:
         # If Redis is down, we still have the row — flip it to failed so the

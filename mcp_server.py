@@ -32,6 +32,7 @@ from models.routing import RoutingRule
 from models.shadow import JobShadow
 from models.types import JobStatus, Sensitivity
 from oauth_provider import resolve_access_token
+from observability.tracing import rq_trace_meta
 from prompt_loader import PromptNotFoundError
 from providers.registry import ProviderRegistry
 from providers.resident import is_resident
@@ -173,7 +174,11 @@ async def _create_media_job(
         job_id = str(job.id)
 
     get_media_queue().enqueue(
-        run_job, job_id, job_id=job_id, job_timeout=DEFAULT_MEDIA_JOB_TIMEOUT_S
+        run_job,
+        job_id,
+        job_id=job_id,
+        job_timeout=DEFAULT_MEDIA_JOB_TIMEOUT_S,
+        meta=rq_trace_meta(),
     )
     return {
         "job_id": job_id,
@@ -415,7 +420,13 @@ async def create_job(
 
     # Async path: the worker owns this model (non-resident local). It runs the
     # primary and fans out eval shadows itself.
-    get_queue().enqueue(run_job, job_id, job_id=job_id, job_timeout=DEFAULT_JOB_TIMEOUT_S)
+    get_queue().enqueue(
+        run_job,
+        job_id,
+        job_id=job_id,
+        job_timeout=DEFAULT_JOB_TIMEOUT_S,
+        meta=rq_trace_meta(),
+    )
     return {
         "job_id": job_id,
         "status": JobStatus.PENDING.value,

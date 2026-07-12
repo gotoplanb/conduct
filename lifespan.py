@@ -1,4 +1,4 @@
-"""FastAPI lifespan: provider registry, OTel tracing, auto-instrumentation, SIGHUP."""
+"""FastAPI lifespan: provider registry, OTel tracing, httpx instrumentation, SIGHUP."""
 
 from __future__ import annotations
 
@@ -9,7 +9,6 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
-from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
 
 from config.pricing import get_pricing
@@ -38,7 +37,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         otlp_endpoint=settings.otel_endpoint,
         role="api",
     )
-    FastAPIInstrumentor.instrument_app(app)
+    # FastAPI instrumentation lives in main.py (import time) — attaching it
+    # here would miss the middleware stack, which is frozen before the
+    # lifespan body runs (#49). httpx patching is library-level, so it's
+    # fine (and belongs) here, after init_tracing.
     HTTPXClientInstrumentor().instrument()
 
     # Providers.

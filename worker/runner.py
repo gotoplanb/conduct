@@ -21,7 +21,7 @@ from models.job import Job
 from models.routing import RoutingRule
 from models.types import JobStatus, Sampling, Sensitivity
 from observability.metrics import record_job_completion, record_model_swap
-from observability.tracing import get_tracer
+from observability.tracing import get_tracer, rq_trace_context
 from providers.anthropic import AnthropicProvider
 from providers.ollama import OllamaProvider
 from providers.registry import ProviderRegistry
@@ -96,7 +96,8 @@ def _get_providers() -> ProviderRegistry:
 
 def run_job(job_id_str: str) -> None:
     """Sync RQ entry point. Wraps async logic in a fresh event loop."""
-    asyncio.run(_run_async(UUID(job_id_str)))
+    with rq_trace_context():
+        asyncio.run(_run_async(UUID(job_id_str)))
 
 
 async def _decide_or_fail(

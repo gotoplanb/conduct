@@ -26,7 +26,7 @@ from models.job import Job
 from models.routing import RoutingRule
 from models.shadow import JobShadow
 from models.types import JobStatus, Sensitivity
-from observability.tracing import get_tracer
+from observability.tracing import get_tracer, rq_trace_context, rq_trace_meta
 from providers.anthropic import AnthropicProvider
 from providers.ollama import OllamaProvider
 from providers.registry import ProviderRegistry
@@ -124,13 +124,15 @@ async def enqueue_shadows_for_parent(
             run_shadow,
             str(shadow_id),
             job_timeout=DEFAULT_JOB_TIMEOUT_S,
+            meta=rq_trace_meta(),
         )
     return created
 
 
 def run_shadow(shadow_id_str: str) -> None:
     """Sync RQ entry point. Wraps async logic in a fresh event loop."""
-    asyncio.run(_run_async(UUID(shadow_id_str)))
+    with rq_trace_context():
+        asyncio.run(_run_async(UUID(shadow_id_str)))
 
 
 async def _run_async(shadow_id: UUID) -> None:

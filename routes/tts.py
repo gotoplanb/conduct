@@ -26,6 +26,7 @@ from db.session import get_session
 from models.client import ClientApp
 from models.job import Job
 from models.types import JobStatus, Sensitivity
+from observability.tracing import rq_trace_meta
 from rate_limit import rate_limited_client
 from worker.queue import DEFAULT_JOB_TIMEOUT_S, get_queue
 from worker.runner import run_job
@@ -103,6 +104,7 @@ async def submit_tts(
             str(job.id),
             job_id=str(job.id),
             job_timeout=DEFAULT_JOB_TIMEOUT_S,
+            meta=rq_trace_meta(),
         )
     except Exception as e:
         log.exception("failed to enqueue tts job %s", job.id)

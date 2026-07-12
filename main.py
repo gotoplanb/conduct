@@ -3,6 +3,7 @@ from pathlib import Path
 from fastapi import FastAPI
 from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
+from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 
 from lifespan import lifespan
 from mcp_server import build_mcp_app
@@ -73,6 +74,14 @@ class MCPTrailingSlashRewrite:
 
 
 app.add_middleware(MCPTrailingSlashRewrite)
+
+# Must run at import time, not in the lifespan: Starlette freezes the
+# middleware stack before the lifespan body executes, so instrumenting there
+# leaves the OTel middleware out of the request path entirely — the API logs
+# "tracing initialized" and then emits zero server spans (#49). The tracer
+# provider itself is still set later by init_tracing() in the lifespan; the
+# proxy tracer picks it up.
+FastAPIInstrumentor.instrument_app(app)
 
 
 @app.get("/", include_in_schema=False)
