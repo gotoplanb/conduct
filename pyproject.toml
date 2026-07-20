@@ -2,6 +2,9 @@
 name = "conduct"
 version = "0.1.0"
 description = "LLM dispatch service — routes AI workloads to local or cloud models"
+license = "MIT-0"
+license-files = ["LICENSE"]
+authors = [{ name = "Dave Stanton" }]
 requires-python = ">=3.12"
 dependencies = [
     "fastapi>=0.115",

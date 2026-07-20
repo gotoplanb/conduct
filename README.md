@@ -142,4 +142,4 @@ docker-compose.yml         postgres, redis, api, worker
 
 ---
 
-© 2026 Zero Mission LLC
+© 2026 Dave Stanton — released under the [MIT-0 license](LICENSE)
