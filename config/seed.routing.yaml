@@ -62,7 +62,7 @@ rules:
       - { model: gemma4:26b, rate: 1.0 }
       - { model: llama3.1:8b, rate: 1.0 }
       - { model: qwen3.5:4b, rate: 1.0 }     # step-down
-      - { model: qwen3.5:27b, rate: 1.0 }    # step-up
+      - { model: qwen3.8:27b, rate: 1.0 }    # step-up
 
   # Structured extraction benefits from a bit more reasoning.
   - task_type: email_extraction
@@ -74,7 +74,7 @@ rules:
       - { model: mistral-small3.2, rate: 1.0 }
       - { model: gemma4:26b, rate: 1.0 }
       - { model: qwen3.5:4b, rate: 1.0 }     # step-down
-      - { model: qwen3.5:27b, rate: 1.0 }    # step-up
+      - { model: qwen3.8:27b, rate: 1.0 }    # step-up
 
   # Keep current 70b primary as the reference; eval whether a smaller mid-class
   # or a different large-class model produces equally usable bios.
@@ -84,7 +84,7 @@ rules:
     sensitivity: internal
     sampling: deterministic   # same bio + context → consistent output (local model = real reproducibility)
     eval_shadow_models:
-      - { model: qwen3.5:35b, rate: 1.0 }
+      - { model: qwen3.8:27b, rate: 1.0 }
       - { model: gemma4:31b, rate: 1.0 }
       - { model: mistral-medium-3.5, rate: 1.0 }
       - { model: llama4:16x17b, rate: 1.0 }
@@ -92,7 +92,7 @@ rules:
 
   # Triage needs reasoning; mid-large primary with neighbors + a big step-up.
   - task_type: sre_triage
-    preferred_model: qwen3.5:27b
+    preferred_model: qwen3.8:27b
     fallback_model: claude-sonnet-4-6
     sensitivity: internal
     eval_shadow_models:
@@ -108,7 +108,7 @@ rules:
     fallback_model: llama3.3:70b
     sensitivity: confidential
     eval_shadow_models:
-      - { model: qwen3.5:35b, rate: 1.0 }
+      - { model: qwen3.8:27b, rate: 1.0 }
       - { model: gemma4:31b, rate: 1.0 }
       - { model: llama4:16x17b, rate: 1.0 }
       - { model: qwen3.5:9b, rate: 1.0 }     # step-down
@@ -121,7 +121,7 @@ rules:
     sensitivity: confidential
     sampling: deterministic   # math must be reproducible
     eval_shadow_models:
-      - { model: qwen3.5:35b, rate: 1.0 }
+      - { model: qwen3.8:27b, rate: 1.0 }
       - { model: llama4:16x17b, rate: 1.0 }
       - { model: mistral-small3.2, rate: 1.0 }   # step-down
 
