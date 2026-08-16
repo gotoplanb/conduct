@@ -32,6 +32,7 @@ _CONNECTORS_PATH = "/connectors"
 _CLIENT_ARG_HELP = "client name or UUID"
 _CONNECTOR_ARG_HELP = "connector name or UUID"
 _SKIP_CONFIRM_HELP = "skip confirmation"
+_YAML_SUFFIX = ".yaml"
 _NOT_FOUND_FALLBACK = "not found"
 
 
@@ -493,7 +494,7 @@ def cmd_clients_set_bedrock_creds(args: argparse.Namespace) -> int:
 
     with httpx.Client(base_url=_base_url(), headers=_headers(), timeout=30) as c:
         client = _resolve_client(c, args.client)
-        edited = _open_in_editor(_BEDROCK_CREDS_TEMPLATE, suffix=".yaml")
+        edited = _open_in_editor(_BEDROCK_CREDS_TEMPLATE, suffix=_YAML_SUFFIX)
         if edited is None:
             return 1
         body_text = "\n".join(
@@ -809,7 +810,7 @@ def cmd_routing_edit(args: argparse.Namespace) -> int:
             r.raise_for_status()
             initial = _rule_to_yaml(r.json())
 
-        new_content = _open_in_editor(initial, suffix=".yaml")
+        new_content = _open_in_editor(initial, suffix=_YAML_SUFFIX)
         if new_content is None:
             return 1
 
@@ -853,6 +854,105 @@ def cmd_routing_delete(args: argparse.Namespace) -> int:
             return 1
         r.raise_for_status()
     print(f"archived routing/{args.task_type}")
+    return 0
+
+
+# --- voices (named-voice registry, #51) ----
+
+_VOICE_EDITABLE_FIELDS = ("voice_file", "engine", "notes", "client_id")
+
+_VOICE_NEW_TEMPLATE = """\
+# New voice alias. Edit the values below and save to create.
+# The logical name is taken from the CLI argument and is not editable here.
+# voice_file: for piper, the file stem in the voices dir (must be installed).
+# client_id: null = shared default; a client UUID scopes it to that client.
+voice_file: en_US-amy-medium
+engine: piper
+notes: ""
+client_id: null
+"""
+
+
+def cmd_voices_list(args: argparse.Namespace) -> None:
+    """List registry rows (admin view: raw scopes, not the merged client view)."""
+    params = {"include_archived": "true"} if args.include_archived else {}
+    with httpx.Client(base_url=_base_url(), headers=_headers(), timeout=30) as c:
+        r = c.get("/voices/registry", params=params)
+        r.raise_for_status()
+        aliases = r.json().get("aliases", [])
+    if not aliases:
+        print("(no voice aliases)")
+        return
+    width = max(len(a["name"]) for a in aliases)
+    for a in aliases:
+        scope = f"client:{a['client_id']}" if a["client_id"] else "shared"
+        line = f"{a['name']:<{width}}  {a['engine']}:{a['voice_file']}  [{scope}]"
+        if a.get("is_archived"):
+            line += "  [archived]"
+        print(line)
+
+
+def cmd_voices_edit(args: argparse.Namespace) -> int:
+    """Open $EDITOR on an alias's YAML; PUT on save (creates if missing)."""
+    import yaml  # noqa: PLC0415
+
+    with httpx.Client(base_url=_base_url(), headers=_headers(), timeout=30) as c:
+        r = c.get("/voices/registry", params={"include_archived": "true"})
+        r.raise_for_status()
+        rows = [
+            a for a in r.json().get("aliases", [])
+            if a["name"] == args.name and (a["client_id"] or None) == (args.client_id or None)
+        ]
+        if rows:
+            editable = {k: rows[0].get(k) for k in _VOICE_EDITABLE_FIELDS}
+            initial = yaml.safe_dump(editable, sort_keys=False, default_flow_style=False)
+        else:
+            initial = _VOICE_NEW_TEMPLATE
+            print(
+                f"note: no existing alias {args.name!r} — editing a new one",
+                file=sys.stderr,
+            )
+
+        new_content = _open_in_editor(initial, suffix=_YAML_SUFFIX)
+        if new_content is None:
+            return 1
+        try:
+            data = yaml.safe_load(new_content) or {}
+            if not isinstance(data, dict):
+                raise ValueError("voice alias YAML must be a mapping")
+            body = {k: data[k] for k in _VOICE_EDITABLE_FIELDS if k in data}
+        except (yaml.YAMLError, ValueError) as e:
+            print(f"invalid YAML: {e}", file=sys.stderr)
+            return 1
+
+        put = c.put(f"/voices/registry/{args.name}", json=body)
+        if put.status_code >= 400:
+            print(f"server rejected the alias: {put.text}", file=sys.stderr)
+            return 1
+        out = put.json()
+    scope = f"client:{out['client_id']}" if out.get("client_id") else "shared"
+    print(f"saved voice/{args.name} — {out['engine']}:{out['voice_file']} [{scope}]")
+    return 0
+
+
+def cmd_voices_delete(args: argparse.Namespace) -> int:
+    """Soft-delete (archive) a voice alias; revive with `edit`."""
+    with httpx.Client(base_url=_base_url(), headers=_headers(), timeout=30) as c:
+        if not args.yes:
+            answer = input(
+                f"Archive voice/{args.name}? TTS submits using it will 400 "
+                f"immediately; revive with `conduct voices edit {args.name}`. [y/N] "
+            ).strip().lower()
+            if answer != "y":
+                print("aborted", file=sys.stderr)
+                return 1
+        params = {"client_id": args.client_id} if args.client_id else {}
+        r = c.delete(f"/voices/registry/{args.name}", params=params)
+        if r.status_code == 404:
+            print(r.json().get("detail", _NOT_FOUND_FALLBACK), file=sys.stderr)
+            return 1
+        r.raise_for_status()
+    print(f"archived voice/{args.name}")
     return 0
 
 
@@ -945,6 +1045,28 @@ def _build_parser() -> argparse.ArgumentParser:
     rdel.add_argument("task_type")
     rdel.add_argument("-y", "--yes", action="store_true", help=_SKIP_CONFIRM_HELP)
     rdel.set_defaults(func=cmd_routing_delete)
+
+    voices = subs.add_parser("voices", help="manage the named-voice registry")
+    vsubs = voices.add_subparsers(dest="action", required=True)
+    vlist = vsubs.add_parser("list", help="list voice aliases")
+    vlist.add_argument(
+        "--include-archived", action="store_true",
+        help="also show soft-deleted aliases (marked [archived])",
+    )
+    vlist.set_defaults(func=cmd_voices_list)
+
+    vedit = vsubs.add_parser("edit", help="edit a voice alias in $EDITOR (creates if missing)")
+    vedit.add_argument("name")
+    vedit.add_argument("--client-id", dest="client_id", help="edit a client-scoped override")
+    vedit.set_defaults(func=cmd_voices_edit)
+
+    vdel = vsubs.add_parser(
+        "delete", help="soft-delete (archive) a voice alias; revive with `edit`",
+    )
+    vdel.add_argument("name")
+    vdel.add_argument("--client-id", dest="client_id", help="archive a client-scoped override")
+    vdel.add_argument("-y", "--yes", action="store_true", help=_SKIP_CONFIRM_HELP)
+    vdel.set_defaults(func=cmd_voices_delete)
 
     clients = subs.add_parser("clients", help="manage client apps")
     csubs = clients.add_subparsers(dest="action", required=True)

@@ -5,6 +5,7 @@ from models.prompt import Prompt, PromptVersion
 from models.routing import RoutingRule
 from models.shadow import JobShadow
 from models.types import JobStatus, Sensitivity, stricter
+from models.voice import VoiceAlias
 
 __all__ = [
     "ClientApp",
@@ -19,5 +20,6 @@ __all__ = [
     "PromptVersion",
     "RoutingRule",
     "Sensitivity",
+    "VoiceAlias",
     "stricter",
 ]

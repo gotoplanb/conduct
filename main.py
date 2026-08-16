@@ -23,6 +23,7 @@ from routes import (
 from routes import eval as eval_route
 from routes import models as models_route
 from routes import routing as routing_route
+from routes import voices as voices_route
 
 app = FastAPI(
     title="Conduct",
@@ -49,6 +50,8 @@ app.include_router(prompts.router)
 app.include_router(oauth.router)
 app.include_router(tts.tts_router)
 app.include_router(tts.output_router)
+app.include_router(voices_route.router)
+app.include_router(voices_route.admin_router)
 app.include_router(ui.router)
 
 # Remote MCP server for Claude custom connectors. Streamable-HTTP transport

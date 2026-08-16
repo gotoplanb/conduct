@@ -27,6 +27,7 @@ from models.client import ClientApp
 from models.prompt import Prompt, PromptVersion
 from models.routing import RoutingRule
 from models.types import MediaKind, Sampling, Sensitivity
+from models.voice import VoiceAlias
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 CLIENTS_PATH = REPO_ROOT / "config" / "seed.clients.yaml"
@@ -97,6 +98,44 @@ async def _seed_routing(session, specs: list[dict]) -> tuple[list[str], list[str
             )
         )
         created.append(tt)
+    return created, skipped
+
+
+# Shared named voices (#51). Two on purpose: the registry only proves itself
+# with more than one. Files must be installed in tts_voices_dir; seeding
+# doesn't download them (see voices/README or huggingface.co/rhasspy/piper-voices).
+_SEED_VOICES = [
+    {"name": "narrator", "voice_file": "en_US-amy-medium", "notes": "default long-form narrator"},
+    {
+        "name": "ops-manager",
+        "voice_file": "en_GB-alan-medium",
+        "notes": "distinct second voice for multi-participant scenes",
+    },
+]
+
+
+async def _seed_voices(session) -> tuple[list[str], list[str]]:
+    """Idempotent shared voice-alias insertion. Returns (created, skipped)."""
+    created: list[str] = []
+    skipped: list[str] = []
+    for spec in _SEED_VOICES:
+        exists = await session.scalar(
+            select(VoiceAlias).where(
+                VoiceAlias.name == spec["name"], VoiceAlias.client_id.is_(None)
+            )
+        )
+        if exists is not None:
+            skipped.append(spec["name"])
+            continue
+        session.add(
+            VoiceAlias(
+                name=spec["name"],
+                client_id=None,
+                voice_file=spec["voice_file"],
+                notes=spec.get("notes", ""),
+            )
+        )
+        created.append(spec["name"])
     return created, skipped
 
 
@@ -246,6 +285,9 @@ async def seed() -> int:
             # so flush before scanning prompts/clients/<name>/.
             await session.flush()
             created_prompts, skipped_prompts, prompt_warnings = await _seed_prompts(session)
+            created_voices, _ = await _seed_voices(session)
+            if created_voices:
+                print(f"created voice aliases: {', '.join(created_voices)}")
             await session.commit()
     finally:
         await engine.dispose()

@@ -59,6 +59,29 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     set_provider_registry(registry)
 
+    # Startup validation for the named-voice registry (#51): a registered
+    # piper voice with no backing file is a hard config error. Loud log, not
+    # a crash — text routing must survive a missing voice file, and submits
+    # against the broken alias still fail fast at the worker with a clear error.
+    try:
+        from pathlib import Path  # noqa: PLC0415
+
+        from db.session import SessionLocal  # noqa: PLC0415
+        from tts.voices import all_live_aliases, missing_voice_files  # noqa: PLC0415
+
+        async with SessionLocal() as vsession:
+            all_aliases = await all_live_aliases(vsession)
+            for name, voice_file in missing_voice_files(
+                all_aliases, Path(settings.tts_voices_dir)
+            ):
+                log.error(
+                    "voice alias %r points at %r but no such file in %s — "
+                    "TTS submits using it will fail",
+                    name, voice_file, settings.tts_voices_dir,
+                )
+    except Exception:  # noqa: BLE001 — validation must never block boot
+        log.exception("voice registry startup validation failed")
+
     # Eagerly load pricing so SIGHUP can reload it later.
     pricing = get_pricing()
 

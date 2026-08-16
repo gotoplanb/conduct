@@ -28,6 +28,7 @@ from models.job import Job
 from models.types import JobStatus, Sensitivity
 from observability.tracing import rq_trace_meta
 from rate_limit import rate_limited_client
+from tts.voices import UnknownVoice, resolve_voice
 from worker.queue import DEFAULT_JOB_TIMEOUT_S, get_queue
 from worker.runner import run_job
 
@@ -81,7 +82,22 @@ async def submit_tts(
             f"text exceeds TTS_MAX_CHARS={settings.tts_max_chars}; "
             "split into smaller chunks (caller is responsible for stitching)",
         )
-    voice = body.voice or settings.tts_default_voice
+    # Resolve logical voice names (#51) — a registered alias wins, a literal
+    # installed voice file still passes through, anything else 400s at submit
+    # with the known names so a typo can't silently synthesize the default.
+    try:
+        voice, alias_name = await resolve_voice(
+            session,
+            requested=body.voice,
+            client_id=client.id,
+            default_voice=settings.tts_default_voice,
+            voices_dir=Path(settings.tts_voices_dir),
+        )
+    except UnknownVoice as e:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            f"unknown voice {e.requested!r}; known voices: {', '.join(e.known)}",
+        ) from e
 
     job = Job(
         client_app_id=client.id,
@@ -92,7 +108,7 @@ async def submit_tts(
         system_prompt="",
         model_requested=voice,
         status=JobStatus.PENDING.value,
-        job_metadata={},
+        job_metadata={"voice_alias": alias_name} if alias_name else {},
     )
     session.add(job)
     await session.commit()
