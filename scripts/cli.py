@@ -33,6 +33,7 @@ _CLIENT_ARG_HELP = "client name or UUID"
 _CONNECTOR_ARG_HELP = "connector name or UUID"
 _SKIP_CONFIRM_HELP = "skip confirmation"
 _YAML_SUFFIX = ".yaml"
+_ARCHIVED_TAG = "  [archived]"
 _NOT_FOUND_FALLBACK = "not found"
 
 
@@ -763,7 +764,7 @@ def cmd_routing_list(args: argparse.Namespace) -> None:
         if shadows:
             line += f"  shadows: {shadows}"
         if rule.get("is_archived"):
-            line += "  [archived]"
+            line += _ARCHIVED_TAG
         print(line)
 
 
@@ -888,7 +889,7 @@ def cmd_voices_list(args: argparse.Namespace) -> None:
         scope = f"client:{a['client_id']}" if a["client_id"] else "shared"
         line = f"{a['name']:<{width}}  {a['engine']}:{a['voice_file']}  [{scope}]"
         if a.get("is_archived"):
-            line += "  [archived]"
+            line += _ARCHIVED_TAG
         print(line)
 
 
@@ -932,6 +933,106 @@ def cmd_voices_edit(args: argparse.Namespace) -> int:
         out = put.json()
     scope = f"client:{out['client_id']}" if out.get("client_id") else "shared"
     print(f"saved voice/{args.name} — {out['engine']}:{out['voice_file']} [{scope}]")
+    return 0
+
+
+# --- styles (logical style registry, #53) ----
+
+_STYLE_EDITABLE_FIELDS = ("workflow_template", "params", "notes", "client_id")
+
+_STYLE_NEW_TEMPLATE = """\
+# New style alias. Edit the values below and save to create.
+# The logical name is taken from the CLI argument and is not editable here.
+# workflow_template: a JSON file stem in comfy_workflows/ (must exist).
+# params: injection overrides (width, height, seed, negative_prompt, ...).
+workflow_template: wander_scene_image
+params: {}
+notes: ""
+client_id: null
+"""
+
+
+def cmd_styles_list(args: argparse.Namespace) -> None:
+    """List style-registry rows (admin view: raw scopes)."""
+    params = {"include_archived": "true"} if args.include_archived else {}
+    with httpx.Client(base_url=_base_url(), headers=_headers(), timeout=30) as c:
+        r = c.get("/styles/registry", params=params)
+        r.raise_for_status()
+        aliases = r.json().get("aliases", [])
+    if not aliases:
+        print("(no style aliases)")
+        return
+    width = max(len(a["name"]) for a in aliases)
+    for a in aliases:
+        scope = f"client:{a['client_id']}" if a["client_id"] else "shared"
+        extras = f" params={a['params']}" if a.get("params") else ""
+        line = f"{a['name']:<{width}}  {a['workflow_template']}{extras}  [{scope}]"
+        if a.get("is_archived"):
+            line += _ARCHIVED_TAG
+        print(line)
+
+
+def cmd_styles_edit(args: argparse.Namespace) -> int:
+    """Open $EDITOR on a style alias's YAML; PUT on save (creates if missing)."""
+    import yaml  # noqa: PLC0415
+
+    with httpx.Client(base_url=_base_url(), headers=_headers(), timeout=30) as c:
+        r = c.get("/styles/registry", params={"include_archived": "true"})
+        r.raise_for_status()
+        rows = [
+            a for a in r.json().get("aliases", [])
+            if a["name"] == args.name and (a["client_id"] or None) == (args.client_id or None)
+        ]
+        if rows:
+            editable = {k: rows[0].get(k) for k in _STYLE_EDITABLE_FIELDS}
+            initial = yaml.safe_dump(editable, sort_keys=False, default_flow_style=False)
+        else:
+            initial = _STYLE_NEW_TEMPLATE
+            print(
+                f"note: no existing style {args.name!r} — editing a new one",
+                file=sys.stderr,
+            )
+
+        new_content = _open_in_editor(initial, suffix=_YAML_SUFFIX)
+        if new_content is None:
+            return 1
+        try:
+            data = yaml.safe_load(new_content) or {}
+            if not isinstance(data, dict):
+                raise ValueError("style alias YAML must be a mapping")
+            body = {k: data[k] for k in _STYLE_EDITABLE_FIELDS if k in data}
+        except (yaml.YAMLError, ValueError) as e:
+            print(f"invalid YAML: {e}", file=sys.stderr)
+            return 1
+
+        put = c.put(f"/styles/registry/{args.name}", json=body)
+        if put.status_code >= 400:
+            print(f"server rejected the style: {put.text}", file=sys.stderr)
+            return 1
+        out = put.json()
+    scope = f"client:{out['client_id']}" if out.get("client_id") else "shared"
+    print(f"saved style/{args.name} — {out['workflow_template']} [{scope}]")
+    return 0
+
+
+def cmd_styles_delete(args: argparse.Namespace) -> int:
+    """Soft-delete (archive) a style alias; revive with `edit`."""
+    with httpx.Client(base_url=_base_url(), headers=_headers(), timeout=30) as c:
+        if not args.yes:
+            answer = input(
+                f"Archive style/{args.name}? /image submits using it will 400 "
+                f"immediately; revive with `conduct styles edit {args.name}`. [y/N] "
+            ).strip().lower()
+            if answer != "y":
+                print("aborted", file=sys.stderr)
+                return 1
+        params = {"client_id": args.client_id} if args.client_id else {}
+        r = c.delete(f"/styles/registry/{args.name}", params=params)
+        if r.status_code == 404:
+            print(r.json().get("detail", _NOT_FOUND_FALLBACK), file=sys.stderr)
+            return 1
+        r.raise_for_status()
+    print(f"archived style/{args.name}")
     return 0
 
 
@@ -1067,6 +1168,28 @@ def _build_parser() -> argparse.ArgumentParser:
     vdel.add_argument("--client-id", dest="client_id", help="archive a client-scoped override")
     vdel.add_argument("-y", "--yes", action="store_true", help=_SKIP_CONFIRM_HELP)
     vdel.set_defaults(func=cmd_voices_delete)
+
+    styles = subs.add_parser("styles", help="manage the logical style registry")
+    ssubs = styles.add_subparsers(dest="action", required=True)
+    slist = ssubs.add_parser("list", help="list style aliases")
+    slist.add_argument(
+        "--include-archived", action="store_true",
+        help="also show soft-deleted aliases (marked [archived])",
+    )
+    slist.set_defaults(func=cmd_styles_list)
+
+    sedit = ssubs.add_parser("edit", help="edit a style alias in $EDITOR (creates if missing)")
+    sedit.add_argument("name")
+    sedit.add_argument("--client-id", dest="client_id", help="edit a client-scoped override")
+    sedit.set_defaults(func=cmd_styles_edit)
+
+    sdel = ssubs.add_parser(
+        "delete", help="soft-delete (archive) a style alias; revive with `edit`",
+    )
+    sdel.add_argument("name")
+    sdel.add_argument("--client-id", dest="client_id", help="archive a client-scoped override")
+    sdel.add_argument("-y", "--yes", action="store_true", help=_SKIP_CONFIRM_HELP)
+    sdel.set_defaults(func=cmd_styles_delete)
 
     clients = subs.add_parser("clients", help="manage client apps")
     csubs = clients.add_subparsers(dest="action", required=True)

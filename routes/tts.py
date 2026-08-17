@@ -56,9 +56,18 @@ log = logging.getLogger(__name__)
 # refactor lets clients pass names. Today the worker generates them. `.tar` is
 # the code-generation Cargo artifact (#23); `.mp3` is TTS.
 _OUTPUT_FILENAME = re.compile(
-    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.(mp3|tar)$"
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+    r"\.(mp3|tar|png|jpg|jpeg|webp|mp4)$"
 )
-_OUTPUT_MEDIA_TYPES = {".mp3": "audio/mpeg", ".tar": "application/x-tar"}
+_OUTPUT_MEDIA_TYPES = {
+    ".mp3": "audio/mpeg",
+    ".tar": "application/x-tar",
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".webp": "image/webp",
+    ".mp4": "video/mp4",
+}
 
 tts_router = APIRouter(prefix="/tts", tags=["tts"])
 output_router = APIRouter(prefix="/output", tags=["tts"])

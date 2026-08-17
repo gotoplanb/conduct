@@ -197,6 +197,14 @@ rules:
     media_kind: image
     notes: "SDXL + Ghibli LoRA scene still. 1024x768. ~23s on M5 Max."
 
+  - task_type: scene_image
+    preferred_model: wander_scene_image    # default template; styles override (#53)
+    fallback_model: wander_scene_image
+    sensitivity: public
+    max_tokens: 1
+    media_kind: image
+    notes: "POST /image jobs run under this rule; a registered style's workflow_template + params beat these defaults."
+
   - task_type: wander_scene_video
     preferred_model: wander_scene_video    # = comfy_workflows/wander_scene_video.json
     fallback_model: wander_scene_video

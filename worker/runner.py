@@ -273,6 +273,9 @@ async def _dispatch_job(job_id: UUID) -> None:
                 from worker.executor import execute_media_job  # noqa: PLC0415
 
                 provider_name, workflow_template, extra_params = _media_dispatch_for_rule(rule)
+                workflow_template, extra_params = _apply_style_override(
+                    job, workflow_template, extra_params
+                )
                 output_dir = getattr(settings, "tts_output_dir", "/app/output")
                 await execute_media_job(
                     job=job,
@@ -369,6 +372,19 @@ async def _dispatch_job(job_id: UUID) -> None:
                 )
                 if shadow_ids:
                     dispatch_span.set_attribute("shadows.enqueued", len(shadow_ids))
+
+
+def _apply_style_override(
+    job: Job, workflow_template: str, extra_params: dict
+) -> tuple[str, dict]:
+    """Style-resolved override (#53): /image stamps the resolved workflow +
+    params on the job at submit; a job-level template beats the rule default,
+    and style params merge over rule params."""
+    style = (job.job_metadata or {}).get("style_resolved") or {}
+    return (
+        style.get("workflow_template") or workflow_template,
+        {**extra_params, **(style.get("params") or {})},
+    )
 
 
 def _media_dispatch_for_rule(rule: RoutingRule) -> tuple[str, str, dict]:

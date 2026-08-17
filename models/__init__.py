@@ -4,6 +4,7 @@ from models.oauth import OAuthAuthorizationCode, OAuthClient, OAuthToken
 from models.prompt import Prompt, PromptVersion
 from models.routing import RoutingRule
 from models.shadow import JobShadow
+from models.style import StyleAlias
 from models.types import JobStatus, Sensitivity, stricter
 from models.voice import VoiceAlias
 
@@ -20,6 +21,7 @@ __all__ = [
     "PromptVersion",
     "RoutingRule",
     "Sensitivity",
+    "StyleAlias",
     "VoiceAlias",
     "stricter",
 ]

@@ -26,6 +26,7 @@ from db.session import SessionLocal, engine
 from models.client import ClientApp
 from models.prompt import Prompt, PromptVersion
 from models.routing import RoutingRule
+from models.style import StyleAlias
 from models.types import MediaKind, Sampling, Sensitivity
 from models.voice import VoiceAlias
 
@@ -132,6 +133,51 @@ async def _seed_voices(session) -> tuple[list[str], list[str]]:
                 name=spec["name"],
                 client_id=None,
                 voice_file=spec["voice_file"],
+                notes=spec.get("notes", ""),
+            )
+        )
+        created.append(spec["name"])
+    return created, skipped
+
+
+# Shared visual styles (#53). Both ride the one installed workflow today;
+# they differ by injection params, which is exactly what the registry is
+# for — richer styles are new ComfyUI workflow JSONs registered later.
+_SEED_STYLES = [
+    {
+        "name": "scene-default",
+        "workflow_template": "wander_scene_image",
+        "params": {},
+        "notes": "SDXL + Ghibli LoRA, 1024x768 template defaults",
+    },
+    {
+        "name": "backdrop-wide",
+        "workflow_template": "wander_scene_image",
+        "params": {"width": 1344, "height": 576},
+        "notes": "wide backdrop crop for Perform's visual surface",
+    },
+]
+
+
+async def _seed_styles(session) -> tuple[list[str], list[str]]:
+    """Idempotent shared style-alias insertion. Returns (created, skipped)."""
+    created: list[str] = []
+    skipped: list[str] = []
+    for spec in _SEED_STYLES:
+        exists = await session.scalar(
+            select(StyleAlias).where(
+                StyleAlias.name == spec["name"], StyleAlias.client_id.is_(None)
+            )
+        )
+        if exists is not None:
+            skipped.append(spec["name"])
+            continue
+        session.add(
+            StyleAlias(
+                name=spec["name"],
+                client_id=None,
+                workflow_template=spec["workflow_template"],
+                params=spec["params"],
                 notes=spec.get("notes", ""),
             )
         )
@@ -288,6 +334,9 @@ async def seed() -> int:
             created_voices, _ = await _seed_voices(session)
             if created_voices:
                 print(f"created voice aliases: {', '.join(created_voices)}")
+            created_styles, _ = await _seed_styles(session)
+            if created_styles:
+                print(f"created style aliases: {', '.join(created_styles)}")
             await session.commit()
     finally:
         await engine.dispose()

@@ -21,6 +21,7 @@ from routes import (
     ui,
 )
 from routes import eval as eval_route
+from routes import image as image_route
 from routes import models as models_route
 from routes import routing as routing_route
 from routes import voices as voices_route
@@ -52,6 +53,9 @@ app.include_router(tts.tts_router)
 app.include_router(tts.output_router)
 app.include_router(voices_route.router)
 app.include_router(voices_route.admin_router)
+app.include_router(image_route.image_router)
+app.include_router(image_route.styles_router)
+app.include_router(image_route.styles_admin_router)
 app.include_router(ui.router)
 
 # Remote MCP server for Claude custom connectors. Streamable-HTTP transport

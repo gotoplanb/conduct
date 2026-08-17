@@ -45,26 +45,26 @@ async def test_resolve_default_when_unset(db_session, tmp_path) -> None:
 
 async def test_resolve_shared_alias(db_session, seeded_client, tmp_path) -> None:
     capp, _ = seeded_client
-    await _add_alias(db_session, "narrator", "en_US-amy-medium")
+    await _add_alias(db_session, "t-narrator", "en_US-amy-medium")
     voice, alias = await resolve_voice(
         db_session,
-        requested="narrator",
+        requested="t-narrator",
         client_id=capp.id,
         default_voice="x",
         voices_dir=tmp_path,
     )
-    assert (voice, alias) == ("en_US-amy-medium", "narrator")
+    assert (voice, alias) == ("en_US-amy-medium", "t-narrator")
 
 
 async def test_resolve_client_override_beats_shared(
     db_session, seeded_client, tmp_path
 ) -> None:
     capp, _ = seeded_client
-    await _add_alias(db_session, "narrator", "shared-voice")
-    await _add_alias(db_session, "narrator", "client-voice", client_id=capp.id)
+    await _add_alias(db_session, "t-narrator", "shared-voice")
+    await _add_alias(db_session, "t-narrator", "client-voice", client_id=capp.id)
     voice, _ = await resolve_voice(
         db_session,
-        requested="narrator",
+        requested="t-narrator",
         client_id=capp.id,
         default_voice="x",
         voices_dir=tmp_path,
@@ -73,7 +73,7 @@ async def test_resolve_client_override_beats_shared(
     # A different client (None here) still gets the shared mapping.
     voice, _ = await resolve_voice(
         db_session,
-        requested="narrator",
+        requested="t-narrator",
         client_id=None,
         default_voice="x",
         voices_dir=tmp_path,
@@ -97,7 +97,7 @@ async def test_resolve_unknown_raises_with_known_names(
     db_session, seeded_client, tmp_path
 ) -> None:
     capp, _ = seeded_client
-    await _add_alias(db_session, "narrator", "en_US-amy-medium")
+    await _add_alias(db_session, "t-narrator", "en_US-amy-medium")
     voices_dir = _fake_voices_dir(tmp_path, "en_GB-alan-medium")
     with pytest.raises(UnknownVoice) as exc:
         await resolve_voice(
@@ -108,7 +108,7 @@ async def test_resolve_unknown_raises_with_known_names(
             voices_dir=voices_dir,
         )
     assert exc.value.requested == "oops"
-    assert "narrator" in exc.value.known
+    assert "t-narrator" in exc.value.known
     assert "en_GB-alan-medium" in exc.value.known
 
 
@@ -122,8 +122,9 @@ async def test_archived_alias_is_invisible(db_session, tmp_path) -> None:
             default_voice="x",
             voices_dir=tmp_path,
         )
-    assert await visible_voices(db_session, None) == []
-    assert await all_live_aliases(db_session) == []
+    names = [a.name for a in await visible_voices(db_session, None)]
+    assert "gone" not in names
+    assert "gone" not in [a.name for a in await all_live_aliases(db_session)]
 
 
 def test_missing_voice_files_flags_piper_only(tmp_path) -> None:
@@ -154,10 +155,10 @@ async def test_tts_submit_resolves_alias(
     client, db_session, seeded_client, fake_redis
 ) -> None:
     capp, key = seeded_client
-    await _add_alias(db_session, "narrator", "en_US-amy-medium")
+    await _add_alias(db_session, "t-narrator", "en_US-amy-medium")
     resp = await client.post(
         "/tts",
-        json={"text": "hello", "voice": "narrator"},
+        json={"text": "hello", "voice": "t-narrator"},
         headers={"Authorization": f"Bearer {key}"},
     )
     assert resp.status_code == 202
@@ -168,14 +169,14 @@ async def test_voices_discovery_merged_view(
     client, db_session, seeded_client
 ) -> None:
     capp, key = seeded_client
-    await _add_alias(db_session, "narrator", "shared-voice")
-    await _add_alias(db_session, "narrator", "client-voice", client_id=capp.id)
-    await _add_alias(db_session, "ops-manager", "en_GB-alan-medium")
+    await _add_alias(db_session, "t-narrator", "shared-voice")
+    await _add_alias(db_session, "t-narrator", "client-voice", client_id=capp.id)
+    await _add_alias(db_session, "t-ops-manager", "en_GB-alan-medium")
     resp = await client.get("/voices", headers={"Authorization": f"Bearer {key}"})
     assert resp.status_code == 200
     voices = {v["name"]: v for v in resp.json()["voices"]}
-    assert voices["narrator"]["scope"] == "client"
-    assert voices["ops-manager"]["scope"] == "shared"
+    assert voices["t-narrator"]["scope"] == "client"
+    assert voices["t-ops-manager"]["scope"] == "shared"
 
 
 async def test_registry_put_rejects_uninstalled_piper_file(
@@ -206,7 +207,7 @@ async def test_registry_put_get_archive_cycle(
     )
 
     put = await client.put(
-        "/voices/registry/narrator",
+        "/voices/registry/t-narrator",
         json={"voice_file": "en_US-amy-medium", "notes": "seeded by test"},
         headers=admin_headers,
     )
@@ -214,15 +215,15 @@ async def test_registry_put_get_archive_cycle(
     assert put.json()["is_archived"] is False
 
     listing = await client.get("/voices/registry", headers=admin_headers)
-    assert "narrator" in [a["name"] for a in listing.json()["aliases"]]
+    assert "t-narrator" in [a["name"] for a in listing.json()["aliases"]]
 
-    dele = await client.delete("/voices/registry/narrator", headers=admin_headers)
+    dele = await client.delete("/voices/registry/t-narrator", headers=admin_headers)
     assert dele.status_code == 200
     assert dele.json()["is_archived"] is True
 
     # PUT revives, same contract as /routing.
     put2 = await client.put(
-        "/voices/registry/narrator",
+        "/voices/registry/t-narrator",
         json={"voice_file": "en_US-amy-medium"},
         headers=admin_headers,
     )
