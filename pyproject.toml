@@ -60,6 +60,10 @@ dev = [
     "respx>=0.21",
     "fakeredis>=2.26",
     "ruff>=0.7",
+    # The OAuth contract shared with the other authorization servers in the
+    # fleet. Pinned to a tag: an unpinned contract could start failing this
+    # build because somebody tightened a rule in another repo.
+    "oauth-conformance @ git+https://github.com/gotoplanb/oauth-conformance@v0.1.0",
 ]
 
 [tool.ruff]
