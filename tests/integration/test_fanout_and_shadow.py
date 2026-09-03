@@ -280,11 +280,9 @@ async def test_execute_shadow_records_provider_failure(
 async def test_run_fanout_secondaries_single_target(
     db_session, parent_job, stub_providers
 ) -> None:
-    """Drive the full fan-out path with one shadow. (Multi-shadow concurrent
-    runs share a session and trip the SQLAlchemy savepoint fixture; in
-    real deployments each gather'd task gets its own connection via the
-    pool, which the test fixture intentionally pins to a single conn for
-    rollback safety.)"""
+    """Drive the full fan-out path with one shadow on the shared session —
+    without a session_factory the shadows run sequentially, which is what
+    makes this safe under the single-connection savepoint fixture."""
     job, c = parent_job
     results = await run_fanout_secondaries(
         parent=job,
@@ -317,3 +315,164 @@ async def test_run_fanout_secondaries_empty_targets_noop(
         session=db_session,
     )
     assert out == []
+
+
+async def test_run_fanout_secondaries_multi_target_sequential(
+    db_session, parent_job, stub_providers
+) -> None:
+    # No session_factory → shadows run one at a time on the shared session.
+    job, c = parent_job
+    results = await run_fanout_secondaries(
+        parent=job,
+        secondary_models=["claude-haiku-4-5", "claude-sonnet-5"],
+        client=c,
+        max_tokens=100,
+        providers=stub_providers,
+        session=db_session,
+    )
+    assert [r.status for r in results] == [JobStatus.COMPLETE.value] * 2
+    await db_session.refresh(job)
+    assert len(job.job_metadata["fanout"]["shadow_ids"]) == 2
+
+
+async def test_run_fanout_secondaries_awaits_primary_before_shadows(
+    db_session, parent_job, stub_providers
+) -> None:
+    # Sequential mode still honors the primary — it must finish before any
+    # shadow starts, since both share the session.
+    job, c = parent_job
+    order: list[str] = []
+
+    async def _primary() -> None:
+        order.append("primary")
+
+    stub = stub_providers.get("anthropic")
+    orig_complete = stub.complete
+
+    async def _complete(**kwargs: Any) -> ProviderResponse:
+        order.append("shadow")
+        return await orig_complete(**kwargs)
+
+    stub.complete = _complete
+    await run_fanout_secondaries(
+        parent=job,
+        secondary_models=["claude-haiku-4-5"],
+        client=c,
+        max_tokens=100,
+        providers=stub_providers,
+        session=db_session,
+        primary=_primary(),
+    )
+    assert order == ["primary", "shadow"]
+
+
+async def test_run_fanout_secondaries_empty_targets_still_awaits_primary(
+    db_session, parent_job, stub_providers
+) -> None:
+    job, c = parent_job
+    ran = False
+
+    async def _primary() -> None:
+        nonlocal ran
+        ran = True
+
+    out = await run_fanout_secondaries(
+        parent=job,
+        secondary_models=[],
+        client=c,
+        max_tokens=100,
+        providers=stub_providers,
+        session=db_session,
+        primary=_primary(),
+    )
+    assert out == []
+    assert ran
+
+
+async def test_run_fanout_secondaries_primary_provider_error_propagates(
+    db_session, parent_job, stub_providers
+) -> None:
+    # Shadows swallow their own ProviderErrors (FAILED rows); one escaping the
+    # batch can only come from the primary, and it must reach the route's
+    # 502 translation rather than being eaten here.
+    job, c = parent_job
+
+    async def _primary() -> None:
+        raise ProviderError("primary blew up")
+
+    with pytest.raises(ProviderError, match="primary blew up"):
+        await run_fanout_secondaries(
+            parent=job,
+            secondary_models=["claude-haiku-4-5"],
+            client=c,
+            max_tokens=100,
+            providers=stub_providers,
+            session=db_session,
+            primary=_primary(),
+        )
+
+
+async def test_run_fanout_secondaries_concurrent_sessions(stub_providers) -> None:
+    """The production path: primary + N shadows in one asyncio.gather, each
+    shadow on its own session from the factory. The savepoint fixture pins
+    everything to one connection, which cannot serve concurrent queries — so
+    this test commits real rows via SessionLocal and cleans them up itself."""
+    import secrets
+
+    from sqlalchemy import delete
+
+    from db.session import SessionLocal
+    from models.client import ClientApp
+
+    async with SessionLocal() as setup:
+        c = ClientApp(
+            name=f"fanout-conc-{uuid4().hex[:8]}",
+            api_key_hash=secrets.token_hex(32),
+        )
+        setup.add(c)
+        await setup.flush()
+        job = Job(
+            client_app_id=c.id,
+            task_type=f"fanout_conc_{uuid4().hex[:6]}",
+            prompt="hello",
+            system_prompt="sys",  # skip DB prompt resolution
+            sensitivity="public",
+            status=JobStatus.PENDING.value,
+            priority=0,
+        )
+        setup.add(job)
+        await setup.commit()
+        job_id, client_id = job.id, c.id
+
+    ran = {"primary": False}
+
+    async def _primary() -> None:
+        ran["primary"] = True
+
+    try:
+        async with SessionLocal() as session:
+            live_job = await session.get(Job, job_id)
+            live_client = await session.get(ClientApp, client_id)
+            results = await run_fanout_secondaries(
+                parent=live_job,
+                secondary_models=["claude-haiku-4-5", "claude-sonnet-5"],
+                client=live_client,
+                max_tokens=100,
+                providers=stub_providers,
+                session=session,
+                primary=_primary(),
+                session_factory=SessionLocal,
+            )
+            assert ran["primary"]
+            assert {r.status for r in results} == {JobStatus.COMPLETE.value}
+            assert len({r.id for r in results}) == 2
+            await session.refresh(live_job)
+            assert len(live_job.job_metadata["fanout"]["shadow_ids"]) == 2
+    finally:
+        async with SessionLocal() as cleanup:
+            await cleanup.execute(
+                delete(JobShadow).where(JobShadow.parent_job_id == job_id)
+            )
+            await cleanup.execute(delete(Job).where(Job.id == job_id))
+            await cleanup.execute(delete(ClientApp).where(ClientApp.id == client_id))
+            await cleanup.commit()

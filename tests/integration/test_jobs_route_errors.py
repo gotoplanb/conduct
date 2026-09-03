@@ -82,9 +82,10 @@ async def test_fanout_runs_secondaries_inline(
 ) -> None:
     """A resident primary with resident + permitted-cloud fan-out targets runs
     sync: the request forces the inline path and the secondaries are dispatched
-    with the validated targets. The secondary runner is stubbed — the real one
-    shares the request session with the primary under asyncio.gather, which is
-    not safe against the test doubles' instant completions."""
+    with the validated targets. The secondary runner is stubbed because the
+    real one gives each shadow its own SessionLocal session, whose writes
+    would escape this test's rollback transaction; the stub asserts the
+    dispatch contract — primary handed over, per-shadow factory supplied."""
     import routes.jobs as jobs_route
 
     captured: dict = {}
@@ -92,6 +93,8 @@ async def test_fanout_runs_secondaries_inline(
     async def _fake_secondaries(**kwargs):
         captured["models"] = kwargs["secondary_models"]
         captured["parent_id"] = kwargs["parent"].id
+        captured["session_factory"] = kwargs["session_factory"]
+        await kwargs["primary"]
         return []
 
     monkeypatch.setattr(jobs_route, "run_fanout_secondaries", _fake_secondaries)
@@ -110,6 +113,7 @@ async def test_fanout_runs_secondaries_inline(
     assert body["model_used"] == "llama3.2:3b"
     assert captured["models"] == ["gemma4:e4b", "claude-haiku-4-5"]
     assert str(captured["parent_id"]) == body["job_id"]
+    assert captured["session_factory"] is jobs_route.SessionLocal
 
 
 async def test_fanout_nonresident_primary_400(

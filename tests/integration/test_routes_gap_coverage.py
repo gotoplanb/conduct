@@ -343,30 +343,6 @@ async def test_styles_registry_archive_unknown_404(client, admin_headers) -> Non
 # --- /clients --------------------------------------------------------------
 
 
-async def test_create_client_conflict_409(
-    client, admin_headers, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """The create handler maps IntegrityError to 409. The live schema has no
-    unique constraint on client_apps.name, so the conflict is simulated at the
-    session boundary."""
-    from sqlalchemy.exc import IntegrityError
-    from sqlalchemy.ext.asyncio import AsyncSession
-
-    real_commit = AsyncSession.commit
-    fired = {"done": False}
-
-    async def _fail_once(self):
-        if not fired["done"]:
-            fired["done"] = True
-            raise IntegrityError("INSERT", {}, Exception("duplicate key"))
-        return await real_commit(self)
-
-    monkeypatch.setattr(AsyncSession, "commit", _fail_once)
-    r = await client.post("/clients", json={"name": "dupe-client"}, headers=admin_headers)
-    assert r.status_code == 409
-    assert "conflict" in r.json()["detail"]
-
-
 async def test_clear_anthropic_key_unknown_client_404(client, admin_headers) -> None:
     r = await client.delete(f"/clients/{uuid4()}/anthropic-key", headers=admin_headers)
     assert r.status_code == 404

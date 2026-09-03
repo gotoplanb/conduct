@@ -139,32 +139,9 @@ async def test_ui_job_detail_without_grafana_link(
 # --- clients forms ---------------------------------------------------------
 
 
-@pytest.fixture
-def commit_integrity_error(monkeypatch: pytest.MonkeyPatch):
-    """Make the next AsyncSession.commit raise IntegrityError, then restore.
-
-    The duplicate-name handlers guard a unique constraint that the live schema
-    does not actually carry on client_apps.name, so the conflict can only be
-    simulated at the session boundary."""
-    from sqlalchemy.exc import IntegrityError
-    from sqlalchemy.ext.asyncio import AsyncSession
-
-    real_commit = AsyncSession.commit
-    fired = {"done": False}
-
-    async def _fail_once(self):
-        if not fired["done"]:
-            fired["done"] = True
-            raise IntegrityError("INSERT", {}, Exception("duplicate key"))
-        return await real_commit(self)
-
-    monkeypatch.setattr(AsyncSession, "commit", _fail_once)
-    return fired
-
-
-async def test_ui_clients_create_duplicate_name_409(
-    admin_client, commit_integrity_error
-) -> None:
+async def test_ui_clients_create_duplicate_name_409(admin_client) -> None:
+    first = await admin_client.post("/ui/clients", data={"name": "dupe-created"})
+    assert first.status_code < 400
     r = await admin_client.post("/ui/clients", data={"name": "dupe-created"})
     assert r.status_code == 409
     assert "already exists" in r.text
@@ -177,8 +154,11 @@ async def test_ui_clients_toggle_missing_404(admin_client) -> None:
 
 
 async def test_ui_clients_edit_duplicate_name_409(
-    admin_client, seeded_client, commit_integrity_error
+    admin_client, seeded_client
 ) -> None:
+    # Renaming onto another client's name trips uq_client_apps_name.
+    first = await admin_client.post("/ui/clients", data={"name": "dupe-renamed"})
+    assert first.status_code < 400
     r = await admin_client.post(
         f"/ui/clients/{seeded_client[0].id}/edit",
         data={"name": "dupe-renamed"},

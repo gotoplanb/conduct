@@ -16,7 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from auth import admin_only, current_client, current_client_or_admin
 from config.settings import get_settings
-from db.session import get_session
+from db.session import SessionLocal, get_session
 from deps import get_provider_registry
 from eval.fanout import FanoutValidationError, run_fanout_secondaries, validate_fanout_targets
 from eval.scoring import EvalTokenError, mint_eval_token, redeem_eval_token, score_state
@@ -301,8 +301,6 @@ async def _execute_sync(
 ) -> None:
     """Run the primary (and any fan-out secondaries) inline. Translates
     PromptNotFoundError → 500 and ProviderError → 502."""
-    import asyncio as _asyncio
-
     try:
         primary = execute_job(
             job=job,
@@ -312,7 +310,10 @@ async def _execute_sync(
             session=session,
         )
         if body.fanout:
-            secondaries = run_fanout_secondaries(
+            # The fan-out orchestrates the gather itself: the primary keeps
+            # this request's session, each secondary gets its own from
+            # SessionLocal — gathering both on one session corrupts it.
+            await run_fanout_secondaries(
                 parent=job,
                 secondary_models=body.fanout,
                 client=client,
@@ -321,8 +322,9 @@ async def _execute_sync(
                 session=session,
                 temperature=decision.temperature,
                 deterministic_seed=decision.deterministic_seed,
+                primary=primary,
+                session_factory=SessionLocal,
             )
-            await _asyncio.gather(primary, secondaries)
         else:
             await primary
     except PromptNotFoundError as e:

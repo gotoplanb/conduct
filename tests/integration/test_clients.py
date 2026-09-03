@@ -38,14 +38,14 @@ async def test_create_client_wrong_admin_is_403(client) -> None:
     assert r.status_code == 403
 
 
-async def test_duplicate_name_is_currently_allowed(client, admin_headers) -> None:
-    """Documents current behavior: ClientApp.name has no unique constraint.
-    The route catches IntegrityError on api_key_hash only (which collides
-    with negligible probability). If a name-unique constraint is added
-    later, flip this test to expect 409."""
-    await client.post("/clients", json={"name": "dup"}, headers=admin_headers)
+async def test_duplicate_name_is_409(client, admin_headers) -> None:
+    """client_apps.name carries uq_client_apps_name; the second create trips
+    the constraint for real and the handler maps it to 409."""
+    first = await client.post("/clients", json={"name": "dup"}, headers=admin_headers)
+    assert first.status_code == 201
     r = await client.post("/clients", json={"name": "dup"}, headers=admin_headers)
-    assert r.status_code == 201
+    assert r.status_code == 409
+    assert "conflict" in r.json()["detail"]
 
 
 async def test_list_clients(client, admin_headers, seeded_client) -> None:

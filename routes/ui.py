@@ -53,10 +53,6 @@ def _require_admin_cookie(value: str | None) -> bool:
     return hmac.compare_digest(value, get_settings().admin_key)
 
 
-def _redirect_to_login() -> RedirectResponse:
-    return RedirectResponse(url=LOGIN_PATH, status_code=status.HTTP_303_SEE_OTHER)
-
-
 async def admin_session(
     conduct_admin: Annotated[str | None, Cookie()] = None,
 ) -> None:
@@ -81,14 +77,11 @@ def _grafana_trace_url(job: Job) -> str | None:
     if not base:
         return None
 
-    # Pad ±60s around the job. created_at always exists; completed_at may
-    # not (for still-running or never-started jobs) — fall back to "now".
+    # Pad ±60s around the job. created_at always exists and is tz-aware
+    # (the columns are DateTime(timezone=True)); completed_at may not exist
+    # (still-running or never-started jobs) — fall back to "now".
     created = job.created_at
-    if created.tzinfo is None:
-        created = created.replace(tzinfo=UTC)
     completed = job.completed_at or datetime.now(UTC)
-    if completed.tzinfo is None:
-        completed = completed.replace(tzinfo=UTC)
     from_ms = int((created - timedelta(seconds=60)).timestamp() * 1000)
     to_ms = int((completed + timedelta(seconds=60)).timestamp() * 1000)
 

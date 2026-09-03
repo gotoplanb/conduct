@@ -5,16 +5,22 @@ Used by the API path when the request specifies `fanout`. All targets must
 be directly callable from the API (cloud or resident-local Ollama models)
 because the worker's queue-and-swap path doesn't support concurrent calls.
 The route validates this constraint before invoking.
+
+Concurrent execution requires a `session_factory` so each shadow gets its
+own DB session — sharing one AsyncSession across gathered tasks corrupts
+the session (flush/commit interleaving).
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Coroutine
 from datetime import UTC, datetime
 from time import perf_counter
+from typing import Any
 
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from eval.shadow_executor import execute_shadow
 from models.client import ClientApp
@@ -57,11 +63,22 @@ async def run_fanout_secondaries(
     session: AsyncSession,
     temperature: float | None = None,
     deterministic_seed: bool = False,
+    primary: Coroutine[Any, Any, Any] | None = None,
+    session_factory: async_sessionmaker[AsyncSession] | None = None,
 ) -> list[JobShadow]:
-    """Create JobShadow rows for each secondary, run them all in parallel,
-    return the resulting rows. The caller is responsible for running the
-    primary's execute_job in the same asyncio.gather batch."""
+    """Create JobShadow rows for each secondary, run them, return the rows.
+
+    An AsyncSession cannot be used from concurrent tasks, so concurrency is
+    gated on `session_factory`: when provided, each shadow re-fetches its row
+    in its own session and everything (including `primary`, which keeps the
+    shared `session` as its sole user) runs in one gather. Without a factory,
+    the primary and each shadow run sequentially on the shared session.
+    `parent` stays attached to the shared session throughout — the shadow
+    tasks only read its already-loaded attributes.
+    """
     if not secondary_models:
+        if primary is not None:
+            await primary
         return []
 
     shadows: list[JobShadow] = []
@@ -78,24 +95,38 @@ async def run_fanout_secondaries(
     await session.flush()
     await session.commit()
 
-    async def _run(s: JobShadow) -> JobShadow:
+    async def _run(s: JobShadow, run_session: AsyncSession) -> JobShadow:
         return await execute_shadow(
             shadow=s,
             parent=parent,
             client=client,
             max_tokens=max_tokens,
             providers=providers,
-            session=session,
+            session=run_session,
             temperature=temperature,
             deterministic_seed=deterministic_seed,
         )
+
+    async def _run_own_session(s: JobShadow) -> JobShadow:
+        async with session_factory() as own:
+            live = await own.get(JobShadow, s.id)
+            return await _run(live, own)
 
     with _tracer.start_as_current_span("conduct.fanout") as span:
         span.set_attribute("fanout.parent_job_id", str(parent.id))
         span.set_attribute("fanout.target_count", len(shadows))
         started = perf_counter()
         try:
-            results = await asyncio.gather(*(_run(s) for s in shadows))
+            if session_factory is not None:
+                head = [primary] if primary is not None else []
+                out = await asyncio.gather(
+                    *head, *(_run_own_session(s) for s in shadows)
+                )
+                results = out[len(head):]
+            else:
+                if primary is not None:
+                    await primary
+                results = [await _run(s, session) for s in shadows]
         except ProviderError as e:
             span.record_exception(e)
             raise
