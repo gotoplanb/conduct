@@ -158,10 +158,11 @@ def score_state(scores: list[dict]) -> dict:
         with contextlib.suppress(TypeError, ValueError):
             vals.append(float(s.get("score")))
         for dim, v in (s.get("scores") or {}).items():
-            try:
-                dim_vals[dim].append(float(v))
-            except (TypeError, ValueError):
-                continue
+            # float() first: defaultdict would otherwise create the key before
+            # the raise, leaving an empty list that divides by zero below.
+            with contextlib.suppress(TypeError, ValueError):
+                fv = float(v)
+                dim_vals[dim].append(fv)
     return {
         "count": len(vals),
         "avg": (sum(vals) / len(vals)) if vals else None,
