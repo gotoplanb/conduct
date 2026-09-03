@@ -22,9 +22,12 @@ KEY_PREFIX = "conduct:ratelimit"
 WINDOW_S = 60
 
 
-async def rate_limited_client(
+def rate_limited_client(
     client: ClientApp = Depends(current_client),
 ) -> ClientApp:
+    # Deliberately sync: the Redis client here is the blocking one, and a sync
+    # dependency runs in FastAPI's threadpool — as `async def` this stalled
+    # the event loop for a Redis round-trip on every rate-limited request.
     if client.rate_limit_per_minute is None:
         return client
 

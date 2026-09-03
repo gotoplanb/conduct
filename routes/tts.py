@@ -35,7 +35,7 @@ from worker.runner import run_job
 _bearer = HTTPBearer(auto_error=False)
 
 
-async def _admin_via_bearer_or_cookie(
+def _admin_via_bearer_or_cookie(
     credentials: HTTPAuthorizationCredentials | None = Depends(_bearer),
     conduct_admin: str | None = Cookie(default=None),
 ) -> None:

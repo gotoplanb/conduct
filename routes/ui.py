@@ -53,7 +53,7 @@ def _require_admin_cookie(value: str | None) -> bool:
     return hmac.compare_digest(value, get_settings().admin_key)
 
 
-async def admin_session(
+def admin_session(
     conduct_admin: Annotated[str | None, Cookie()] = None,
 ) -> None:
     """Cookie-based admin guard. Used as a dep on every authed UI route.

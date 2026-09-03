@@ -39,7 +39,7 @@ def _client(rate: int | None) -> ClientApp:
 @pytest.mark.asyncio
 async def test_unlimited_client_passes_through() -> None:
     c = _client(None)
-    out = await rate_limit.rate_limited_client(c)
+    out = rate_limit.rate_limited_client(c)
     assert out is c
 
 
@@ -47,16 +47,16 @@ async def test_unlimited_client_passes_through() -> None:
 async def test_under_limit_passes() -> None:
     c = _client(3)
     for _ in range(3):
-        await rate_limit.rate_limited_client(c)
+        rate_limit.rate_limited_client(c)
 
 
 @pytest.mark.asyncio
 async def test_over_limit_raises_429_with_retry_after() -> None:
     c = _client(2)
-    await rate_limit.rate_limited_client(c)
-    await rate_limit.rate_limited_client(c)
+    rate_limit.rate_limited_client(c)
+    rate_limit.rate_limited_client(c)
     with pytest.raises(HTTPException) as exc:
-        await rate_limit.rate_limited_client(c)
+        rate_limit.rate_limited_client(c)
     assert exc.value.status_code == 429
     assert "Retry-After" in exc.value.headers
     assert exc.value.headers["X-RateLimit-Limit"] == "2"
@@ -67,10 +67,10 @@ async def test_over_limit_raises_429_with_retry_after() -> None:
 async def test_separate_clients_have_separate_buckets() -> None:
     a = _client(1)
     b = _client(1)
-    await rate_limit.rate_limited_client(a)
+    rate_limit.rate_limited_client(a)
     # b should still have its own budget intact
-    await rate_limit.rate_limited_client(b)
+    rate_limit.rate_limited_client(b)
     with pytest.raises(HTTPException):
-        await rate_limit.rate_limited_client(a)
+        rate_limit.rate_limited_client(a)
     with pytest.raises(HTTPException):
-        await rate_limit.rate_limited_client(b)
+        rate_limit.rate_limited_client(b)

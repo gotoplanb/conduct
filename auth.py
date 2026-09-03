@@ -43,7 +43,7 @@ async def current_client(
     return client
 
 
-async def admin_only(
+def admin_only(
     credentials: HTTPAuthorizationCredentials | None = Depends(_bearer),
 ) -> None:
     settings = get_settings()
