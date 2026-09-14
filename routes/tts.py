@@ -50,6 +50,36 @@ def _admin_via_bearer_or_cookie(
         return
     raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="admin auth required")
 
+
+async def _admin_or_client_auth(
+    session: Annotated[AsyncSession, Depends(get_session)],
+    credentials: HTTPAuthorizationCredentials | None = Depends(_bearer),
+    conduct_admin: str | None = Cookie(default=None),
+) -> None:
+    """Output retrieval gate: admin (bearer or UI cookie) or any active
+    client key. Clients that submit media jobs must be able to fetch the
+    results; outputs are not client-scoped — every client here is one of
+    our own systems, and the edge already requires a cdt_ bearer."""
+    from sqlalchemy import select  # noqa: PLC0415
+
+    from auth import hash_api_key  # noqa: PLC0415 — avoid a route/auth import cycle
+
+    try:
+        _admin_via_bearer_or_cookie(credentials, conduct_admin)
+        return
+    except HTTPException:
+        pass
+    if credentials and credentials.credentials:
+        digest = hash_api_key(credentials.credentials)
+        found = await session.scalar(
+            select(ClientApp).where(ClientApp.api_key_hash == digest)
+        )
+        if found is not None and found.is_active:
+            return
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN, detail="admin or client auth required"
+    )
+
 log = logging.getLogger(__name__)
 
 # UUID-shaped filenames only — keeps the output path-safe even if a future
@@ -152,10 +182,10 @@ async def submit_tts(
     )
 
 
-@output_router.get("/{filename}", dependencies=[Depends(_admin_via_bearer_or_cookie)])
+@output_router.get("/{filename}", dependencies=[Depends(_admin_or_client_auth)])
 async def get_output(filename: str) -> FileResponse:
-    """Serve a generated output file (TTS .mp3 or code-gen .tar). Admin-auth —
-    these are private outputs."""
+    """Serve a generated output file (TTS .mp3, code-gen .tar, media images/
+    video). Admin or client auth — media clients retrieve their results here."""
     if not _OUTPUT_FILENAME.match(filename):
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "invalid filename")
     settings = get_settings()

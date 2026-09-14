@@ -1,0 +1,45 @@
+{
+  "_meta": {
+    "description": "Model upscale (Real-ESRGAN 4x) with optional exact-size rescale. width/height 0 keeps the model's native 4x output; setting either rescales with lanczos (0 on the other side derives it proportionally). KDP-agnostic: callers compute their own target pixel sizes.",
+    "inject": {
+      "source_image": {"node": "1", "input": "image"},
+      "model_name": {"node": "2", "input": "model_name"},
+      "width": {"node": "4", "input": "width"},
+      "height": {"node": "4", "input": "height"},
+      "upscale_method": {"node": "4", "input": "upscale_method"}
+    },
+    "output_node": "5",
+    "default_params": {
+      "model_name": "RealESRGAN_x4plus.pth",
+      "width": 0,
+      "height": 0,
+      "upscale_method": "lanczos"
+    }
+  },
+  "1": {
+    "class_type": "LoadImage",
+    "inputs": {"image": "placeholder.png"}
+  },
+  "2": {
+    "class_type": "UpscaleModelLoader",
+    "inputs": {"model_name": "RealESRGAN_x4plus.pth"}
+  },
+  "3": {
+    "class_type": "ImageUpscaleWithModel",
+    "inputs": {"upscale_model": ["2", 0], "image": ["1", 0]}
+  },
+  "4": {
+    "class_type": "ImageScale",
+    "inputs": {
+      "image": ["3", 0],
+      "upscale_method": "lanczos",
+      "width": 0,
+      "height": 0,
+      "crop": "disabled"
+    }
+  },
+  "5": {
+    "class_type": "SaveImage",
+    "inputs": {"images": ["4", 0], "filename_prefix": "conduct_upscale"}
+  }
+}

@@ -19,6 +19,7 @@ from routes import (
     prompts,
     tts,
     ui,
+    uploads,
 )
 from routes import eval as eval_route
 from routes import image as image_route
@@ -51,6 +52,7 @@ app.include_router(prompts.router)
 app.include_router(oauth.router)
 app.include_router(tts.tts_router)
 app.include_router(tts.output_router)
+app.include_router(uploads.router)
 app.include_router(voices_route.router)
 app.include_router(voices_route.admin_router)
 app.include_router(image_route.image_router)

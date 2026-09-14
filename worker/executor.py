@@ -86,6 +86,11 @@ _MEDIA_SOURCE_URL_KEYS = frozenset(
     {"source_image_url", "source_audio_url", "source_video_url"}
 )
 
+# media_url values are stored as "/output/<name>"; the worker mounts the same
+# directory at /app/output, so URL → local-path translation is a prefix swap.
+_OUTPUT_URL_PREFIX = "/output/"
+_WORKER_OUTPUT_PREFIX = "/app/output/"
+
 
 async def _resolve_one_job_id_ref(
     key: str, ref_id, session: AsyncSession
@@ -109,8 +114,8 @@ async def _resolve_one_job_id_ref(
     # same directory at /app/output so we translate to a local filesystem
     # path that providers can hand straight to ffmpeg / ComfyUI's LoadImage
     # node without any HTTP round-trip.
-    if ref_job.media_url.startswith("/output/"):
-        return ref_job.media_url.replace("/output/", "/app/output/", 1)
+    if ref_job.media_url.startswith(_OUTPUT_URL_PREFIX):
+        return ref_job.media_url.replace(_OUTPUT_URL_PREFIX, _WORKER_OUTPUT_PREFIX, 1)
     return ref_job.media_url
 
 
@@ -133,9 +138,12 @@ async def _resolve_media_input_refs(
     """Translate `source_<kind>_job_id` keys → `source_<kind>_url` pointing
     at a worker-local file path, so providers stay oblivious to the DB.
 
-    Job-id refs are the canonical chaining contract (issues #12, #14). The
-    older URL form is accepted for one release as a deprecated alias and
-    logs a warning; when both forms are present the job-id wins.
+    Job-id refs are the canonical chaining contract (issues #12, #14). A
+    direct `source_<kind>_url` of the form `/output/...` is the blessed
+    ingestion path for uploaded external sources (POST /uploads) and gets
+    the same volume translation. Any other direct URL is the legacy alias —
+    accepted for one release with a warning; when both forms are present
+    the job-id wins.
 
     A bad ref (unknown job_id, or referenced job has no media_url yet) raises
     ValueError — execute_media_job's except-Exception block surfaces it as
@@ -157,6 +165,14 @@ async def _resolve_media_input_refs(
         )
         resolved.pop(key, None)
         resolved_url_keys.add(url_key)
+
+    for key in _MEDIA_SOURCE_URL_KEYS:
+        if key in resolved_url_keys:
+            continue
+        val = resolved.get(key)
+        if isinstance(val, str) and val.startswith(_OUTPUT_URL_PREFIX):
+            resolved[key] = val.replace(_OUTPUT_URL_PREFIX, _WORKER_OUTPUT_PREFIX, 1)
+            resolved_url_keys.add(key)
 
     _warn_on_deprecated_url_inputs(inputs, resolved_url_keys)
     return resolved
@@ -1568,6 +1584,16 @@ async def execute_media_job(
         await session.commit()
 
         params = dict(extra_params or {})
+        # Per-request generation knobs ride in `inputs.params` (seed, pad
+        # amounts, target size, ...) and win over rule/style defaults. The
+        # workflow_template is filtered out: which workflow runs is the
+        # routing rule's call, never the caller's.
+        request_params = {
+            k: v
+            for k, v in (((job.inputs or {}).get("params")) or {}).items()
+            if k != "workflow_template"
+        }
+        params.update(request_params)
         if workflow_template:
             params.setdefault("workflow_template", workflow_template)
 

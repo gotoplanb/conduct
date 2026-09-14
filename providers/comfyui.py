@@ -99,6 +99,14 @@ class ComfyUIProvider(BaseMediaProvider):
         workflow, meta = self._load_workflow(template_name)
         await self._stage_inputs(inputs, workflow, meta)
         self._inject(workflow, meta, prompt, params)
+        # What actually ran: template defaults overlaid by the caller's params.
+        # Echoed in `extra` so a job's metadata records the seed & co. — a
+        # caller can re-request an identical run or deliberately vary it.
+        effective_params = {
+            k: v
+            for k, v in {**(meta.get("default_params") or {}), **params}.items()
+            if k != "workflow_template"
+        }
 
         started = time.perf_counter()
         async with httpx.AsyncClient(
@@ -147,7 +155,11 @@ class ComfyUIProvider(BaseMediaProvider):
             cost_usd=Decimal("0"),  # local model, no per-token cost
             model_used=template_name,
             provider=self.name,
-            extra={"prompt_id": prompt_id, "workflow_template": template_name},
+            extra={
+                "prompt_id": prompt_id,
+                "workflow_template": template_name,
+                "params": effective_params,
+            },
         )
 
     # ------------------------------------------------------------------

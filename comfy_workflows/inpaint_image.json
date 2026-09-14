@@ -1,0 +1,93 @@
+{
+  "_meta": {
+    "description": "SDXL outpaint/inpaint. Pads the source by left/top/right/bottom pixels (ImagePadForOutpaint) and fills the padded region guided by the prompt; denoise 1.0 paints the masked area from scratch while feathering + grow_mask_by blend the seam. Seed defaults fixed (42) so identical requests reproduce identical fills — pass a different seed to vary. Explicit-mask inpainting is a future extension; this template covers the directional-extension form.",
+    "inject": {
+      "source_image": {"node": "2", "input": "image"},
+      "prompt": {"node": "4", "input": "text"},
+      "negative_prompt": {"node": "5", "input": "text"},
+      "left": {"node": "3", "input": "left"},
+      "top": {"node": "3", "input": "top"},
+      "right": {"node": "3", "input": "right"},
+      "bottom": {"node": "3", "input": "bottom"},
+      "feathering": {"node": "3", "input": "feathering"},
+      "grow_mask_by": {"node": "6", "input": "grow_mask_by"},
+      "seed": {"node": "7", "input": "seed"},
+      "steps": {"node": "7", "input": "steps"},
+      "cfg": {"node": "7", "input": "cfg"},
+      "denoise": {"node": "7", "input": "denoise"}
+    },
+    "output_node": "9",
+    "default_negative": "text, watermark, signature, frame, border, blurry, lowres, jpeg artifacts, deformed",
+    "default_params": {
+      "left": 0,
+      "top": 0,
+      "right": 0,
+      "bottom": 0,
+      "feathering": 40,
+      "grow_mask_by": 16,
+      "seed": 42,
+      "steps": 30,
+      "cfg": 7.0,
+      "denoise": 1.0
+    }
+  },
+  "1": {
+    "class_type": "CheckpointLoaderSimple",
+    "inputs": {"ckpt_name": "sd_xl_base_1.0.safetensors"}
+  },
+  "2": {
+    "class_type": "LoadImage",
+    "inputs": {"image": "placeholder.png"}
+  },
+  "3": {
+    "class_type": "ImagePadForOutpaint",
+    "inputs": {
+      "image": ["2", 0],
+      "left": 0,
+      "top": 0,
+      "right": 0,
+      "bottom": 0,
+      "feathering": 40
+    }
+  },
+  "4": {
+    "class_type": "CLIPTextEncode",
+    "inputs": {"clip": ["1", 1], "text": ""}
+  },
+  "5": {
+    "class_type": "CLIPTextEncode",
+    "inputs": {"clip": ["1", 1], "text": ""}
+  },
+  "6": {
+    "class_type": "VAEEncodeForInpaint",
+    "inputs": {
+      "pixels": ["3", 0],
+      "vae": ["1", 2],
+      "mask": ["3", 1],
+      "grow_mask_by": 16
+    }
+  },
+  "7": {
+    "class_type": "KSampler",
+    "inputs": {
+      "model": ["1", 0],
+      "positive": ["4", 0],
+      "negative": ["5", 0],
+      "latent_image": ["6", 0],
+      "seed": 42,
+      "steps": 30,
+      "cfg": 7.0,
+      "sampler_name": "dpmpp_2m",
+      "scheduler": "karras",
+      "denoise": 1.0
+    }
+  },
+  "8": {
+    "class_type": "VAEDecode",
+    "inputs": {"samples": ["7", 0], "vae": ["1", 2]}
+  },
+  "9": {
+    "class_type": "SaveImage",
+    "inputs": {"images": ["8", 0], "filename_prefix": "conduct_inpaint"}
+  }
+}
