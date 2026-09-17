@@ -54,8 +54,9 @@ anthropic:
 
 @pytest.mark.asyncio
 async def test_temperature_passed_seed_ignored() -> None:
-    """A deterministic task sends temperature 0 to the Anthropic API. There's
-    no seed param, so `seed` is dropped (temperature-0 best-effort)."""
+    """A deterministic task sends temperature 0 to the Anthropic API — via
+    extra_body since SDK 1.0 removed the typed param. There's no seed param,
+    so `seed` is dropped (temperature-0 best-effort)."""
     provider = AnthropicProvider(api_key="sk-test")
     fake = _fake_message("x", 1, 1)
     create = AsyncMock(return_value=fake)
@@ -64,8 +65,33 @@ async def test_temperature_passed_seed_ignored() -> None:
             prompt="hi", model="claude-x", max_tokens=64, temperature=0.0, seed=7
         )
     sent = create.call_args.kwargs
-    assert sent["temperature"] == 0.0
+    assert sent["extra_body"] == {"temperature": 0.0}
     assert "seed" not in sent
+    assert "temperature" not in sent
+
+
+@pytest.mark.asyncio
+async def test_provider_kwargs_match_sdk_signature() -> None:
+    """Signature-drift guard: every kwarg the provider builds must be a real
+    parameter of the installed SDK's messages.create. The other tests mock
+    create with AsyncMock, which accepts anything — this is what catches an
+    SDK upgrade removing a param (as 1.0 did with `temperature`)."""
+    import inspect
+
+    from anthropic.resources.messages import AsyncMessages
+
+    sdk_params = set(inspect.signature(AsyncMessages.create).parameters)
+    provider = AnthropicProvider(api_key="sk-test")
+    fake = _fake_message("x", 1, 1)
+    create = AsyncMock(return_value=fake)
+    with patch.object(provider._client.messages, "create", create):
+        await provider.complete(
+            prompt="hi", model="claude-x", system_prompt="s",
+            max_tokens=64, temperature=0.7, seed=1,
+        )
+    sent = set(create.call_args.kwargs)
+    unknown = sent - sdk_params
+    assert not unknown, f"provider sends kwargs the SDK no longer accepts: {unknown}"
 
 
 @pytest.mark.asyncio

@@ -57,9 +57,12 @@ class AnthropicProvider(BaseProvider):
         # The Anthropic API has no seed param — `seed` is ignored here, so a
         # "deterministic" task gets temperature 0 (most-stable, but not a
         # reproducibility guarantee). The temperature scale is [0, 1], which
-        # matches every sampling profile's value.
+        # matches every sampling profile's value. SDK 1.0 removed temperature
+        # as a typed parameter, so it rides in extra_body; the API still
+        # accepts it on the models our rules route here (4.6-and-earlier —
+        # Opus 4.7+/Sonnet 5 reject sampling params server-side).
         if temperature is not None:
-            kwargs_for_create["temperature"] = temperature
+            kwargs_for_create["extra_body"] = {"temperature": temperature}
 
         started = time.perf_counter()
         try:
