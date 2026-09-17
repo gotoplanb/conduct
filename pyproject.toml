@@ -30,7 +30,10 @@ dependencies = [
     "piper-tts>=1.4",
     "jinja2>=3.1",
     "python-multipart>=0.0.20",
-    "mcp>=1.2",
+    # <2: mcp v2.0 (2026-07) renamed FastMCP to MCPServer and removed the
+    # mcp.server.fastmcp module our /mcp app imports. v1.x is maintenance-mode
+    # (security fixes only) — migrating to v2 is planned work, not a bump.
+    "mcp>=1.2,<2",
     "cryptography>=42.0",
     "aioboto3>=13.0",
     "tree-sitter>=0.25.2",
