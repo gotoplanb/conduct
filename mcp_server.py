@@ -1,6 +1,6 @@
 """Conduct MCP server — the remote tool surface for Claude custom connectors.
 
-A FastMCP (Streamable HTTP, stateless) app exposing a small set of job tools.
+An MCPServer (Streamable HTTP, stateless) app exposing a small set of job tools.
 It's mounted at /mcp by main.py and gated by an OAuth bearer token: the ASGI
 middleware below resolves the token to a ClientApp and stashes it in a
 contextvar, so every tool acts as that client (jobs are attributed to it).
@@ -18,7 +18,7 @@ from typing import Any
 from urllib.parse import urlparse
 from uuid import UUID
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 from mcp.server.transport_security import TransportSecuritySettings
 from sqlalchemy import select
 
@@ -98,13 +98,9 @@ def _transport_security() -> TransportSecuritySettings:
     )
 
 
-mcp = FastMCP(
-    "Conduct",
-    stateless_http=True,
-    streamable_http_path="/",
-    json_response=False,
-    transport_security=_transport_security(),
-)
+# v2: transport parameters (stateless_http, path, json_response, security)
+# moved off the constructor onto streamable_http_app() — see build_mcp_app.
+mcp = MCPServer("Conduct")
 
 
 def _client_app_id() -> UUID:
@@ -561,7 +557,14 @@ class OAuthMiddleware:
 
 
 def build_mcp_app():
-    """The /mcp ASGI app: FastMCP's streamable-HTTP transport behind the
+    """The /mcp ASGI app: MCPServer's streamable-HTTP transport behind the
     OAuth gate. Mounted by main.py; its session manager is started in the
     app lifespan."""
-    return OAuthMiddleware(mcp.streamable_http_app())
+    return OAuthMiddleware(
+        mcp.streamable_http_app(
+            streamable_http_path="/",
+            json_response=False,
+            stateless_http=True,
+            transport_security=_transport_security(),
+        )
+    )
