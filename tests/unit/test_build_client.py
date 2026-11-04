@@ -99,16 +99,18 @@ async def test_non_200_raises_build_service_error() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(400, json={"error": "no_cargo_toml"})
 
+    client = _client(handler)
     with pytest.raises(BuildServiceError, match="400"):
-        await _client(handler).build(b"t", ["check"])
+        await client.build(b"t", ["check"])
 
 
 async def test_unreachable_service_raises_build_service_error() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         raise httpx.ConnectError("connection refused")
 
+    client = _client(handler)
     with pytest.raises(BuildServiceError, match="unreachable"):
-        await _client(handler).build(b"t", ["check"])
+        await client.build(b"t", ["check"])
 
 
 async def test_compile_summary_no_compile_command() -> None:
@@ -142,15 +144,21 @@ async def test_build_sends_overlay_and_test_target() -> None:
 def test_test_summary_all_pass() -> None:
     r = _test_report("test result: ok. 3 passed; 0 failed; 0 ignored; finished in 0.0s")
     s = summarize_tests(r)
-    assert s["passed"] == 3 and s["failed"] == 0 and s["total"] == 3
-    assert s["pass_rate"] == 1.0 and s["ok"] is True
+    assert s["passed"] == 3
+    assert s["failed"] == 0
+    assert s["total"] == 3
+    assert s["pass_rate"] == 1.0
+    assert s["ok"] is True
 
 
 def test_test_summary_some_fail() -> None:
     r = _test_report("test result: FAILED. 1 passed; 2 failed; 0 ignored", exit_code=101)
     s = summarize_tests(r)
-    assert s["passed"] == 1 and s["failed"] == 2 and s["total"] == 3
-    assert s["pass_rate"] == round(1 / 3, 4) and s["ok"] is False
+    assert s["passed"] == 1
+    assert s["failed"] == 2
+    assert s["total"] == 3
+    assert s["pass_rate"] == round(1 / 3, 4)
+    assert s["ok"] is False
 
 
 def test_test_summary_sums_multiple_result_lines() -> None:
@@ -159,19 +167,23 @@ def test_test_summary_sums_multiple_result_lines() -> None:
         "test result: ok. 1 passed; 0 failed; 0 ignored"
     )
     s = summarize_tests(r)
-    assert s["passed"] == 3 and s["total"] == 3 and s["ok"] is True
+    assert s["passed"] == 3
+    assert s["total"] == 3
+    assert s["ok"] is True
 
 
 def test_test_summary_compile_failure_zero_total() -> None:
     # A test binary that won't compile: nonzero exit, no result line.
     r = _test_report("", "error[E0425]: cannot find value", exit_code=101)
     s = summarize_tests(r)
-    assert s["total"] == 0 and s["ok"] is False
+    assert s["total"] == 0
+    assert s["ok"] is False
 
 
 def test_test_summary_timeout() -> None:
     s = summarize_tests(_test_report(timed_out=True))
-    assert s["timed_out"] is True and s["ok"] is False
+    assert s["timed_out"] is True
+    assert s["ok"] is False
 
 
 def test_counterexample_extracted() -> None:
@@ -190,28 +202,37 @@ def test_counterexample_absent() -> None:
 
 def test_mutation_all_caught_is_thorough() -> None:
     s = mutation_summary(_mutants_report("5 mutants tested in 0s: 5 caught"))
-    assert s["caught"] == 5 and s["missed"] == 0
-    assert s["mutants_tested"] == 5 and s["kill_rate"] == 1.0
+    assert s["caught"] == 5
+    assert s["missed"] == 0
+    assert s["mutants_tested"] == 5
+    assert s["kill_rate"] == 1.0
 
 
 def test_mutation_all_missed_is_shallow() -> None:
     s = mutation_summary(_mutants_report("5 mutants tested in 0s: 5 missed"))
-    assert s["caught"] == 0 and s["missed"] == 5 and s["kill_rate"] == 0.0
+    assert s["caught"] == 0
+    assert s["missed"] == 5
+    assert s["kill_rate"] == 0.0
 
 
 def test_mutation_mixed_kill_rate() -> None:
     s = mutation_summary(_mutants_report("2 mutants tested in 3s: 1 caught, 1 missed"))
-    assert s["caught"] == 1 and s["missed"] == 1 and s["kill_rate"] == 0.5
+    assert s["caught"] == 1
+    assert s["missed"] == 1
+    assert s["kill_rate"] == 0.5
 
 
 def test_mutation_excludes_unviable_and_timeout() -> None:
     s = mutation_summary(_mutants_report(
         "6 mutants tested in 5s: 2 caught, 1 missed, 2 unviable, 1 timeout"
     ))
-    assert s["unviable"] == 2 and s["timeout"] == 1
-    assert s["mutants_tested"] == 3 and s["kill_rate"] == round(2 / 3, 4)
+    assert s["unviable"] == 2
+    assert s["timeout"] == 1
+    assert s["mutants_tested"] == 3
+    assert s["kill_rate"] == round(2 / 3, 4)
 
 
 def test_mutation_timeout() -> None:
     s = mutation_summary(_mutants_report(timed_out=True))
-    assert s["timed_out"] is True and s["mutants_tested"] == 0
+    assert s["timed_out"] is True
+    assert s["mutants_tested"] == 0

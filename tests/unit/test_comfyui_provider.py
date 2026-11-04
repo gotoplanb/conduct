@@ -94,7 +94,8 @@ async def test_image_workflow_happy_path(provider, tmp_path) -> None:
     assert result.provider == "comfyui"
     assert result.mime_type == "image/png"
     assert result.url_path == "/output/job-abc.png"
-    assert result.width == 1024 and result.height == 768
+    assert result.width == 1024
+    assert result.height == 768
     assert result.cost_usd == Decimal("0")
     assert Path(result.file_path).read_bytes() == b"PNGDATA"
     assert result.extra["workflow_template"] == "wander_scene_image"

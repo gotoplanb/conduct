@@ -70,8 +70,9 @@ def test_blank_path_rejected() -> None:
 def test_too_many_files_rejected() -> None:
     manifest = {f"src/f{i}.rs": "// x" for i in range(MAX_FILES)}
     manifest["Cargo.toml"] = _CARGO  # MAX_FILES + 1 total
+    raw = json.dumps({"files": manifest})
     with pytest.raises(ArtifactError, match="artifact_too_large") as exc:
-        parse_cargo_project(json.dumps({"files": manifest}))
+        parse_cargo_project(raw)
     assert "files" in exc.value.detail
 
 
@@ -80,6 +81,7 @@ def test_total_bytes_ceiling_rejected() -> None:
     big = "x" * 250_000
     manifest = {f"src/f{i}.rs": big for i in range(9)}
     manifest["Cargo.toml"] = _CARGO
+    raw = json.dumps({"files": manifest})
     with pytest.raises(ArtifactError, match="artifact_too_large") as exc:
-        parse_cargo_project(json.dumps({"files": manifest}))
+        parse_cargo_project(raw)
     assert "bytes" in exc.value.detail

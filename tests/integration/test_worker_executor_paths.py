@@ -652,7 +652,8 @@ async def test_mutation_na_when_model_tests_fail() -> None:
     score, detail = await executor._run_mutation_dimension(bc, b"", True)
     assert score is None
     assert detail["skipped"] == "model tests failing"
-    assert detail["passed"] == 1 and detail["failed"] == 2
+    assert detail["passed"] == 1
+    assert detail["failed"] == 2
 
 
 async def test_mutation_na_when_mutants_time_out() -> None:

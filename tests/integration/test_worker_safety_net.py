@@ -52,7 +52,8 @@ async def test_dispatch_exception_marks_job_failed_not_pending(
 
     await db_session.refresh(job)
     assert job.status == JobStatus.FAILED.value  # not stuck pending
-    assert "worker dispatch error" in job.error and "kaboom" in job.error
+    assert "worker dispatch error" in job.error
+    assert "kaboom" in job.error
     assert job.completed_at is not None
 
 

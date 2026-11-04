@@ -83,12 +83,14 @@ async def test_min_panel_n_defaults_null_and_round_trips(client, admin_headers) 
         "sensitivity": "internal",
     }
     r = await client.put("/routing/quorum_default_task", json=base, headers=admin_headers)
-    assert r.status_code == 200 and r.json()["min_panel_n"] is None
+    assert r.status_code == 200
+    assert r.json()["min_panel_n"] is None
 
     r2 = await client.put(
         "/routing/quorum_task", json={**base, "min_panel_n": 2}, headers=admin_headers
     )
-    assert r2.status_code == 200 and r2.json()["min_panel_n"] == 2
+    assert r2.status_code == 200
+    assert r2.json()["min_panel_n"] == 2
     g = await client.get("/routing/quorum_task", headers=admin_headers)
     assert g.json()["min_panel_n"] == 2
 

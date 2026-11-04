@@ -9,7 +9,8 @@ async def test_list_models(client, admin_headers) -> None:
     r = await client.get("/models", headers=admin_headers)
     assert r.status_code == 200
     body = r.json()
-    assert "local" in body and "cloud" in body
+    assert "local" in body
+    assert "cloud" in body
     # The stub provider returns two locals
     names = [m["name"] for m in body["local"]]
     assert "llama3.3:70b" in names

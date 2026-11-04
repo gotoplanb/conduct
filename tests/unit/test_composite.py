@@ -49,7 +49,8 @@ def test_load_weights_reads_yaml_override(tmp_path) -> None:
     cfg = tmp_path / "composite.yaml"
     cfg.write_text("weights:\n  compile: 10\n  golden: 1\n")
     w = load_weights(str(cfg))
-    assert w["compile"] == 10.0 and w["golden"] == 1.0
+    assert w["compile"] == 10.0
+    assert w["golden"] == 1.0
     assert w["deps"] == DEFAULT_WEIGHTS["deps"]  # unspecified -> default kept
 
 

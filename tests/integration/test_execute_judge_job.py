@@ -132,7 +132,8 @@ def test_is_judge_job() -> None:
 
 def test_parse_judge_verdict_plain() -> None:
     score, dims, rationale = _parse_judge_verdict('{"score": 4, "rationale": "solid"}')
-    assert score == 4 and dims is None
+    assert score == 4
+    assert dims is None
     assert rationale == "solid"
 
 
@@ -140,7 +141,8 @@ def test_parse_judge_verdict_tolerates_fences_and_prose() -> None:
     # The exact failure mode we hit on gemma4:12b — fenced JSON with preamble.
     text = 'Here is my verdict:\n```json\n{"score": 5, "rationale": "great"}\n```'
     score, dims, rationale = _parse_judge_verdict(text)
-    assert score == 5 and dims is None
+    assert score == 5
+    assert dims is None
     assert rationale == "great"
 
 
@@ -154,8 +156,7 @@ def test_parse_judge_verdict_dimensions() -> None:
 
 
 def test_parse_judge_verdict_dimensions_missing_one_fails() -> None:
-    import pytest as _pytest
-    with _pytest.raises(KeyError):
+    with pytest.raises(KeyError):
         _parse_judge_verdict('{"scores": {"correctness": 5}}', ["correctness", "format"])
 
 
@@ -312,27 +313,34 @@ def test_reconcile_pairwise_consistent_winner() -> None:
     a, b = uuid4(), uuid4()
     # call1 (A=a, B=b) → "A"=a; call2 (A=b, B=a) → "B"=a : both name a → consistent
     chosen, rejected, tie, consistent = _reconcile_pairwise("A", "B", a, b)
-    assert chosen == a and rejected == b
-    assert tie is False and consistent is True
+    assert chosen == a
+    assert rejected == b
+    assert tie is False
+    assert consistent is True
 
 
 def test_reconcile_pairwise_position_bias_is_tie() -> None:
     a, b = uuid4(), uuid4()
     # winner "A" both calls → call1=a, call2=b : disagree → tie
     chosen, rejected, tie, consistent = _reconcile_pairwise("A", "A", a, b)
-    assert chosen is None and rejected is None
-    assert tie is True and consistent is False
+    assert chosen is None
+    assert rejected is None
+    assert tie is True
+    assert consistent is False
 
 
 def test_reconcile_pairwise_explicit_tie() -> None:
     a, b = uuid4(), uuid4()
     chosen, _r, tie, consistent = _reconcile_pairwise("TIE", "B", a, b)
-    assert chosen is None and tie is True and consistent is False
+    assert chosen is None
+    assert tie is True
+    assert consistent is False
 
 
 def test_parse_pairwise_verdict() -> None:
     w, r = _parse_pairwise_verdict('{"winner": "B", "rationale": "B is sharper"}')
-    assert w == "B" and r == "B is sharper"
+    assert w == "B"
+    assert r == "B is sharper"
     with pytest.raises(ValueError, match="not in A/B/tie"):
         _parse_pairwise_verdict('{"winner": "C"}')
 
@@ -387,8 +395,11 @@ async def test_pairwise_consistent_winner_records_preference(
     await db_session.refresh(b)
     av = (a.job_metadata or {}).get("pairwise_verdicts") or []
     bv = (b.job_metadata or {}).get("pairwise_verdicts") or []
-    assert len(av) == 1 and av[0]["outcome"] == "win" and av[0]["against_job_id"] == str(b.id)
-    assert len(bv) == 1 and bv[0]["outcome"] == "loss"
+    assert len(av) == 1
+    assert av[0]["outcome"] == "win"
+    assert av[0]["against_job_id"] == str(b.id)
+    assert len(bv) == 1
+    assert bv[0]["outcome"] == "loss"
     assert (a.job_metadata or {}).get("quality_scores", []) == []  # pointwise lane untouched
 
 
@@ -421,8 +432,10 @@ async def test_pairwise_position_bias_yields_tie(
     import json as _json
     resp = _json.loads(out.response)
     assert resp["mode"] == "pairwise"
-    assert resp["tie"] is True and resp["position_consistent"] is False
-    assert resp["rationale_ab"] == "first one" and resp["rationale_ba"] == "first one"
+    assert resp["tie"] is True
+    assert resp["position_consistent"] is False
+    assert resp["rationale_ab"] == "first one"
+    assert resp["rationale_ba"] == "first one"
     assert resp["applied_to_target"] is False
     await db_session.refresh(a)
     assert (a.job_metadata or {}).get("pairwise_verdicts", []) == []
@@ -466,10 +479,13 @@ def test_aggregate_panel_median_and_disagreement() -> None:
         {"model": "a", "score": 4}, {"model": "b", "score": 2}, {"model": "c", "score": 5},
     ])
     assert agg["score"] == 4  # median(4, 2, 5)
-    assert agg["n"] == 3 and agg["spread"] == 3 and agg["disagreement"] is True
+    assert agg["n"] == 3
+    assert agg["spread"] == 3
+    assert agg["disagreement"] is True
 
     tight = _aggregate_panel([{"model": "a", "score": 4}, {"model": "b", "score": 4}])
-    assert tight["score"] == 4 and tight["disagreement"] is False
+    assert tight["score"] == 4
+    assert tight["disagreement"] is False
 
 
 def test_aggregate_panel_dimensions() -> None:
@@ -547,7 +563,9 @@ async def test_panel_aggregates_and_excludes_producer_family(
     # Median applied to the target under a distinct via tag.
     await db_session.refresh(target)
     qs = (target.job_metadata or {}).get("quality_scores") or []
-    assert len(qs) == 1 and qs[0]["score"] == 3 and qs[0]["via"] == "judge-panel"
+    assert len(qs) == 1
+    assert qs[0]["score"] == 3
+    assert qs[0]["via"] == "judge-panel"
 
 
 async def test_panel_skips_failed_juror(db_session: AsyncSession, seeded_client) -> None:
@@ -577,10 +595,12 @@ async def test_panel_skips_failed_juror(db_session: AsyncSession, seeded_client)
     import json as _json
     resp = _json.loads(out.response)
     assert resp["mode"] == "panel"
-    assert resp["n"] == 2 and resp["spread"] == 2
+    assert resp["n"] == 2
+    assert resp["spread"] == 2
     assert len(resp["failures"]) == 1
     assert {p["model"] for p in resp["panelists"]} == {"llama3.2:3b", "mistral-small3.2"}
-    assert "excluded" in resp and "applied_to_target" in resp
+    assert "excluded" in resp
+    assert "applied_to_target" in resp
 
 
 # --- panel quorum floor (#21) ---------------------------------------------
@@ -601,7 +621,8 @@ async def test_panel_quorum_met_passes(db_session: AsyncSession, seeded_client) 
     out = await _run(judge, _decision(), provider, client, db_session)
     assert out.status == JobStatus.COMPLETE.value
     meta = out.job_metadata["judge"]
-    assert meta["n"] == 2 and meta["min_panel_n"] == 2
+    assert meta["n"] == 2
+    assert meta["min_panel_n"] == 2
     await db_session.refresh(target)
     assert len((target.job_metadata or {}).get("quality_scores") or []) == 1
 
@@ -623,7 +644,8 @@ async def test_panel_quorum_unmet_fails_no_writeback(
     ])
     out = await _run(judge, _decision(), provider, client, db_session)
     assert out.status == JobStatus.FAILED.value
-    assert "quorum not met" in out.error and "1 of 2" in out.error
+    assert "quorum not met" in out.error
+    assert "1 of 2" in out.error
     await db_session.refresh(target)
     assert (target.job_metadata or {}).get("quality_scores", []) == []
 

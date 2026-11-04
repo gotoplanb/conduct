@@ -65,9 +65,12 @@ async def test_sft_keeps_high_scored_only(db_session: AsyncSession, seeded_clien
     rows = await iter_sft(db_session, task_type="qa", min_score=4)
     assert len(rows) == 1
     r = rows[0]
-    assert r["prompt"] == "good?" and r["completion"] == "great"
-    assert r["meta"]["score"] == 4.5 and r["meta"]["n_scores"] == 2
-    assert r["meta"]["source"] == "job" and r["meta"]["id"] == str(good.id)
+    assert r["prompt"] == "good?"
+    assert r["completion"] == "great"
+    assert r["meta"]["score"] == 4.5
+    assert r["meta"]["n_scores"] == 2
+    assert r["meta"]["source"] == "job"
+    assert r["meta"]["id"] == str(good.id)
 
 
 async def test_sft_label_dim_filters_and_surfaces_dimensions(
@@ -126,7 +129,8 @@ async def test_sft_include_shadows(db_session: AsyncSession, seeded_client) -> N
     with_sh = await iter_sft(db_session, task_type="qa", min_score=4, include_shadows=True)
     assert len(with_sh) == 1
     assert with_sh[0]["completion"] == "shadow-ans"
-    assert with_sh[0]["meta"]["source"] == "shadow" and with_sh[0]["meta"]["model"] == "big"
+    assert with_sh[0]["meta"]["source"] == "shadow"
+    assert with_sh[0]["meta"]["model"] == "big"
 
 
 # --- preferences: pairwise -------------------------------------------------
@@ -150,8 +154,10 @@ async def test_preferences_pairwise(db_session: AsyncSession, seeded_client) -> 
     rows = await iter_preferences(db_session, task_type="qa", method="pairwise")
     assert len(rows) == 1  # exactly one pair, not two
     r = rows[0]
-    assert r["chosen"] == "excellent" and r["rejected"] == "meh"
-    assert r["meta"]["chosen_model"] == "strong" and r["meta"]["rejected_model"] == "weak"
+    assert r["chosen"] == "excellent"
+    assert r["rejected"] == "meh"
+    assert r["meta"]["chosen_model"] == "strong"
+    assert r["meta"]["rejected_model"] == "weak"
     assert r["meta"]["method"] == "pairwise"
 
 
@@ -170,8 +176,10 @@ async def test_preferences_from_score_differential(
     rows = await iter_preferences(db_session, task_type="qa", method="score", min_gap=2)
     assert len(rows) == 1
     r = rows[0]
-    assert r["chosen"] == "parent-good" and r["rejected"] == "shadow-bad"
-    assert r["meta"]["chosen_score"] == 5 and r["meta"]["rejected_score"] == 2
+    assert r["chosen"] == "parent-good"
+    assert r["rejected"] == "shadow-bad"
+    assert r["meta"]["chosen_score"] == 5
+    assert r["meta"]["rejected_score"] == 2
     assert r["meta"]["method"] == "score"
 
 
@@ -202,9 +210,11 @@ async def test_preferences_from_composite(db_session: AsyncSession, seeded_clien
     rows = await iter_preferences(db_session, task_type="qa", method="composite", min_gap=2)
     assert len(rows) == 1
     r = rows[0]
-    assert r["chosen"] == "good" and r["rejected"] == "bad"
+    assert r["chosen"] == "good"
+    assert r["rejected"] == "bad"
     assert r["meta"]["method"] == "composite"
-    assert r["meta"]["chosen_score"] == 5.0 and r["meta"]["rejected_score"] == 1.0
+    assert r["meta"]["chosen_score"] == 5.0
+    assert r["meta"]["rejected_score"] == 1.0
     # provenance back to the originating job + shadow
     assert r["meta"]["chosen_id"] == str(parent.id)
     assert r["meta"]["rejected_id"]
@@ -237,7 +247,8 @@ async def test_export_routes_stream_jsonl(
     assert r.status_code == 200
     assert r.headers["content-type"].startswith("application/x-ndjson")
     lines = [json.loads(ln) for ln in r.text.splitlines() if ln.strip()]
-    assert len(lines) == 1 and lines[0]["completion"] == "good"
+    assert len(lines) == 1
+    assert lines[0]["completion"] == "good"
 
     # admin-gated
     rp = await client.get("/datasets/preferences", headers=admin_headers)

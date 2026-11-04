@@ -372,7 +372,8 @@ async def test_mutation_shallow_tests_low_dimension(
     )
     verdict = json.loads(out.response)
     assert verdict["dimensions"]["mutation"] == 1  # kill_rate 0 -> shallow
-    assert verdict["mutation"]["missed"] == 5 and verdict["mutation"]["kill_rate"] == 0.0
+    assert verdict["mutation"]["missed"] == 5
+    assert verdict["mutation"]["kill_rate"] == 0.0
 
 
 async def test_mutation_thorough_tests_high_dimension(
@@ -510,7 +511,8 @@ async def test_code_eval_targets_a_shadow(
     # the dimension landed on the SHADOW (not the parent), via the code-eval lane
     await db_session.refresh(sh)
     qs = (sh.shadow_metadata or {}).get("quality_scores") or []
-    assert qs[-1]["scores"] == {"compile": 5} and qs[-1]["via"] == "code-eval"
+    assert qs[-1]["scores"] == {"compile": 5}
+    assert qs[-1]["via"] == "code-eval"
 
 
 async def test_build_service_error_fails_loudly(

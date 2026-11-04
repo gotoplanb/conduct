@@ -59,17 +59,17 @@ async def test_ollama_system_prompt_lands_in_payload() -> None:
 async def test_ollama_timeout_maps_to_provider_timeout() -> None:
     with respx.mock(base_url=OLLAMA) as mock:
         mock.post("/api/generate").mock(side_effect=httpx.ReadTimeout("slow"))
+        provider = OllamaProvider(base_url=OLLAMA, timeout_s=1.0)
         with pytest.raises(ProviderTimeout, match="timeout"):
-            await OllamaProvider(base_url=OLLAMA, timeout_s=1.0).complete(
-                prompt="hi", model="m"
-            )
+            await provider.complete(prompt="hi", model="m")
 
 
 async def test_ollama_connect_error_maps_to_provider_error() -> None:
     with respx.mock(base_url=OLLAMA) as mock:
         mock.post("/api/generate").mock(side_effect=httpx.ConnectError("refused"))
+        provider = OllamaProvider(base_url=OLLAMA)
         with pytest.raises(ProviderError, match="request failed"):
-            await OllamaProvider(base_url=OLLAMA).complete(prompt="hi", model="m")
+            await provider.complete(prompt="hi", model="m")
 
 
 async def test_ollama_list_models_returns_tags() -> None:

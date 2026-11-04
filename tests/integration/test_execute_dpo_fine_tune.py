@@ -91,7 +91,8 @@ async def test_dpo_fine_tune_trains_and_records_tag(
     assert out.model_used == "gemma4-e4b-dpo-abc123"  # the new servable tag
     meta = out.job_metadata["training"]
     assert meta["tag"] == "gemma4-e4b-dpo-abc123"
-    assert meta["base_model"] == "gemma4:e4b" and meta["dataset_sha"] == "deadbeef"
+    assert meta["base_model"] == "gemma4:e4b"
+    assert meta["dataset_sha"] == "deadbeef"
     assert meta["pairs_submitted"] == 1
     # the client's own pairs reached the sidecar
     assert stub.seen["base_model"] == "gemma4:e4b"
@@ -138,7 +139,8 @@ async def test_dpo_fine_tune_sidecar_error_fails_loudly(
         job=job, client=client, session=db_session, train_client=_FakeTrain(raise_error=True),
     )
     assert out.status == JobStatus.FAILED.value
-    assert "dpo_fine_tune:" in out.error and "unreachable" in out.error
+    assert "dpo_fine_tune:" in out.error
+    assert "unreachable" in out.error
 
 
 class _StubOllama:

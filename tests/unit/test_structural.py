@@ -12,7 +12,8 @@ _CLEAN = "pub fn add(a: i64, b: i64) -> i64 { a + b }\n"
 
 def test_clean_source_has_no_violations() -> None:
     r = analyze_source(_CLEAN, required_signatures=["pub fn add(a: i64, b: i64) -> i64"])
-    assert r["ok"] is True and r["violations"] == 0
+    assert r["ok"] is True
+    assert r["violations"] == 0
 
 
 def test_flags_unsafe_block_and_fn() -> None:

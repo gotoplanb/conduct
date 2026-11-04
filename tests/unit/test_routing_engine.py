@@ -319,12 +319,13 @@ def test_no_anthropic_key_falls_back_to_local() -> None:
 
 
 def test_no_anthropic_key_blocks_explicit_cloud_override() -> None:
+    rule = _rule(sensitivity=Sensitivity.PUBLIC)
     with pytest.raises(SensitivityViolation):
         decide(
             sensitivity=Sensitivity.PUBLIC,
             model_requested="claude-haiku-4-5",
             allow_cloud_for_internal=True,
-            rule=_rule(sensitivity=Sensitivity.PUBLIC),
+            rule=rule,
             default_model="llama3.3:70b",
             default_sensitive_model="llama3.3:70b",
             available_cloud_providers=frozenset(),
@@ -332,12 +333,13 @@ def test_no_anthropic_key_blocks_explicit_cloud_override() -> None:
 
 
 def test_no_anthropic_key_and_no_local_fallback_raises() -> None:
+    rule = _rule(preferred="claude-sonnet-4-5", fallback=None)
     with pytest.raises(SensitivityViolation):
         decide(
             sensitivity=Sensitivity.PUBLIC,
             model_requested=None,
             allow_cloud_for_internal=True,
-            rule=_rule(preferred="claude-sonnet-4-5", fallback=None),
+            rule=rule,
             default_model="llama3.3:70b",
             default_sensitive_model="llama3.3:70b",
             available_cloud_providers=frozenset(),
@@ -347,15 +349,17 @@ def test_no_anthropic_key_and_no_local_fallback_raises() -> None:
 def test_anthropic_available_does_not_imply_bedrock() -> None:
     """A Bedrock model must NOT be routed-to just because the client has an
     Anthropic key. Each cloud provider is gated independently."""
+    rule = _rule(sensitivity=Sensitivity.PUBLIC)
+    available = frozenset({"anthropic"})
     with pytest.raises(SensitivityViolation):
         decide(
             sensitivity=Sensitivity.PUBLIC,
             model_requested="anthropic.claude-3-5-sonnet-20241022-v2:0",
             allow_cloud_for_internal=True,
-            rule=_rule(sensitivity=Sensitivity.PUBLIC),
+            rule=rule,
             default_model="llama3.3:70b",
             default_sensitive_model="llama3.3:70b",
-            available_cloud_providers=frozenset({"anthropic"}),
+            available_cloud_providers=available,
         )
 
 

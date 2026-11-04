@@ -41,7 +41,8 @@ async def test_resolve_unknown_raises_with_known(db_session, seeded_client) -> N
     await _add_style(db_session, "t-backdrop")
     with pytest.raises(UnknownStyle) as exc:
         await resolve_style(db_session, requested="oops", client_id=capp.id)
-    assert "t-backdrop" in exc.value.known and "oops" not in exc.value.known
+    assert "t-backdrop" in exc.value.known
+    assert "oops" not in exc.value.known
 
 
 async def test_archived_style_invisible(db_session) -> None:

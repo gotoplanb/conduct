@@ -219,7 +219,8 @@ def test_build_cargo_artifact_writes_and_returns_meta(tmp_path) -> None:
     assert meta["format"] == "cargo"
     assert meta["url"] == "/output/11111111-1111-1111-1111-111111111111.tar"
     assert meta["files"] == ["Cargo.toml", "src/main.rs"]
-    assert meta["file_count"] == 2 and meta["bytes"] > 0
+    assert meta["file_count"] == 2
+    assert meta["bytes"] > 0
     assert (tmp_path / "11111111-1111-1111-1111-111111111111.tar").is_file()
 
 

@@ -135,7 +135,8 @@ async def test_execute_shadow_stores_cargo_artifact(
 
     assert result.status == JobStatus.COMPLETE.value
     art = (result.shadow_metadata or {}).get("artifact")
-    assert art and art["url"] == f"/output/{shadow.id}.tar"
+    assert art
+    assert art["url"] == f"/output/{shadow.id}.tar"
     assert art["files"] == ["Cargo.toml", "src/lib.rs"]
     assert (tmp_path / f"{shadow.id}.tar").is_file()
 
@@ -400,6 +401,7 @@ async def test_run_fanout_secondaries_primary_provider_error_propagates(
     async def _primary() -> None:
         raise ProviderError("primary blew up")
 
+    primary = _primary()
     with pytest.raises(ProviderError, match="primary blew up"):
         await run_fanout_secondaries(
             parent=job,
@@ -408,7 +410,7 @@ async def test_run_fanout_secondaries_primary_provider_error_propagates(
             max_tokens=100,
             providers=stub_providers,
             session=db_session,
-            primary=_primary(),
+            primary=primary,
         )
 
 

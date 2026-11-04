@@ -27,7 +27,7 @@ MAX_TOTAL_BYTES = 2 * 1024 * 1024  # 2 MiB whole project
 # ```<info>\n<body>\n``` — info may carry a language and/or a path.
 _FENCE_RE = re.compile(r"```([^\n`]*)\n(.*?)\n?```", re.DOTALL)
 # A `// file: <path>` or `# file: <path>` marker as a block's first line.
-_FILE_MARKER_RE = re.compile(r"^\s*(?://|#)\s*file:\s*(.+?)\s*$")
+_FILE_MARKER_RE = re.compile(r"^\s*(?://|#)\s*file:\s*(\S.*)$")
 _CARGO_TOML = "Cargo.toml"
 # Bare root files we accept without an extension-bearing path.
 _BARE_ROOT_FILES = (_CARGO_TOML, "Cargo.lock")

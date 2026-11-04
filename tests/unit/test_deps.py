@@ -42,8 +42,10 @@ proptest = "1"
 
 def test_parse_cargo_dependencies_classifies_registry_vs_local() -> None:
     deps = {d.name: d for d in parse_cargo_dependencies(_CARGO)}
-    assert deps["serde"].registry is True and deps["serde"].req == "1.0"
-    assert deps["rand"].registry is True and deps["rand"].req == "0.8"
+    assert deps["serde"].registry is True
+    assert deps["serde"].req == "1.0"
+    assert deps["rand"].registry is True
+    assert deps["rand"].req == "0.8"
     assert deps["local_thing"].registry is False  # path dep, skipped
     assert deps["gitdep"].registry is False  # git dep, skipped
     assert deps["proptest"].kind == "dev-dependencies"
@@ -106,7 +108,8 @@ async def test_check_dependencies_flags_impossible_version() -> None:
 async def test_check_dependencies_all_real_is_clean() -> None:
     deps = [Dep("serde", "1.0", "dependencies", True), Dep("rand", "0.8", "dependencies", True)]
     result = await check_dependencies(deps, _index({"serde": ["1.0.130"], "rand": ["0.8.5"]}))
-    assert result["ok"] is True and result["offenders"] == []
+    assert result["ok"] is True
+    assert result["offenders"] == []
 
 
 async def test_unreachable_crate_is_unresolved_not_offender() -> None:
@@ -136,7 +139,8 @@ async def test_run_deps_check_reads_cargo_from_tar() -> None:
     result = await run_deps_check(tar, _index({
         "serde": ["1.0.130"], "rand": ["0.8.5"], "proptest": ["1.4.0"],
     }))
-    assert result["ok"] is True and result["checked"] == 3
+    assert result["ok"] is True
+    assert result["checked"] == 3
 
 
 async def test_run_deps_check_no_cargo_toml_returns_none() -> None:

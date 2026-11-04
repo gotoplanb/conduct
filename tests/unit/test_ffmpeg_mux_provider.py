@@ -64,8 +64,10 @@ async def test_mux_local_inputs_invokes_ffmpeg_correctly(provider, tmp_path) -> 
     argv = captured["argv"]
     assert argv[0] == "/usr/local/bin/ffmpeg"
     assert "-y" in argv
-    assert "-c:v" in argv and argv[argv.index("-c:v") + 1] == "copy"
-    assert "-c:a" in argv and argv[argv.index("-c:a") + 1] == "aac"
+    assert "-c:v" in argv
+    assert argv[argv.index("-c:v") + 1] == "copy"
+    assert "-c:a" in argv
+    assert argv[argv.index("-c:a") + 1] == "aac"
     assert "-shortest" in argv
     assert argv[-1].endswith("/muxed.mp4")
     # MediaResponse shape
@@ -175,4 +177,5 @@ async def test_mux_cleans_up_staged_intermediates(provider, tmp_path) -> None:
         )
     # The original local inputs are untouched (provider doesn't copy them,
     # so cleanup doesn't apply to them).
-    assert video_in.exists() and audio_in.exists()
+    assert video_in.exists()
+    assert audio_in.exists()

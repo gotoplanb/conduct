@@ -32,7 +32,7 @@ def fresh_pricing(monkeypatch, tmp_path):
     )
     monkeypatch.setattr(pricing_mod, "_registry", None)
     monkeypatch.setattr(pricing_mod, "DEFAULT_PRICING_PATH", p)
-    yield p
+    return p
 
 
 def test_install_sigusr1_registers_handler(fresh_pricing) -> None:

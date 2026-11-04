@@ -27,8 +27,10 @@ async def test_train_parses_result() -> None:
         return httpx.Response(200, json=_OK)
 
     r = await _client(handler).train(base_model="gemma4:e4b", pairs=[{"chosen": "a"}])
-    assert r.tag == "gemma4-e4b-dpo-abc" and r.pairs_consumed == 12
-    assert r.training_time_s == 99.5 and r.dataset_sha == "deadbeef"
+    assert r.tag == "gemma4-e4b-dpo-abc"
+    assert r.pairs_consumed == 12
+    assert r.training_time_s == 99.5
+    assert r.dataset_sha == "deadbeef"
     assert r.as_metadata()["tag"] == "gemma4-e4b-dpo-abc"
 
 
@@ -63,21 +65,24 @@ async def test_train_non_200_raises() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(500, text="cuda oom")
 
+    client = _client(handler)
     with pytest.raises(TrainServiceError, match="500"):
-        await _client(handler).train(base_model="m", pairs=[])
+        await client.train(base_model="m", pairs=[])
 
 
 async def test_train_unreachable_raises() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         raise httpx.ConnectError("refused")
 
+    client = _client(handler)
     with pytest.raises(TrainServiceError, match="unreachable"):
-        await _client(handler).train(base_model="m", pairs=[])
+        await client.train(base_model="m", pairs=[])
 
 
 async def test_train_missing_tag_raises() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json={"artifact_path": "/x"})  # no tag
 
+    client = _client(handler)
     with pytest.raises(TrainServiceError, match="no tag"):
-        await _client(handler).train(base_model="m", pairs=[])
+        await client.train(base_model="m", pairs=[])
