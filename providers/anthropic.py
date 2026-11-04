@@ -19,6 +19,17 @@ from providers.base import (
     ProviderResponse,
 )
 
+# The only direct-API models that take a non-default temperature. Newer ones
+# (Opus 4.7+, Sonnet 5+, Haiku 5.5) return a 400, so a model not listed here
+# samples at its default and a new model works without touching this list.
+_TEMPERATURE_MODEL_PREFIXES = (
+    "claude-haiku-4-5",
+    "claude-sonnet-4-5",
+    "claude-sonnet-4-6",
+    "claude-opus-4-5",
+    "claude-opus-4-6",
+)
+
 
 def _record_anthropic_retry(retry_state) -> None:  # type: ignore[no-untyped-def]
     record_retry(provider="anthropic", reason="rate_limit")
@@ -58,10 +69,10 @@ class AnthropicProvider(BaseProvider):
         # "deterministic" task gets temperature 0 (most-stable, but not a
         # reproducibility guarantee). The temperature scale is [0, 1], which
         # matches every sampling profile's value. SDK 1.0 removed temperature
-        # as a typed parameter, so it rides in extra_body; the API still
-        # accepts it on the models our rules route here (4.6-and-earlier —
-        # Opus 4.7+/Sonnet 5 reject sampling params server-side).
-        if temperature is not None:
+        # as a typed parameter, so it rides in extra_body, and only for the
+        # models that still accept it: on the rest even "deterministic" runs
+        # at the default temperature, so repeat runs can differ.
+        if temperature is not None and model.startswith(_TEMPERATURE_MODEL_PREFIXES):
             kwargs_for_create["extra_body"] = {"temperature": temperature}
 
         started = time.perf_counter()
@@ -75,6 +86,10 @@ class AnthropicProvider(BaseProvider):
 
         text_parts = [block.text for block in msg.content if block.type == "text"]
         text = "".join(text_parts)
+        # Models that think by default can spend max_tokens before any answer,
+        # and a refusal has no text: neither is a successful empty response.
+        if not text_parts:
+            raise ProviderError(f"anthropic returned no text (stop_reason={msg.stop_reason})")
         tokens_in = msg.usage.input_tokens
         tokens_out = msg.usage.output_tokens
 

@@ -8,6 +8,12 @@
 # Add entries when new cloud models are routed to.
 
 anthropic:
+  # Prompts up to 100K tokens; over that it's $0.50 / $2.50, which this
+  # registry can't express. Verified against
+  # https://platform.claude.com/docs/en/about-claude/pricing on 2026-11-04.
+  claude-haiku-5-5:
+    input_per_1m_usd: 0.10
+    output_per_1m_usd: 0.50
   claude-haiku-4-5:
     input_per_1m_usd: 1.00
     output_per_1m_usd: 5.00
