@@ -99,10 +99,15 @@ For a 100k-word book chunked into 10k-char pieces (~10 chunks):
 - Total wall time: ~1-2 minutes generation + transfer
 - Total disk: ~15-20MB MP3
 
-## Engine swap
+## Engines and named voices
 
-`tts/piper_engine.py` is the only engine today. The executor calls
-`synthesize_to_mp3(text, voice_name, voices_dir, output_path)` —
-implementing the same signature in a `tts/<other>_engine.py` and switching
-the dispatch is the minimal path to an alternative (Coqui XTTS, F5-TTS,
-Kokoro, OpenAI TTS, ElevenLabs). The Job → file → URL contract stays the same.
+Two engines sit behind the voice registry (`/voices/registry`):
+
+- **Piper** (`tts/piper_engine.py`): local, free, the default.
+- **ElevenLabs** (`tts/elevenlabs_engine.py`, #52): cloud. It is only reached
+  through a registered alias, needs a per-client key, and is gated by job sensitivity.
+
+`voice` on `/tts` accepts a registered alias or a literal Piper stem. The
+Job → file → URL contract is the same for both engines. See
+[voice-cast.md](voice-cast.md) for the roster, the tiers and licensing
+(e.g. why celebrity voices can't be used), and how to cast multi-voice stories.
