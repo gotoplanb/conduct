@@ -57,6 +57,12 @@ Piper aliases are unaffected by any of this.
 | `customer` | en_GB-jenny_dioco-medium | External customer, pairs with Perform phone treatment (#54) |
 | `feedback-coach` | en_US-lessac-medium | Out-of-world coaching voice (#54) |
 
+### Roles
+
+| Alias | Points to | Use |
+|---|---|---|
+| `bosshardt-narrator` | Matilda (`el-matilda`) | Bosshardt product narration videos (demo director) |
+
 ### ElevenLabs premade
 
 All 21 are registered globally as `el-<name>`.
