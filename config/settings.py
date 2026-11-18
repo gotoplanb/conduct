@@ -62,6 +62,23 @@ class Settings(BaseSettings):
     tts_output_dir: str = Field(default="./output", alias="TTS_OUTPUT_DIR")
     tts_max_chars: int = Field(default=10_000, alias="TTS_MAX_CHARS")
 
+    # ElevenLabs — optional cloud TTS engine (#52), opted into per voice alias
+    # (engine='elevenlabs'). The API key is per-client (encrypted on
+    # client_apps), never global. multilingual_v2 is the API's own default and
+    # its "most stable on long-form" model, which suits audiobook chunks; v3 is
+    # the expressive alternative (5k-char limit). Verified against
+    # https://elevenlabs.io/docs/overview/models on 2026-11-18.
+    elevenlabs_base_url: str = Field(
+        default="https://api.elevenlabs.io", alias="ELEVENLABS_BASE_URL"
+    )
+    elevenlabs_model_id: str = Field(
+        default="eleven_multilingual_v2", alias="ELEVENLABS_MODEL_ID"
+    )
+    elevenlabs_output_format: str = Field(
+        default="mp3_44100_128", alias="ELEVENLABS_OUTPUT_FORMAT"
+    )
+    elevenlabs_timeout_s: float = Field(default=120.0, alias="ELEVENLABS_TIMEOUT_S")
+
     otel_endpoint: str = Field(default="http://localhost:4317", alias="OTEL_EXPORTER_OTLP_ENDPOINT")
     otel_service_name: str = Field(default="conduct", alias="OTEL_SERVICE_NAME")
 

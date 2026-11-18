@@ -67,7 +67,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         from pathlib import Path  # noqa: PLC0415
 
         from db.session import SessionLocal  # noqa: PLC0415
-        from tts.voices import all_live_aliases, missing_voice_files  # noqa: PLC0415
+        from tts.voices import (  # noqa: PLC0415
+            all_live_aliases,
+            malformed_elevenlabs_ids,
+            missing_voice_files,
+        )
 
         async with SessionLocal() as vsession:
             all_aliases = await all_live_aliases(vsession)
@@ -78,6 +82,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                     "voice alias %r points at %r but no such file in %s — "
                     "TTS submits using it will fail",
                     name, voice_file, settings.tts_voices_dir,
+                )
+            for name, voice_id in malformed_elevenlabs_ids(all_aliases):
+                log.error(
+                    "voice alias %r (elevenlabs) has malformed voice id %r — "
+                    "TTS submits using it will fail",
+                    name, voice_id,
                 )
     except Exception:  # noqa: BLE001 — validation must never block boot
         log.exception("voice registry startup validation failed")

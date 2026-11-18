@@ -12,13 +12,23 @@ Clients submit `voice` as a logical name ("ops-manager"). Resolution order:
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 from uuid import UUID
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from models.client import ClientApp
+from models.types import Sensitivity
 from models.voice import VoiceAlias
+from tts.elevenlabs_engine import is_valid_voice_id
+
+PIPER = "piper"
+ELEVENLABS = "elevenlabs"
+ENGINES = frozenset({PIPER, ELEVENLABS})
+# Engines that send the text off-box. Same egress gate as cloud LLMs.
+CLOUD_ENGINES = frozenset({ELEVENLABS})
 
 
 class UnknownVoice(Exception):
@@ -72,6 +82,42 @@ async def visible_voices(
     return sorted(merged.values(), key=lambda r: r.name)
 
 
+@dataclass(frozen=True)
+class ResolvedVoice:
+    voice: str  # piper: file stem; elevenlabs: voice id
+    alias_name: str | None  # None for the default and literal passthrough
+    engine: str
+
+
+async def resolve_voice_full(
+    session: AsyncSession,
+    *,
+    requested: str | None,
+    client_id: UUID | None,
+    default_voice: str,
+    voices_dir: Path,
+) -> ResolvedVoice:
+    """Resolve a submitted voice to its concrete voice + engine.
+
+    The default and literal passthrough are always piper — a cloud engine is
+    only ever reached through an explicitly registered alias (#52 non-goal:
+    ElevenLabs is never a default).
+    """
+    if requested is None or requested == "":
+        return ResolvedVoice(default_voice, None, PIPER)
+
+    aliases = {a.name: a for a in await visible_voices(session, client_id)}
+    alias = aliases.get(requested)
+    if alias is not None:
+        return ResolvedVoice(alias.voice_file, alias.name, alias.engine)
+
+    installed = _installed_voice_files(voices_dir)
+    if requested in installed:
+        return ResolvedVoice(requested, None, PIPER)
+
+    raise UnknownVoice(requested, sorted(set(aliases) | set(installed)))
+
+
 async def resolve_voice(
     session: AsyncSession,
     *,
@@ -80,24 +126,42 @@ async def resolve_voice(
     default_voice: str,
     voices_dir: Path,
 ) -> tuple[str, str | None]:
-    """Resolve a submitted voice to (concrete_voice_file, logical_name|None).
+    """Resolve a submitted voice to (concrete_voice, logical_name|None).
 
-    logical_name is None for the default and for literal passthrough — the
-    caller records it in job metadata only when a registry name was used.
+    Engine-less shorthand for `resolve_voice_full`.
     """
-    if requested is None or requested == "":
-        return default_voice, None
+    r = await resolve_voice_full(
+        session,
+        requested=requested,
+        client_id=client_id,
+        default_voice=default_voice,
+        voices_dir=voices_dir,
+    )
+    return r.voice, r.alias_name
 
-    aliases = {a.name: a for a in await visible_voices(session, client_id)}
-    alias = aliases.get(requested)
-    if alias is not None:
-        return alias.voice_file, alias.name
 
-    installed = _installed_voice_files(voices_dir)
-    if requested in installed:
-        return requested, None
+def cloud_tts_block_reason(
+    engine: str, sensitivity: Sensitivity, client: ClientApp
+) -> str | None:
+    """Why a TTS job may not use this engine, or None if it may (#52).
 
-    raise UnknownVoice(requested, sorted(set(aliases) | set(installed)))
+    Mirrors the cloud-LLM gate in routing/engine.py: public is fine,
+    confidential never leaves the box, internal needs the client's
+    allow_cloud_for_internal opt-in. A cloud engine also needs the client's
+    own key — there is no global fallback, by design.
+    """
+    if engine not in CLOUD_ENGINES:
+        return None
+    if sensitivity == Sensitivity.CONFIDENTIAL:
+        return f"{engine} voices send text off-box; not allowed for sensitivity=confidential"
+    if sensitivity == Sensitivity.INTERNAL and not client.allow_cloud_for_internal:
+        return (
+            f"{engine} voices send text off-box; sensitivity=internal requires "
+            "allow_cloud_for_internal on this client (or submit sensitivity=public)"
+        )
+    if engine == ELEVENLABS and client.elevenlabs_api_key_encrypted is None:
+        return "no ElevenLabs API key configured for this client"
+    return None
 
 
 def missing_voice_files(
@@ -117,3 +181,13 @@ def missing_voice_files(
         if not (voices_dir / f"{a.voice_file}.onnx").is_file():
             missing.append((a.name, a.voice_file))
     return missing
+
+
+def malformed_elevenlabs_ids(aliases: list[VoiceAlias]) -> list[tuple[str, str]]:
+    """(name, voice_file) pairs for elevenlabs aliases whose voice id is not
+    well-formed — the cloud-engine counterpart of `missing_voice_files`."""
+    return [
+        (a.name, a.voice_file)
+        for a in aliases
+        if a.engine == ELEVENLABS and not is_valid_voice_id(a.voice_file)
+    ]

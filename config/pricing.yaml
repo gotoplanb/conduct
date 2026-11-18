@@ -45,3 +45,20 @@ bedrock:
   global.anthropic.claude-haiku-4-5-20251001-v1:0:
     input_per_1m_usd: 1.00
     output_per_1m_usd: 5.00
+
+# ElevenLabs TTS (#52) — billed per input character, not per token. Conduct
+# records characters as tokens_in, so these are USD per 1M characters
+# ($0.08 / 1K chars = $80 / 1M). Pay-as-you-go / overage rate; characters
+# included in a subscription are effectively prepaid. Keyed by model_id
+# (ELEVENLABS_MODEL_ID). Verified against https://elevenlabs.io/pricing/api
+# on 2026-11-18.
+elevenlabs:
+  eleven_multilingual_v2:
+    input_per_1m_usd: 80.00
+    output_per_1m_usd: 0
+  eleven_v3:
+    input_per_1m_usd: 80.00
+    output_per_1m_usd: 0
+  eleven_flash_v2_5:
+    input_per_1m_usd: 40.00
+    output_per_1m_usd: 0

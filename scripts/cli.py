@@ -466,6 +466,48 @@ def cmd_clients_clear_anthropic_key(args: argparse.Namespace) -> int:
     return 0
 
 
+_ELEVENLABS_KEY_TEMPLATE = (
+    "# Paste the ElevenLabs API key below this line and save to upload it.\n"
+    "# Lines starting with # are ignored. Save empty to abort.\n"
+)
+
+
+def cmd_clients_set_elevenlabs_key(args: argparse.Namespace) -> int:
+    """$EDITOR flow, same as set-anthropic-key: the key goes straight from
+    the editor buffer to the API, encrypted at rest, never echoed."""
+    with httpx.Client(base_url=_base_url(), headers=_headers(), timeout=30) as c:
+        client = _resolve_client(c, args.client)
+        edited = _open_in_editor(_ELEVENLABS_KEY_TEMPLATE, suffix=".txt")
+        if edited is None:
+            return 1
+        api_key = _strip_comments(edited)
+        if not api_key:
+            print("aborting: no key supplied", file=sys.stderr)
+            return 1
+        r = c.put(f"/clients/{client['id']}/elevenlabs-key", json={"api_key": api_key})
+        r.raise_for_status()
+        out = r.json()
+    print(f"set elevenlabs key for {out['name']} at {out['elevenlabs_api_key_set_at']}")
+    return 0
+
+
+def cmd_clients_clear_elevenlabs_key(args: argparse.Namespace) -> int:
+    with httpx.Client(base_url=_base_url(), headers=_headers(), timeout=30) as c:
+        client = _resolve_client(c, args.client)
+        if not args.yes:
+            answer = input(
+                f"Clear ElevenLabs key for {client['name']}? "
+                "Its ElevenLabs voices will be refused at submit. [y/N] "
+            ).strip().lower()
+            if answer != "y":
+                print("aborted", file=sys.stderr)
+                return 1
+        r = c.delete(f"/clients/{client['id']}/elevenlabs-key")
+        r.raise_for_status()
+    print(f"cleared elevenlabs key for {client['name']}")
+    return 0
+
+
 _BEDROCK_CREDS_TEMPLATE = (
     "# Paste this client's AWS Bedrock credentials below. Save to upload them.\n"
     "# Lines starting with # are ignored. Leave blanks to abort.\n"
@@ -1240,6 +1282,20 @@ def _build_parser() -> argparse.ArgumentParser:
     cclr_ak.add_argument("client", help=_CLIENT_ARG_HELP)
     cclr_ak.add_argument("-y", "--yes", action="store_true", help=_SKIP_CONFIRM_HELP)
     cclr_ak.set_defaults(func=cmd_clients_clear_anthropic_key)
+
+    cset_el = csubs.add_parser(
+        "set-elevenlabs-key",
+        help="paste a per-client ElevenLabs API key in $EDITOR ($EDITOR opens empty)",
+    )
+    cset_el.add_argument("client", help=_CLIENT_ARG_HELP)
+    cset_el.set_defaults(func=cmd_clients_set_elevenlabs_key)
+
+    cclr_el = csubs.add_parser(
+        "clear-elevenlabs-key", help="forget a client's ElevenLabs key"
+    )
+    cclr_el.add_argument("client", help=_CLIENT_ARG_HELP)
+    cclr_el.add_argument("-y", "--yes", action="store_true", help=_SKIP_CONFIRM_HELP)
+    cclr_el.set_defaults(func=cmd_clients_clear_elevenlabs_key)
 
     cset_br = csubs.add_parser(
         "set-bedrock-creds",

@@ -20,6 +20,7 @@ from secrets_box import SecretsKeyMissing, encrypt
 router = APIRouter(prefix="/clients", tags=["clients"], dependencies=[Depends(admin_only)])
 
 _CLIENT_NOT_FOUND = "client not found"
+_SECRETS_KEY_MISSING = "CONDUCT_SECRETS_KEY is not configured on the server"
 
 
 class ClientCreateIn(BaseModel):
@@ -50,6 +51,7 @@ class ClientOut(BaseModel):
     key_created_at: datetime
     anthropic_api_key_set_at: datetime | None = None
     bedrock_creds_set_at: datetime | None = None
+    elevenlabs_api_key_set_at: datetime | None = None
 
 
 class RotateKeyOut(BaseModel):
@@ -184,7 +186,7 @@ async def set_anthropic_key(
     except SecretsKeyMissing as e:
         raise HTTPException(
             status.HTTP_503_SERVICE_UNAVAILABLE,
-            "CONDUCT_SECRETS_KEY is not configured on the server",
+            _SECRETS_KEY_MISSING,
         ) from e
     client.anthropic_api_key_set_at = datetime.now(UTC)
     await session.commit()
@@ -213,6 +215,56 @@ async def clear_anthropic_key(
         name=client.name,
         anthropic_api_key_set_at=None,
     )
+
+
+class ElevenLabsKeyOut(BaseModel):
+    id: UUID
+    name: str
+    elevenlabs_api_key_set_at: datetime | None
+
+
+@router.put("/{client_id}/elevenlabs-key")
+async def set_elevenlabs_key(
+    client_id: UUID,
+    body: AnthropicKeyIn,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> ElevenLabsKeyOut:
+    """Store a per-client ElevenLabs API key (#52), encrypted with
+    CONDUCT_SECRETS_KEY. Never persisted in plaintext or echoed back."""
+    client = await session.get(ClientApp, client_id)
+    if client is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, _CLIENT_NOT_FOUND)
+    try:
+        client.elevenlabs_api_key_encrypted = encrypt(body.api_key.strip())
+    except SecretsKeyMissing as e:
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            _SECRETS_KEY_MISSING,
+        ) from e
+    client.elevenlabs_api_key_set_at = datetime.now(UTC)
+    await session.commit()
+    await session.refresh(client)
+    return ElevenLabsKeyOut(
+        id=client.id,
+        name=client.name,
+        elevenlabs_api_key_set_at=client.elevenlabs_api_key_set_at,
+    )
+
+
+@router.delete("/{client_id}/elevenlabs-key")
+async def clear_elevenlabs_key(
+    client_id: UUID, session: Annotated[AsyncSession, Depends(get_session)]
+) -> ElevenLabsKeyOut:
+    """Forget this client's ElevenLabs key — its ElevenLabs voices are refused
+    at submit until a key is set again; piper voices are unaffected."""
+    client = await session.get(ClientApp, client_id)
+    if client is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, _CLIENT_NOT_FOUND)
+    client.elevenlabs_api_key_encrypted = None
+    client.elevenlabs_api_key_set_at = None
+    await session.commit()
+    await session.refresh(client)
+    return ElevenLabsKeyOut(id=client.id, name=client.name, elevenlabs_api_key_set_at=None)
 
 
 class BedrockCredsIn(BaseModel):
@@ -272,7 +324,7 @@ async def set_bedrock_creds(
     except SecretsKeyMissing as e:
         raise HTTPException(
             status.HTTP_503_SERVICE_UNAVAILABLE,
-            "CONDUCT_SECRETS_KEY is not configured on the server",
+            _SECRETS_KEY_MISSING,
         ) from e
     client.bedrock_creds_set_at = datetime.now(UTC)
     await session.commit()

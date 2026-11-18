@@ -26,7 +26,8 @@ from config.settings import get_settings
 from db.session import get_session
 from models.client import ClientApp
 from models.voice import VoiceAlias
-from tts.voices import visible_voices
+from tts.elevenlabs_engine import is_valid_voice_id
+from tts.voices import ELEVENLABS, ENGINES, PIPER, visible_voices
 
 router = APIRouter(prefix="/voices", tags=["voices"])
 admin_router = APIRouter(
@@ -38,7 +39,9 @@ class VoiceOut(BaseModel):
     name: str
     engine: str
     scope: str  # 'shared' | 'client'
-    installed: bool  # piper only: backing file present on disk
+    # piper: backing file present on disk. elevenlabs: the caller has an
+    # ElevenLabs key, i.e. a submit won't be refused for lack of one.
+    installed: bool
 
 
 class VoiceListOut(BaseModel):
@@ -84,12 +87,19 @@ async def list_voices(
                 name=r.name,
                 engine=r.engine,
                 scope="client" if r.client_id is not None else "shared",
-                installed=r.engine != "piper"
-                or (voices_dir / f"{r.voice_file}.onnx").is_file(),
+                installed=_usable(r, principal, voices_dir),
             )
             for r in rows
         ]
     )
+
+
+def _usable(alias: VoiceAlias, principal: ClientApp | None, voices_dir: Path) -> bool:
+    if alias.engine == PIPER:
+        return (voices_dir / f"{alias.voice_file}.onnx").is_file()
+    if alias.engine == ELEVENLABS:
+        return principal is None or principal.elevenlabs_api_key_encrypted is not None
+    return False
 
 
 @admin_router.get("")
@@ -126,7 +136,18 @@ async def upsert_alias(
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "name must be 1-100 chars")
     # Piper voices must exist on disk at registration — failing loudly here is
     # the whole point of the registry (Perform SPEC §8: no silent fallback).
-    if body.engine == "piper":
+    if body.engine not in ENGINES:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            f"unknown engine {body.engine!r}; expected one of {sorted(ENGINES)}",
+        )
+    if body.engine == ELEVENLABS and not is_valid_voice_id(body.voice_file):
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            f"{body.voice_file!r} is not an ElevenLabs voice id "
+            "(alphanumeric, e.g. JBFqnCBsd6RMkjVDRZzb)",
+        )
+    if body.engine == PIPER:
         voices_dir = Path(get_settings().tts_voices_dir)
         if not (voices_dir / f"{body.voice_file}.onnx").is_file():
             raise HTTPException(

@@ -28,7 +28,7 @@ from models.job import Job
 from models.types import JobStatus, Sensitivity
 from observability.tracing import rq_trace_meta
 from rate_limit import rate_limited_client
-from tts.voices import UnknownVoice, resolve_voice
+from tts.voices import UnknownVoice, cloud_tts_block_reason, resolve_voice_full
 from worker.queue import DEFAULT_JOB_TIMEOUT_S, get_queue
 from worker.runner import run_job
 
@@ -106,6 +106,11 @@ output_router = APIRouter(prefix="/output", tags=["tts"])
 class TTSCreateIn(BaseModel):
     text: str = Field(min_length=1)
     voice: str | None = Field(default=None, max_length=100)
+    # Same default as /jobs with no rule. Only matters for cloud engines
+    # (ElevenLabs, #52): public may leave the box, internal needs the client's
+    # allow_cloud_for_internal, confidential never does. Piper is local, so
+    # any sensitivity synthesizes.
+    sensitivity: Sensitivity = Sensitivity.INTERNAL
 
 
 @tts_router.post("", status_code=status.HTTP_202_ACCEPTED)
@@ -125,7 +130,7 @@ async def submit_tts(
     # installed voice file still passes through, anything else 400s at submit
     # with the known names so a typo can't silently synthesize the default.
     try:
-        voice, alias_name = await resolve_voice(
+        resolved = await resolve_voice_full(
             session,
             requested=body.voice,
             client_id=client.id,
@@ -137,17 +142,22 @@ async def submit_tts(
             status.HTTP_400_BAD_REQUEST,
             f"unknown voice {e.requested!r}; known voices: {', '.join(e.known)}",
         ) from e
+    if reason := cloud_tts_block_reason(resolved.engine, body.sensitivity, client):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, reason)
 
+    metadata: dict = {"tts_engine": resolved.engine}
+    if resolved.alias_name:
+        metadata["voice_alias"] = resolved.alias_name
     job = Job(
         client_app_id=client.id,
         task_type="tts",
-        sensitivity=Sensitivity.PUBLIC.value,  # local-only synth, no external send
+        sensitivity=body.sensitivity.value,
         priority=5,
         prompt=body.text,
         system_prompt="",
-        model_requested=voice,
+        model_requested=resolved.voice,
         status=JobStatus.PENDING.value,
-        job_metadata={"voice_alias": alias_name} if alias_name else {},
+        job_metadata=metadata,
     )
     session.add(job)
     await session.commit()
@@ -177,7 +187,8 @@ async def submit_tts(
             "status": JobStatus.PENDING.value,
             "poll_url": f"/jobs/{job.id}",
             "expected_output_url": f"/output/{job.id}.mp3",
-            "voice": voice,
+            "voice": resolved.voice,
+            "engine": resolved.engine,
         },
     )
 

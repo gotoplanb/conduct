@@ -61,6 +61,13 @@ class ClientApp(Base):
         DateTime(timezone=True), nullable=True
     )
 
+    # Per-client ElevenLabs API key (#52), same isolation rule as Anthropic:
+    # when null, ElevenLabs voices are refused at TTS submit for this client.
+    elevenlabs_api_key_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
+    elevenlabs_api_key_set_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
 
 class ClientAppUsage(Base):
     __tablename__ = "client_app_usage"
